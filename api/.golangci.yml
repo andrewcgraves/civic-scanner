@@ -1,0 +1,33 @@
+version: "2"
+
+run:
+  build-tags:
+    - integration
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - revive
+    - sqlclosecheck
+  exclusions:
+    generated: lax
+    paths:
+      - '.*\.gen\.go$'
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/andrewcgraves/civic-scanner/api
+  exclusions:
+    generated: lax
+    paths:
+      - '.*\.gen\.go$'

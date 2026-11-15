@@ -1,0 +1,46 @@
+// Package config loads runtime configuration from environment variables.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+)
+
+// Config is the process configuration shared by all binaries.
+type Config struct {
+	Port        string
+	DatabaseURL string
+	LogLevel    slog.Level
+	AppEnv      string
+}
+
+// Load reads configuration from the environment.
+func Load() (Config, error) {
+	cfg := Config{
+		Port:        envOr("PORT", "8080"),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+		AppEnv:      envOr("APP_ENV", "development"),
+	}
+	if cfg.DatabaseURL == "" {
+		return Config{}, errors.New("DATABASE_URL is required")
+	}
+	if err := cfg.LogLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", "info"))); err != nil {
+		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
+	}
+	return cfg, nil
+}
+
+// NewLogger returns the JSON logger used by every binary.
+func NewLogger(cfg Config) *slog.Logger {
+	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
+	return slog.New(h).With("env", cfg.AppEnv)
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
