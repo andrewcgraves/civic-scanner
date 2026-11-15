@@ -1,4 +1,3 @@
-// Package store is the Postgres data access layer.
 package store
 
 import (
@@ -11,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Agency is a tracked public agency.
 type Agency struct {
 	ID        uuid.UUID
 	Slug      string
@@ -19,12 +17,10 @@ type Agency struct {
 	CreatedAt time.Time
 }
 
-// Store runs queries against a connection pool.
 type Store struct {
 	pool *pgxpool.Pool
 }
 
-// Open connects to Postgres and verifies the connection.
 func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -37,17 +33,14 @@ func Open(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-// New returns a Store backed by pool.
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// Ping reports whether the database is reachable.
 func (s *Store) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
-// ListAgencies returns all agencies ordered by name.
 func (s *Store) ListAgencies(ctx context.Context) ([]Agency, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, slug, name, created_at FROM agencies ORDER BY name, slug`)
 	if err != nil {

@@ -1,5 +1,3 @@
-# Redocly CLI config (auto-discovered from the repo root).
-# Lint with: make openapi-lint
 extends:
   - recommended
 

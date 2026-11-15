@@ -6,7 +6,6 @@ import type { Agency } from "@/lib/api/client";
 
 export const metadata: Metadata = { title: "Agencies | Civic Scanner" };
 
-// Rendered per request so the build never needs a running API.
 export const dynamic = "force-dynamic";
 
 async function loadAgencies(): Promise<Agency[] | null> {
@@ -14,7 +13,6 @@ async function loadAgencies(): Promise<Agency[] | null> {
     const { data } = await api.GET("/agencies");
     return data?.agencies ?? null;
   } catch {
-    // Network failure (API down or unreachable).
     return null;
   }
 }

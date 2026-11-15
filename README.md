@@ -28,7 +28,9 @@ make test             # unit tests
 make ci               # everything CI runs
 ```
 
-`make help` lists every target. The Makefile defaults `DATABASE_URL` to the compose database.
+`make help` lists every target. The Makefile defaults `DATABASE_URL` to the compose database; override it to point at another database.
+
+The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix.
 
 ## OpenAPI-first workflow
 
@@ -53,6 +55,14 @@ Generated files are committed and never edited by hand. CI regenerates them and 
 
 Branch rules for `main` are in `.github/rulesets/` (import instructions there).
 
+Notes on the workflow:
+
+- Path filtering lives in the `changes` job, not in `on.paths`, so the workflow always starts and `ci-ok` always reports. Skipped jobs count as passing; failed or cancelled jobs fail it.
+- A new push to a pull request cancels the run for the previous push. Runs on `main` are keyed by commit and never cancelled.
+- `migrations-lint` lints the migrations added or modified by the change. If none were (only the linter config or the workflow changed), it lints all of them.
+- Tool versions (Redocly CLI, Squawk, golangci-lint) are pinned in the workflow `env` and mirrored in the `Makefile` and `.github/scripts/lint-migrations.sh`. Bump them together.
+- **Planned: compatibility test.** Once there is a production version, add a job that applies the pull request's migrations, checks out the deployed commit (for example a `production` tag moved on deploy) into a second directory, and runs its `go test -tags=integration ./...` against that database. This proves each migration is backward compatible with the code in production. Add the job to the `needs` list of `ci-ok`.
+
 ## Migrations
 
 Migrations are goose SQL files in `api/migrations/` and follow expand and contract:
@@ -61,9 +71,17 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - **Release:** new code that uses them ships behind a flag.
 - **Contract:** a later migration removes the old structures. Mark the file with a `-- migration: contract` line, which permits dropping columns and tables, and confirm the flag is fully on in production before merging.
 
+`make lint-migrations` runs `.github/scripts/lint-migrations.sh [file...]` (default: every file in `api/migrations/`), which adapts each goose file for Squawk:
+
+- Only the `-- +goose Up` half is linted. A rollback is destructive by design and would always fail.
+- Squawk assumes a transaction unless the file has a `-- +goose NO TRANSACTION` line, matching what goose does.
+- In a contract file, `ban-drop-column` and `ban-drop-table` are excluded. Everything else is still checked.
+
+`.squawk.toml` excludes `require-lock-timeout` and `require-statement-timeout`: timeouts are a connection-level concern for the migrate command, not something to repeat in every file. `--exclude` on the command line replaces the config list, so `CONTRACT_EXCLUDE` in the script repeats those two rules. Keep the two lists in sync.
+
 ## Deploy
 
 Merging to `main` deploys both sides.
 
-- **API on Railway**, configured by `api/railway.json`. Migrations run as the pre-deploy step, so a failed migration stops the deploy. Watch paths limit redeploys to `api/` and `openapi/`.
+- **API on Railway**, configured by `api/railway.json`, with the service root directory set to `/api` (the Docker build context). The `RAILWAY_GIT_COMMIT_SHA` build arg becomes the version the health endpoint reports. Migrations run as the pre-deploy step, so a failed migration stops the deploy. Watch paths limit redeploys to `api/` and `openapi/`.
 - **Web on Vercel**, with the project root directory set to `web`. Each pull request gets a preview deploy.

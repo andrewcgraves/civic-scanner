@@ -1,9 +1,5 @@
-# Thin wrappers over the commands CI runs. `make help` lists targets.
-
-# Tool versions; keep in sync with .github/workflows/ci.yml.
 REDOCLY_CLI_VERSION ?= 2.78.0
 
-# Matches docker-compose.yml. Override to point at another database.
 DATABASE_URL ?= postgres://civic:civic@localhost:5432/civic?sslmode=disable
 export DATABASE_URL
 

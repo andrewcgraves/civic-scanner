@@ -1,4 +1,3 @@
-// Package config loads runtime configuration from environment variables.
 package config
 
 import (
@@ -8,7 +7,6 @@ import (
 	"os"
 )
 
-// Config is the process configuration shared by all binaries.
 type Config struct {
 	Port        string
 	DatabaseURL string
@@ -16,7 +14,6 @@ type Config struct {
 	AppEnv      string
 }
 
-// Load reads configuration from the environment.
 func Load() (Config, error) {
 	cfg := Config{
 		Port:        envOr("PORT", "8080"),
@@ -32,7 +29,6 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
-// NewLogger returns the JSON logger used by every binary.
 func NewLogger(cfg Config) *slog.Logger {
 	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})
 	return slog.New(h).With("env", cfg.AppEnv)

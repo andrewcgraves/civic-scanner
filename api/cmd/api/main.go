@@ -1,4 +1,3 @@
-// Command api serves the HTTP API.
 package main
 
 import (
@@ -19,7 +18,6 @@ import (
 
 const shutdownTimeout = 25 * time.Second
 
-// version is set at build time with -ldflags "-X main.version=<git sha>".
 var version = "dev"
 
 func main() {

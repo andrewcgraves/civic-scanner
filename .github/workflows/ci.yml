@@ -5,19 +5,14 @@ on:
   push:
     branches: [main]
 
-# Least privilege: jobs that need more ask for it explicitly.
 permissions:
   contents: read
 
-# A new push to a PR cancels the run for the previous push. Runs on main are
-# keyed by commit and never cancelled.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # Tool versions pinned here are mirrored in the Makefile and
-  # .github/scripts/lint-migrations.sh; bump them together.
   REDOCLY_CLI_VERSION: "2.78.0"
   SQUAWK_VERSION: "2.72.0"
   GOLANGCI_LINT_VERSION: "v2.15.0"
@@ -25,14 +20,12 @@ env:
   NEXT_TELEMETRY_DISABLED: "1"
 
 jobs:
-  # Decides which jobs run. Path filtering lives here (not in `on.paths`) so
-  # the workflow always starts and `ci-ok` always reports a status.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read # paths-filter lists PR files through the API
+      pull-requests: read
     outputs:
       api: ${{ steps.filter.outputs.api }}
       web: ${{ steps.filter.outputs.web }}
@@ -82,7 +75,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      # One spec file per API version; lint them all (config: redocly.yaml).
       - name: Lint OpenAPI specs
         run: npx --yes "@redocly/cli@${REDOCLY_CLI_VERSION}" lint openapi/*.yaml --format=github-actions
 
@@ -159,14 +151,6 @@ jobs:
         run: go run ./cmd/migrate up
       - name: Integration tests
         run: go test -tags=integration ./...
-      # TODO(compat-test): the spec calls for a compatibility test that runs the
-      # CURRENT PRODUCTION version's tests against the NEW schema, proving each
-      # migration is backward compatible (expand/contract). It cannot exist
-      # until there is a production version. Once there is: add a job that
-      # applies this PR's migrations, checks out the deployed commit (e.g. a
-      # `production` tag moved on deploy) into a second directory, and runs its
-      # `go test -tags=integration ./...` against this database. Add that job
-      # to the `needs` list of `ci-ok`.
 
   migrations-lint:
     needs: changes
@@ -182,8 +166,6 @@ jobs:
           node-version: 24
       - name: Install Squawk
         run: npm install --global "squawk-cli@${SQUAWK_VERSION}"
-      # Lints the migrations added or modified by this change. If none were
-      # (only the linter config or this workflow changed), lints all of them.
       - name: Lint migrations
         env:
           MIGRATION_FILES: ${{ needs.changes.outputs.migration_files }}
@@ -206,7 +188,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # pnpm version comes from `packageManager` in web/package.json.
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: web/package.json
@@ -237,9 +218,6 @@ jobs:
       - name: Build
         run: pnpm build
 
-  # The single required status check (see .github/rulesets/main.json). It
-  # always runs, so it always reports: skipped jobs (path filters) count as
-  # passing, failed or cancelled jobs fail it.
   ci-ok:
     if: always()
     needs:

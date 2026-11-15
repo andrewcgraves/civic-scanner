@@ -1,4 +1,3 @@
-// Package migrations embeds the SQL schema migrations and applies them.
 package migrations
 
 import (
@@ -17,12 +16,8 @@ import (
 //go:embed *.sql
 var files embed.FS
 
-// lockID is an arbitrary session advisory lock key that serializes Up across
-// processes (e.g. integration test packages migrating one fresh database).
 const lockID = 7_241_905_316
 
-// Up applies all pending application migrations (goose), then River's own
-// schema migrations. It is safe to run repeatedly and concurrently.
 func Up(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
@@ -37,7 +32,7 @@ func Up(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
 	}()
 
 	db := stdlib.OpenDBFromPool(pool)
-	defer db.Close() //nolint:errcheck // closes only the database/sql wrapper, not the pool
+	defer db.Close() //nolint:errcheck
 
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, files)
 	if err != nil {
@@ -55,7 +50,6 @@ func Up(ctx context.Context, pool *pgxpool.Pool, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("river migrator: %w", err)
 	}
-	// rivermigrate logs each applied version itself.
 	if _, err := migrator.Migrate(ctx, rivermigrate.DirectionUp, nil); err != nil {
 		return fmt.Errorf("river migrate: %w", err)
 	}

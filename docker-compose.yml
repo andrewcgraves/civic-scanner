@@ -1,4 +1,3 @@
-# Local development only: Postgres for the API. Start with `make dev-db`.
 services:
   postgres:
     image: postgres:17

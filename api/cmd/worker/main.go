@@ -1,4 +1,3 @@
-// Command worker runs the River background job workers.
 package main
 
 import (
@@ -43,8 +42,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// Not ctx: cancelling Start's context would cancel in-flight jobs instead
-	// of letting Stop drain them.
 	if err := client.Start(context.WithoutCancel(ctx)); err != nil {
 		return err
 	}

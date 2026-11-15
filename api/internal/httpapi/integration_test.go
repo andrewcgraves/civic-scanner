@@ -41,7 +41,6 @@ func TestAgenciesAgainstPostgres(t *testing.T) {
 		t.Fatalf("insert agency: %v", err)
 	}
 	t.Cleanup(func() {
-		// t.Context() is already cancelled when cleanups run.
 		_, _ = pool.Exec(context.WithoutCancel(ctx), `DELETE FROM agencies WHERE slug = $1`, slug)
 	})
 
@@ -69,11 +68,11 @@ func TestAgenciesAgainstPostgres(t *testing.T) {
 
 func getJSON(t *testing.T, url string, wantStatus int, out any) {
 	t.Helper()
-	resp, err := http.Get(url) //nolint:gosec // test request to a local httptest server
+	resp, err := http.Get(url) //nolint:gosec
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // test cleanup
+	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode != wantStatus {
 		t.Fatalf("GET %s: status %d, want %d", url, resp.StatusCode, wantStatus)
 	}

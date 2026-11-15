@@ -1,9 +1,7 @@
-# Environment and secrets
 .env
 .env.*
 !.env.example
 
-# Go
 /api/bin/
 /api/tmp/
 *.exe
@@ -13,7 +11,6 @@ coverage.*
 go.work
 go.work.sum
 
-# Node / Next.js
 node_modules/
 .pnpm-store/
 .next/
@@ -25,10 +22,8 @@ next-env.d.ts
 npm-debug.log*
 pnpm-debug.log*
 
-# Deploy tooling
 .vercel/
 
-# OS and editors
 .DS_Store
 Thumbs.db
 .idea/

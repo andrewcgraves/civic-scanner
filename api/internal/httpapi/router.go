@@ -12,8 +12,6 @@ import (
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 )
 
-// NewRouter mounts the generated v1 routes under /v1 behind the standard
-// middleware stack.
 func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger))
@@ -47,7 +45,7 @@ func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 				if rec == nil {
 					return
 				}
-				if rec == http.ErrAbortHandler { //nolint:errorlint // sentinel panic value, compared by identity as net/http does
+				if rec == http.ErrAbortHandler { //nolint:errorlint
 					panic(rec)
 				}
 				logger.ErrorContext(r.Context(), "panic recovered",

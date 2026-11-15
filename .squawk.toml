@@ -1,12 +1,5 @@
-# Squawk (Postgres migration linter) config. Run via `make lint-migrations`,
-# which wraps Squawk to handle goose annotations.
 pg_version = "17.0"
 
-# goose runs each migration file in a transaction unless it is annotated with
-# "-- +goose NO TRANSACTION" (the wrapper script handles that case).
 assume_in_transaction = true
 
-# Timeouts are a connection-level concern for the migrate command rather than
-# something to repeat in every file. Remove these to require them per migration.
-# Keep in sync with CONTRACT_EXCLUDE in .github/scripts/lint-migrations.sh.
 excluded_rules = ["require-lock-timeout", "require-statement-timeout"]

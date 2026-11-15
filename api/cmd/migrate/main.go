@@ -1,4 +1,3 @@
-// Command migrate applies database migrations. Usage: migrate up
 package main
 
 import (

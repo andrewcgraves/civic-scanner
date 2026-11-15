@@ -1,21 +1,7 @@
 #!/usr/bin/env bash
-# Lint goose SQL migrations with Squawk (https://squawkhq.com).
-#
-#   .github/scripts/lint-migrations.sh [file...]   # default: api/migrations/*.sql
-#
-# Squawk does not understand goose annotations, so this wrapper adapts each file:
-#   * Only the "-- +goose Up" half is linted. The Down half is cut off, since a
-#     rollback is destructive by design (DROP TABLE ...) and would always fail.
-#   * goose wraps a migration in a transaction unless the file says
-#     "-- +goose NO TRANSACTION"; Squawk is told which case applies.
-#   * A file containing the marker line "-- migration: contract" is a deliberate
-#     contract step (see README, "Migrations"): dropping columns and tables is
-#     allowed in it. Everything else is still checked.
 set -euo pipefail
 
 SQUAWK_VERSION="${SQUAWK_VERSION:-2.72.0}"
-# Keep the first two in sync with excluded_rules in .squawk.toml: --exclude on
-# the command line replaces the config file's list instead of adding to it.
 CONTRACT_EXCLUDE="require-lock-timeout,require-statement-timeout,ban-drop-column,ban-drop-table"
 
 cd "$(dirname "$0")/../.."
