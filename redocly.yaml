@@ -1,0 +1,8 @@
+# Redocly CLI config (auto-discovered from the repo root).
+# Lint with: make openapi-lint
+extends:
+  - recommended
+
+apis:
+  v1:
+    root: openapi/v1.yaml

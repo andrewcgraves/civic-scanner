@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+# Generated from openapi/: collapsed in GitHub diffs and left out of language stats.
+api/internal/httpapi/v1/*.gen.go linguist-generated=true
+web/src/lib/api/v1.d.ts linguist-generated=true
