@@ -42,9 +42,9 @@ func fakeTool(t *testing.T, bin, ffmpeg string) Tool {
 
 const writeOutput = `printf 'ID3' > "$(eval echo \${$#})"`
 
-func TestExtractAudioRunsFFmpegThroughTheProxyWithSafeOptions(t *testing.T) {
+func TestExtractAudioGivesFFmpegOnlyTheGatewayOverPlainHTTP(t *testing.T) {
 	argsFile := filepath.Join(t.TempDir(), "args")
-	tool := fakeTool(t, limitBinary(t), `printf '%s\n' "$@" > "$ARGS_FILE"; printf '%s\n' "$http_proxy" >> "$ARGS_FILE"; `+writeOutput)
+	tool := fakeTool(t, limitBinary(t), `printf '%s\n' "$@" > "$ARGS_FILE"; printf 'proxy=%s|%s|%s\n' "$http_proxy" "$https_proxy" "$no_proxy" >> "$ARGS_FILE"; `+writeOutput)
 	tool.MaxDuration = 90 * time.Minute
 	tool.UserAgent = "CivicScanner/1.0 (+https://example.test)"
 	tool.Env = []string{"ARGS_FILE=" + argsFile}
@@ -60,21 +60,24 @@ func TestExtractAudioRunsFFmpegThroughTheProxyWithSafeOptions(t *testing.T) {
 	args := strings.Join(lines, " ")
 	for _, want := range []string{
 		"-loglevel warning",
-		"-protocol_whitelist " + protocolWhitelist,
+		"-protocol_whitelist http,tcp ",
 		"-format_whitelist " + formatWhitelist,
-		"-http_proxy http://127.0.0.1:",
-		"-tls_verify 1",
-		"-user_agent CivicScanner/1.0 (+https://example.test)",
-		"-i " + fileURL,
-		"-map 0:a:0 -vn -sn -dn -t 5400",
+		"-rw_timeout 90000000",
+		"-i http://127.0.0.1:",
+		"/r/0/clip.mp4 -map 0:a:0 -vn -sn -dn -t 5400",
 		"-ac 1 -ar 16000 -c:a libmp3lame -b:a 32k -f mp3 " + dst,
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("ffmpeg args %q lack %q", args, want)
 		}
 	}
-	if env := lines[len(lines)-1]; !strings.HasPrefix(env, "http://127.0.0.1:") {
-		t.Errorf("http_proxy = %q, want the local proxy", env)
+	for _, unwanted := range []string{"granicus.com", "-http_proxy", "-user_agent", "https", "httpproxy", "crypto", "file"} {
+		if strings.Contains(strings.Join(lines[:len(lines)-1], " "), unwanted) && !strings.Contains(dst, unwanted) {
+			t.Errorf("ffmpeg args %q contain %q", args, unwanted)
+		}
+	}
+	if env := lines[len(lines)-1]; env != "proxy=||*" {
+		t.Errorf("proxy environment = %q", env)
 	}
 }
 
@@ -89,6 +92,7 @@ func TestExtractAudioClassifiesFailures(t *testing.T) {
 		"read timeout":      {`echo "Connection timed out" >&2; exit 1`, ErrNetwork, true},
 		"forbidden":         {`echo "Server returned 403 Forbidden (access denied)" >&2; exit 1`, ErrRefused, false},
 		"html page":         {`echo "Invalid data found when processing input" >&2; exit 1`, ErrMalformed, false},
+		"unrecognised":      {`echo "Something new went wrong" >&2; exit 1`, ErrUnrecognized, true},
 		"video only":        {`echo "Stream map '0:a:0' matches no streams." >&2; exit 1`, ErrNoAudio, false},
 		"out of memory":     {`echo "Cannot allocate memory" >&2; exit 1`, ErrLimitExceeded, false},
 		"too much output":   {`exec head -c 9000 /dev/zero > "$(eval echo \${$#})"`, ErrLimitExceeded, false},
@@ -98,7 +102,7 @@ func TestExtractAudioClassifiesFailures(t *testing.T) {
 		"segment 404":       {`echo "[http @ 0x1] HTTP error 404 Not Found" >&2; echo "[hls @ 0x2] Failed to open segment 1 of playlist 0" >&2; ` + writeOutput, ErrRefused, false},
 		"segment 503":       {`echo "[http @ 0x1] HTTP error 503 Service Unavailable" >&2; echo "[hls @ 0x2] Segment 1 of playlist 0 failed too many times, skipping" >&2; ` + writeOutput, ErrNetwork, true},
 		"segment timeout":   {`echo "[tcp @ 0x1] Connection timed out" >&2; echo "[hls @ 0x2] Failed to open segment 3 of playlist 0" >&2; ` + writeOutput, ErrNetwork, true},
-		"segment skipped":   {`echo "[hls @ 0x2] Failed to open segment 3 of playlist 0" >&2; ` + writeOutput, ErrIncomplete, true},
+		"segment skipped":   {`echo "[hls @ 0x2] Failed to open segment 3 of playlist 0" >&2; ` + writeOutput, ErrIncomplete, false},
 		"harmless warnings": {`echo "[mp3 @ 0x1] Estimating duration from bitrate" >&2; ` + writeOutput, nil, false},
 	}
 	for name, tc := range cases {
@@ -126,25 +130,27 @@ func TestExtractAudioClassifiesFailures(t *testing.T) {
 func TestExtractAudioChecksTheLengthOfTheResult(t *testing.T) {
 	bin := limitBinary(t)
 	probe := func(source, output string) string {
-		return `case "$(eval echo \${$#})" in *.mp3) echo ` + output + `;; *) echo ` + source + `;; esac`
+		return `case "$(eval echo \${$#})" in *.mp3) echo ` + output + `;; *) printf '` + source + `';; esac`
 	}
 	cases := map[string]struct {
 		source, output string
-		maxDuration    time.Duration
 		want           error
 	}{
-		"complete":                  {"600.0", "599.9", time.Hour, nil},
-		"short":                     {"600.0", "540.0", time.Hour, ErrIncomplete},
-		"longer than the cap":       {"7200.0", "3600.0", time.Hour, ErrLimitExceeded},
-		"unknown length within cap": {"N/A", "1200.0", time.Hour, nil},
-		"unknown length at the cap": {"N/A", "3600.0", time.Hour, ErrLimitExceeded},
-		"no output length":          {"600.0", "N/A", time.Hour, ErrNoAudio},
+		"audio stream complete":         {`600.0\n600.3\n`, "598.5", nil},
+		"audio stream short":            {`600.0\n600.3\n`, "597.0", ErrIncomplete},
+		"container length within slack": {`N/A\n600.0\n`, "594.5", nil},
+		"container length short":        {`N/A\n600.0\n`, "590.0", ErrIncomplete},
+		"format only":                   {`600.0\n`, "594.5", nil},
+		"no duration at all":            {``, "1200.0", nil},
+		"longer than the cap":           {`7200.0\n7200.0\n`, "3600.0", ErrLimitExceeded},
+		"unknown length at the cap":     {`N/A\nN/A\n`, "3600.0", ErrLimitExceeded},
+		"no output length":              {`600.0\n600.0\n`, "N/A", ErrNoAudio},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			tool := fakeTool(t, bin, writeOutput)
 			tool.FFprobe = script(t, probe(tc.source, tc.output))
-			tool.MaxDuration = tc.maxDuration
+			tool.MaxDuration = time.Hour
 			err := tool.ExtractAudio(t.Context(), fileURL, filepath.Join(t.TempDir(), "audio.mp3"))
 			if !errors.Is(err, tc.want) && (err != nil || tc.want != nil) {
 				t.Errorf("ExtractAudio = %v, want %v", err, tc.want)
@@ -183,8 +189,8 @@ func TestExtractAudioUnavailableTools(t *testing.T) {
 	bin := limitBinary(t)
 	cases := map[string]Tool{
 		"no limit binary":      {FFmpeg: "ffmpeg"},
-		"missing limit binary": {Limit: "/nonexistent/limit"},
-		"missing ffprobe":      {Limit: bin, FFprobe: "/nonexistent/ffprobe"},
+		"missing limit binary": {Limit: "/nonexistent/limit", Hosts: DefaultHosts.Media},
+		"missing ffprobe":      {Limit: bin, FFprobe: "/nonexistent/ffprobe", Hosts: DefaultHosts.Media},
 	}
 	for name, tool := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -302,7 +308,9 @@ func TestFailureKind(t *testing.T) {
 		ErrIncomplete:       KindIncomplete,
 		ErrNetwork:          KindTransient,
 		ErrBlocked:          KindTransient,
-		errors.New("other"): KindMalformed,
+		ErrUnrecognized:     KindTransient,
+		ErrInvalidURL:       KindInvalidURL,
+		errors.New("other"): KindTransient,
 	}
 	for err, want := range cases {
 		if got := FailureKind(err); got != want {

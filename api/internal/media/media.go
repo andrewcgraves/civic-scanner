@@ -23,9 +23,12 @@ var (
 	ErrRefused       = errors.New("media: media host refused the request")
 	ErrNetwork       = errors.New("media: network error reading media")
 	ErrIncomplete    = errors.New("media: audio is shorter than the recording")
+	ErrInvalidURL    = errors.New("media: recording url is not an http or https url")
+	ErrUnrecognized  = errors.New("media: unrecognised failure")
 )
 
 const (
+	KindInvalidURL  = "invalid_url"
 	KindUnsupported = "unsupported"
 	KindNoMedia     = "no_media"
 	KindNoAudio     = "no_audio"
@@ -40,6 +43,8 @@ const (
 func FailureKind(err error) string {
 	var fetchErr *fetch.Error
 	switch {
+	case errors.Is(err, ErrInvalidURL):
+		return KindInvalidURL
 	case errors.Is(err, ErrUnsupported), errors.Is(err, ErrForbiddenHost), errors.Is(err, ErrForbiddenAddress),
 		errors.Is(err, fetch.ErrInvalidURL):
 		return KindUnsupported
@@ -59,14 +64,16 @@ func FailureKind(err error) string {
 		return KindTransient
 	case errors.As(err, &fetchErr) && fetchErr.StatusCode >= 400:
 		return KindRefused
+	case errors.Is(err, ErrMalformed):
+		return KindMalformed
 	}
-	return KindMalformed
+	return KindTransient
 }
 
 const DefaultMinBytes = 40_000
 
 func IsRetryable(err error) bool {
-	return errors.Is(err, ErrNetwork) || errors.Is(err, ErrBlocked) || errors.Is(err, ErrIncomplete) || fetch.IsRetryable(err) ||
+	return errors.Is(err, ErrNetwork) || errors.Is(err, ErrBlocked) || errors.Is(err, ErrUnrecognized) || fetch.IsRetryable(err) ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 

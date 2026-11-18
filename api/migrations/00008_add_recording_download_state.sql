@@ -7,7 +7,7 @@ ALTER TABLE recordings
 
 ALTER TABLE recordings
     ADD CONSTRAINT recordings_download_failure_check
-    CHECK (download_failure IN ('unsupported', 'no_media', 'no_audio', 'malformed', 'refused', 'limit', 'unavailable', 'incomplete', 'transient'))
+    CHECK (download_failure IN ('invalid_url', 'unsupported', 'no_media', 'no_audio', 'malformed', 'refused', 'limit', 'unavailable', 'incomplete', 'transient'))
     NOT VALID;
 
 -- +goose Down

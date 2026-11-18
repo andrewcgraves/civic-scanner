@@ -43,7 +43,7 @@ type Source struct {
 func (r Resolver) Resolve(ctx context.Context, recordingURL string) (Source, error) {
 	u, err := url.Parse(recordingURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return Source{}, fmt.Errorf("%w: %q", ErrUnsupported, recordingURL)
+		return Source{}, fmt.Errorf("%w: %q", ErrInvalidURL, recordingURL)
 	}
 	host := u.Hostname()
 	switch {

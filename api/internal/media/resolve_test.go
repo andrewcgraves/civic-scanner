@@ -126,17 +126,17 @@ func TestResolveDirectMediaOnlyOnMediaHosts(t *testing.T) {
 	if err != nil || src != (Source{URL: videoURL, Via: ViaDirect}) {
 		t.Errorf("Resolve = %+v, %v", src, err)
 	}
-	cases := []string{
-		"https://media.example.test/meeting.mp4",
-		"https://archive-video.granicus.com/metrolink/index.html",
-		"ftp://archive-video.granicus.com/a.mp4",
-		"file:///etc/passwd",
-		"https:///a.mp4",
-		"::bad",
+	cases := map[string]error{
+		"https://media.example.test/meeting.mp4":                  ErrUnsupported,
+		"https://archive-video.granicus.com/metrolink/index.html": ErrUnsupported,
+		"ftp://archive-video.granicus.com/a.mp4":                  ErrInvalidURL,
+		"file:///etc/passwd":                                      ErrInvalidURL,
+		"https:///a.mp4":                                          ErrInvalidURL,
+		"::bad":                                                   ErrInvalidURL,
 	}
-	for _, u := range cases {
-		if _, err := resolver(fake).Resolve(t.Context(), u); !errors.Is(err, ErrUnsupported) {
-			t.Errorf("Resolve(%q) = %v, want ErrUnsupported", u, err)
+	for u, want := range cases {
+		if _, err := resolver(fake).Resolve(t.Context(), u); !errors.Is(err, want) {
+			t.Errorf("Resolve(%q) = %v, want %v", u, err, want)
 		}
 	}
 	if calls := fake.Calls(); len(calls) != 0 {

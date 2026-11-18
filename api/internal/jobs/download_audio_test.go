@@ -85,27 +85,37 @@ func TestConfigDefaultsToAnUnconfiguredBucket(t *testing.T) {
 
 func TestFailurePolicy(t *testing.T) {
 	now := time.Date(2026, 11, 18, 13, 5, 0, 0, time.UTC)
-	cases := map[string]struct {
-		permanent bool
-		wait      time.Duration
+	daily, weekly := 12*time.Hour, 156*time.Hour
+	recent := now.Add(-24 * time.Hour)
+	old := now.Add(-5 * 24 * time.Hour)
+	cases := []struct {
+		kind     string
+		meeting  time.Time
+		previous string
+		wait     time.Duration
 	}{
-		media.KindUnsupported: {true, 0},
-		media.KindNoMedia:     {true, 0},
-		media.KindNoAudio:     {true, 0},
-		media.KindMalformed:   {true, 0},
-		media.KindRefused:     {false, 156 * time.Hour},
-		media.KindLimit:       {false, 156 * time.Hour},
-		media.KindUnavailable: {false, 12 * time.Hour},
-		media.KindIncomplete:  {false, 12 * time.Hour},
-		media.KindTransient:   {false, 12 * time.Hour},
+		{media.KindInvalidURL, recent, "", 0},
+		{media.KindUnsupported, recent, "", weekly},
+		{media.KindMalformed, recent, "", weekly},
+		{media.KindNoAudio, recent, "", weekly},
+		{media.KindRefused, recent, "", weekly},
+		{media.KindLimit, recent, "", weekly},
+		{media.KindNoMedia, recent, "", daily},
+		{media.KindNoMedia, time.Time{}, "", daily},
+		{media.KindNoMedia, old, "", weekly},
+		{media.KindIncomplete, recent, "", daily},
+		{media.KindIncomplete, recent, media.KindTransient, daily},
+		{media.KindIncomplete, recent, media.KindIncomplete, weekly},
+		{media.KindUnavailable, recent, "", daily},
+		{media.KindTransient, recent, "", daily},
 	}
-	for kind, tc := range cases {
-		if got := PermanentFailure(kind); got != tc.permanent {
-			t.Errorf("PermanentFailure(%s) = %v", kind, got)
+	for _, tc := range cases {
+		if got := PermanentFailure(tc.kind); got != (tc.wait == 0) {
+			t.Errorf("PermanentFailure(%s) = %v", tc.kind, got)
 		}
-		at := retryAfter(kind, now)
-		if tc.permanent != (at == nil) || at != nil && at.Sub(now) != tc.wait {
-			t.Errorf("retryAfter(%s) = %v, want +%s", kind, at, tc.wait)
+		at := retryAfter(tc.kind, failureContext{now: now, meetingStart: tc.meeting, previous: tc.previous})
+		if (tc.wait == 0) != (at == nil) || at != nil && at.Sub(now) != tc.wait {
+			t.Errorf("retryAfter(%s, meeting %s, previous %q) = %v, want +%s", tc.kind, tc.meeting, tc.previous, at, tc.wait)
 		}
 	}
 
@@ -116,7 +126,7 @@ func TestFailurePolicy(t *testing.T) {
 	if _, wait := waiting(store.Recording{Download: store.DownloadState{Failure: media.KindRefused, RetryAfter: &now}}, later); wait {
 		t.Error("waiting after retry_after = true")
 	}
-	if _, wait := waiting(store.Recording{Download: store.DownloadState{Failure: media.KindNoMedia}}, later); !wait {
+	if _, wait := waiting(store.Recording{Download: store.DownloadState{Failure: media.KindInvalidURL}}, later); !wait {
 		t.Error("waiting after a permanent failure = false")
 	}
 	if _, wait := waiting(store.Recording{}, now); wait {

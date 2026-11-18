@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,17 +29,18 @@ const (
 	waitDelay           = 5 * time.Second
 	youtubeTimeout      = 2 * time.Minute
 	probeTimeout        = 2 * time.Minute
-	readTimeoutMicros   = "30000000"
-	protocolWhitelist   = "http,https,tls,tcp,hls,crypto,httpproxy"
+	readTimeoutHeadroom = 30 * time.Second
+	protocolWhitelist   = "http,tcp"
 	formatWhitelist     = "hls,mpegts,mov,mp4,m4a,3gp,3g2,mj2,mp3,aac,matroska,webm,ogg,wav,flv,webvtt"
 	defaultTimeout      = time.Hour
 	defaultMaxDuration  = 12 * time.Hour
 	defaultMaxMemory    = 1 << 30
 	defaultMaxBytes     = 256 << 20
-	probeRequestBudget  = 200
 	fileRequestBudget   = 2000
-	durationSlack       = 2 * time.Second
-	durationSlackRatio  = 0.001
+	exactSlack          = 2 * time.Second
+	exactSlackRatio     = 0.001
+	containerSlack      = 3 * time.Second
+	containerSlackRatio = 0.005
 )
 
 var statusPattern = regexp.MustCompile(`(?i)(?:http error|server returned) ([1-5][0-9][0-9]|[45]xx)`)
@@ -49,6 +51,7 @@ type Tool struct {
 	FFprobe     string
 	YTDLP       string
 	Timeout     time.Duration
+	IdleTimeout time.Duration
 	MaxDuration time.Duration
 	MaxMemory   int64
 	MaxBytes    int64
@@ -56,6 +59,11 @@ type Tool struct {
 	Hosts       []string
 	Guard       Guard
 	Env         []string
+}
+
+type expectation struct {
+	duration time.Duration
+	exact    bool
 }
 
 func NewTool(cfg config.Audio, userAgent string) Tool {
@@ -109,6 +117,9 @@ func (t Tool) withDefaults() Tool {
 	if t.Timeout <= 0 {
 		t.Timeout = defaultTimeout
 	}
+	if t.IdleTimeout <= 0 {
+		t.IdleTimeout = DefaultIdleTimeout
+	}
 	if t.MaxDuration <= 0 {
 		t.MaxDuration = defaultMaxDuration
 	}
@@ -121,24 +132,36 @@ func (t Tool) withDefaults() Tool {
 	return t
 }
 
-func (t Tool) networkArgs(proxy *Proxy, srcURL string) []string {
-	args := []string{
+func (t Tool) inputArgs() []string {
+	return []string{
 		"-protocol_whitelist", protocolWhitelist,
 		"-format_whitelist", formatWhitelist,
-		"-rw_timeout", readTimeoutMicros,
-		"-http_proxy", proxy.URL(),
+		"-rw_timeout", strconv.FormatInt((t.IdleTimeout + readTimeoutHeadroom).Microseconds(), 10),
 	}
-	if strings.HasPrefix(strings.ToLower(srcURL), "https:") {
-		args = append(args, "-tls_verify", "1")
-	}
-	if t.UserAgent != "" {
-		args = append(args, "-user_agent", t.UserAgent)
-	}
-	return args
 }
 
-func proxyEnv(proxy *Proxy) []string {
-	return []string{"http_proxy=" + proxy.URL(), "HTTP_PROXY=" + proxy.URL(), "https_proxy=", "HTTPS_PROXY=", "no_proxy=", "NO_PROXY="}
+func (t Tool) ffmpegArgs(input, dst string) []string {
+	args := append([]string{t.FFmpeg, "-nostdin", "-hide_banner", "-loglevel", "warning", "-y"}, t.inputArgs()...)
+	return append(args,
+		"-i", input,
+		"-map", "0:a:0", "-vn", "-sn", "-dn",
+		"-t", strconv.FormatFloat(t.MaxDuration.Seconds(), 'f', 0, 64),
+		"-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
+		"-f", "mp3", dst)
+}
+
+func noProxyEnv() []string {
+	return []string{"http_proxy=", "HTTP_PROXY=", "https_proxy=", "HTTPS_PROXY=", "all_proxy=", "ALL_PROXY=", "no_proxy=*", "NO_PROXY=*"}
+}
+
+func (t Tool) gateway(budget int64) (*Gateway, error) {
+	return StartGateway(GatewayConfig{
+		Hosts:       t.Hosts,
+		Guard:       t.Guard,
+		UserAgent:   t.UserAgent,
+		MaxRequests: budget,
+		IdleTimeout: t.IdleTimeout,
+	})
 }
 
 func (t Tool) ExtractAudio(ctx context.Context, srcURL, dst string) error {
@@ -155,29 +178,17 @@ func (t Tool) extract(ctx context.Context, srcURL, dst string) error {
 	if t.Limit == "" {
 		return fmt.Errorf("%w: no limit binary configured, set AUDIO_LIMIT_BINARY", ErrUnavailable)
 	}
-	expected, budget, err := t.expectedDuration(ctx, srcURL)
+	gw, input, expected, err := t.prepare(ctx, srcURL)
 	if err != nil {
 		return err
 	}
-	if expected > t.MaxDuration {
-		return fmt.Errorf("%w: recording lasts %s, longer than %s", ErrLimitExceeded, expected.Round(time.Second), t.MaxDuration)
+	defer gw.Close()
+	if expected.duration > t.MaxDuration {
+		return fmt.Errorf("%w: recording lasts %s, longer than %s", ErrLimitExceeded, expected.duration.Round(time.Second), t.MaxDuration)
 	}
-	proxy, err := StartProxy(t.Hosts, t.Guard, budget)
-	if err != nil {
-		return err
-	}
-	defer proxy.Close()
-
-	args := append([]string{t.FFmpeg, "-nostdin", "-hide_banner", "-loglevel", "warning", "-y"}, t.networkArgs(proxy, srcURL)...)
-	args = append(args,
-		"-i", srcURL,
-		"-map", "0:a:0", "-vn", "-sn", "-dn",
-		"-t", strconv.FormatFloat(t.MaxDuration.Seconds(), 'f', 0, 64),
-		"-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
-		"-f", "mp3", dst)
-	_, log, err := t.run(ctx, t.Timeout, 0, args, proxyEnv(proxy))
-	if perr := proxy.Err(); perr != nil {
-		return perr
+	_, log, err := t.run(ctx, t.Timeout, 0, t.ffmpegArgs(input, dst), noProxyEnv())
+	if gerr := gw.Err(); gerr != nil {
+		return gerr
 	}
 	if err != nil {
 		return err
@@ -192,44 +203,78 @@ func (t Tool) extract(ctx context.Context, srcURL, dst string) error {
 	return t.checkComplete(expected, got)
 }
 
-func (t Tool) checkComplete(expected, got time.Duration) error {
-	if expected <= 0 {
+func (t Tool) prepare(ctx context.Context, srcURL string) (*Gateway, string, expectation, error) {
+	if isHLS(srcURL) {
+		pages := PageFetcher{Hosts: t.Hosts, Guard: t.Guard, UserAgent: t.UserAgent}
+		playlist, err := InspectPlaylist(ctx, pages, t.Hosts, t.Guard, srcURL)
+		if err != nil {
+			return nil, "", expectation{}, err
+		}
+		gw, err := t.gateway(int64(2*playlist.Entries + 2*playlist.Playlists + 20))
+		if err != nil {
+			return nil, "", expectation{}, err
+		}
+		return gw, playlist.Serve(gw), expectation{duration: playlist.AudioDuration}, nil
+	}
+	u, err := url.Parse(srcURL)
+	if err != nil {
+		return nil, "", expectation{}, fmt.Errorf("%w: %q", ErrInvalidURL, srcURL)
+	}
+	if err := t.Guard.checkURL(u, t.Hosts); err != nil {
+		return nil, "", expectation{}, err
+	}
+	gw, err := t.gateway(fileRequestBudget)
+	if err != nil {
+		return nil, "", expectation{}, err
+	}
+	input := gw.Register(srcURL)
+	expected, err := t.probe(ctx, gw, input)
+	if err != nil {
+		gw.Close()
+		return nil, "", expectation{}, err
+	}
+	return gw, input, expected, nil
+}
+
+func (t Tool) probe(ctx context.Context, gw *Gateway, input string) (expectation, error) {
+	args := append([]string{t.FFprobe, "-v", "error"}, t.inputArgs()...)
+	args = append(args, "-select_streams", "a:0", "-show_entries", "stream=duration:format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1", "--", input)
+	out, _, err := t.run(ctx, min(t.Timeout, probeTimeout), maxProbeOutputBytes, args, noProxyEnv())
+	if gerr := gw.Err(); gerr != nil {
+		return expectation{}, gerr
+	}
+	if err != nil {
+		return expectation{}, fmt.Errorf("probe media: %w", err)
+	}
+	lines := strings.Fields(out)
+	switch len(lines) {
+	case 0:
+		return expectation{}, nil
+	case 1:
+		return expectation{duration: parseSeconds(lines[0])}, nil
+	}
+	if d := parseSeconds(lines[0]); d > 0 {
+		return expectation{duration: d, exact: true}, nil
+	}
+	return expectation{duration: parseSeconds(lines[len(lines)-1])}, nil
+}
+
+func (t Tool) checkComplete(expected expectation, got time.Duration) error {
+	if expected.duration <= 0 {
 		if got >= t.MaxDuration-time.Second {
 			return fmt.Errorf("%w: audio of unknown length reached the %s cap", ErrLimitExceeded, t.MaxDuration)
 		}
 		return nil
 	}
-	slack := durationSlack + time.Duration(float64(expected)*durationSlackRatio)
-	if got+slack < expected {
-		return fmt.Errorf("%w: %s of audio from a %s recording", ErrIncomplete, got.Round(time.Second), expected.Round(time.Second))
+	slack := containerSlack + time.Duration(float64(expected.duration)*containerSlackRatio)
+	if expected.exact {
+		slack = exactSlack + time.Duration(float64(expected.duration)*exactSlackRatio)
+	}
+	if got+slack < expected.duration {
+		return fmt.Errorf("%w: %s of audio from a %s recording", ErrIncomplete, got.Round(time.Second), expected.duration.Round(time.Second))
 	}
 	return nil
-}
-
-func (t Tool) expectedDuration(ctx context.Context, srcURL string) (time.Duration, int64, error) {
-	if isHLS(srcURL) {
-		pages := PageFetcher{Hosts: t.Hosts, Guard: t.Guard, UserAgent: t.UserAgent}
-		playlist, err := InspectPlaylist(ctx, pages, t.Hosts, srcURL)
-		if err != nil {
-			return 0, 0, err
-		}
-		return playlist.Duration, int64(2*playlist.Entries + 2*playlist.Playlists + 20), nil
-	}
-	proxy, err := StartProxy(t.Hosts, t.Guard, probeRequestBudget)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer proxy.Close()
-	args := append([]string{t.FFprobe, "-v", "error"}, t.networkArgs(proxy, srcURL)...)
-	args = append(args, "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "--", srcURL)
-	out, _, err := t.run(ctx, min(t.Timeout, probeTimeout), maxProbeOutputBytes, args, proxyEnv(proxy))
-	if perr := proxy.Err(); perr != nil {
-		return 0, 0, perr
-	}
-	if err != nil {
-		return 0, 0, fmt.Errorf("probe media: %w", err)
-	}
-	return parseSeconds(out), fileRequestBudget, nil
 }
 
 func (t Tool) localDuration(ctx context.Context, path string) (time.Duration, error) {
@@ -351,8 +396,10 @@ func classify(detail string) error {
 	case has("matches no streams", "does not contain any stream", "output file is empty", "requested format is not available",
 		"video unavailable", "private video", "no video formats", "this live event"):
 		return ErrNoAudio
+	case has("invalid data found when processing input", "moov atom not found", "could not find codec parameters"):
+		return ErrMalformed
 	}
-	return ErrMalformed
+	return ErrUnrecognized
 }
 
 type stderrLog struct {

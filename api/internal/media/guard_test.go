@@ -56,7 +56,7 @@ func localhostURL(srv *httptest.Server) string {
 func TestPageFetcherRefusesPrivateAddressesByDefault(t *testing.T) {
 	hit := false
 	srv := pageServer(t, func(http.ResponseWriter, *http.Request) { hit = true })
-	_, err := PageFetcher{Hosts: []string{"localhost", "127.0.0.1"}}.Fetch(t.Context(), fetch.Request{URL: srv.URL + "/MediaPlayer.php"})
+	_, err := PageFetcher{Hosts: []string{"localhost", "127.0.0.1"}, Guard: Guard{AllowPort: loopbackGuard.AllowPort}}.Fetch(t.Context(), fetch.Request{URL: srv.URL + "/MediaPlayer.php"})
 	if !errors.Is(err, ErrForbiddenAddress) || fetch.IsRetryable(err) {
 		t.Errorf("Fetch = %v, want a permanent ErrForbiddenAddress", err)
 	}
@@ -141,62 +141,33 @@ func TestPageFetcherClassifiesStatusesAndSize(t *testing.T) {
 	}
 }
 
-func TestProxyRefusesWhatItMustNotForward(t *testing.T) {
-	srv := pageServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("segment")) })
-	proxy, err := StartProxy([]string{"localhost"}, loopbackGuard, 3)
-	if err != nil {
-		t.Fatal(err)
+func TestGuardChecksSchemeHostAndPort(t *testing.T) {
+	hosts := []string{"archive-video.granicus.com"}
+	cases := map[string]bool{
+		"https://archive-video.granicus.com/a.mp4":      true,
+		"https://archive-video.granicus.com:443/a.mp4":  true,
+		"http://archive-video.granicus.com/a.mp4":       true,
+		"http://archive-video.granicus.com:80/a.mp4":    true,
+		"https://archive-video.granicus.com:8443/a.mp4": false,
+		"http://archive-video.granicus.com:443/a.mp4":   false,
+		"https://archive-video.granicus.com:80/a.mp4":   false,
+		"https://evil.test/a.mp4":                       false,
+		"httpproxy://archive-video.granicus.com/a.mp4":  false,
+		"tcp://archive-video.granicus.com:443":          false,
+		"file:///etc/hosts":                             false,
 	}
-	defer proxy.Close()
-	client := &http.Client{Transport: &http.Transport{Proxy: func(*http.Request) (*url.URL, error) { return url.Parse(proxy.URL()) }}}
-
-	get := func(target string) int {
-		resp, err := client.Get(target)
+	for raw, want := range cases {
+		u, err := url.Parse(raw)
 		if err != nil {
-			return 0
+			t.Fatal(err)
 		}
-		_ = resp.Body.Close()
-		return resp.StatusCode
+		if err := (Guard{}).checkURL(u, hosts); (err == nil) != want {
+			t.Errorf("checkURL(%s) = %v, want allowed %v", raw, err, want)
+		}
 	}
-	if code := get(localhostURL(srv) + "/seg0.ts"); code != http.StatusOK {
-		t.Errorf("allowed host = %d", code)
-	}
-	if code := get(srv.URL + "/seg0.ts"); code != http.StatusForbidden {
-		t.Errorf("host off the list = %d, want 403", code)
-	}
-	if err := proxy.Err(); !errors.Is(err, ErrForbiddenHost) {
-		t.Errorf("Err = %v, want ErrForbiddenHost", err)
-	}
-	_ = get(localhostURL(srv) + "/seg1.ts")
-	if code := get(localhostURL(srv) + "/seg2.ts"); code != http.StatusForbidden {
-		t.Errorf("request past the cap = %d, want 403", code)
-	}
-	if proxy.Requests() != 4 {
-		t.Errorf("Requests = %d", proxy.Requests())
-	}
-
-	flood, err := StartProxy([]string{"localhost"}, loopbackGuard, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer flood.Close()
-	client.Transport = &http.Transport{Proxy: func(*http.Request) (*url.URL, error) { return url.Parse(flood.URL()) }}
-	_ = get(localhostURL(srv) + "/a")
-	_ = get(localhostURL(srv) + "/b")
-	if err := flood.Err(); !errors.Is(err, ErrLimitExceeded) {
-		t.Errorf("Err after the cap = %v, want ErrLimitExceeded", err)
-	}
-
-	guarded, err := StartProxy([]string{"localhost"}, Guard{}, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer guarded.Close()
-	client.Transport = &http.Transport{Proxy: func(*http.Request) (*url.URL, error) { return url.Parse(guarded.URL()) }}
-	if code := get(localhostURL(srv) + "/a"); code != http.StatusForbidden {
-		t.Errorf("private address = %d, want 403", code)
-	}
-	if err := guarded.Err(); !errors.Is(err, ErrForbiddenHost) || !strings.Contains(err.Error(), "not a public internet address") {
-		t.Errorf("Err = %v", err)
+	custom := Guard{AllowPort: func(scheme, port string) bool { return scheme == "http" && port == "8080" }}
+	u, _ := url.Parse("http://archive-video.granicus.com:8080/a.mp4")
+	if err := custom.checkURL(u, hosts); err != nil {
+		t.Errorf("injected port rule = %v", err)
 	}
 }

@@ -2,6 +2,8 @@ package media
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -24,28 +26,50 @@ const (
 
 var (
 	ErrForbiddenAddress = errors.New("media: address is not a public internet address")
-	ErrForbiddenHost    = errors.New("media: host is not an allowed recording host")
-	sharedAddressSpace  = netip.MustParsePrefix("100.64.0.0/10")
-	thisNetwork         = netip.MustParsePrefix("0.0.0.0/8")
+	ErrForbiddenHost    = errors.New("media: host or port is not an allowed recording host")
+	nonPublicPrefixes   = []netip.Prefix{
+		netip.MustParsePrefix("0.0.0.0/8"),
+		netip.MustParsePrefix("100.64.0.0/10"),
+		netip.MustParsePrefix("198.18.0.0/15"),
+		netip.MustParsePrefix("240.0.0.0/4"),
+		netip.MustParsePrefix("::/96"),
+		netip.MustParsePrefix("64:ff9b::/96"),
+		netip.MustParsePrefix("64:ff9b:1::/48"),
+		netip.MustParsePrefix("2002::/16"),
+	}
 )
 
 func PublicAddress(addr netip.Addr) bool {
 	addr = addr.Unmap()
-	return addr.IsValid() && !addr.IsLoopback() && !addr.IsPrivate() && !addr.IsLinkLocalUnicast() &&
-		!addr.IsLinkLocalMulticast() && !addr.IsInterfaceLocalMulticast() && !addr.IsMulticast() &&
-		!addr.IsUnspecified() && !sharedAddressSpace.Contains(addr) && !thisNetwork.Contains(addr)
+	if !addr.IsValid() || addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
+		addr.IsLinkLocalMulticast() || addr.IsInterfaceLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
+		return false
+	}
+	for _, prefix := range nonPublicPrefixes {
+		if prefix.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }
 
 type Guard struct {
 	AllowAddress func(netip.Addr) bool
-	AllowPort    func(port string) bool
+	AllowPort    func(scheme, port string) bool
+	RootCAs      *x509.CertPool
 }
 
-func (g Guard) portAllowed(port string) bool {
+func (g Guard) portAllowed(scheme, port string) bool {
 	if g.AllowPort != nil {
-		return g.AllowPort(port)
+		return g.AllowPort(scheme, port)
 	}
-	return port == "443"
+	switch scheme {
+	case "https":
+		return port == "" || port == "443"
+	case "http":
+		return port == "" || port == "80"
+	}
+	return false
 }
 
 func (g Guard) allowed(addr netip.Addr) bool {
@@ -75,10 +99,44 @@ func (g Guard) Transport() *http.Transport {
 	return &http.Transport{
 		Proxy:                 nil,
 		DialContext:           g.Dialer().DialContext,
+		TLSClientConfig:       &tls.Config{RootCAs: g.RootCAs, MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout:   dialTimeout,
 		ResponseHeaderTimeout: defaultPageTimeout,
+		DisableCompression:    true,
 		MaxIdleConns:          4,
 		IdleConnTimeout:       30 * time.Second,
+	}
+}
+
+func (g Guard) checkURL(u *url.URL, hosts []string) error {
+	if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("%w: %q", ErrForbiddenHost, u.String())
+	}
+	if !matchHost(hosts, u.Hostname()) {
+		return fmt.Errorf("%w: %s", ErrForbiddenHost, u.Hostname())
+	}
+	if !g.portAllowed(u.Scheme, u.Port()) {
+		return fmt.Errorf("%w: port %s for %s", ErrForbiddenHost, u.Port(), u.Scheme)
+	}
+	return nil
+}
+
+func (g Guard) client(hosts []string, userAgent string, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: g.Transport(),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) > maxRedirects {
+				return fetch.ErrTooManyRedirects
+			}
+			if err := g.checkURL(req.URL, hosts); err != nil {
+				return err
+			}
+			if userAgent != "" {
+				req.Header.Set("User-Agent", userAgent)
+			}
+			return nil
+		},
 	}
 }
 
@@ -89,45 +147,12 @@ type PageFetcher struct {
 	Timeout   time.Duration
 }
 
-func (p PageFetcher) client() *http.Client {
-	timeout := p.Timeout
-	if timeout <= 0 {
-		timeout = defaultPageTimeout
-	}
-	return &http.Client{
-		Timeout:   timeout,
-		Transport: p.Guard.Transport(),
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) > maxRedirects {
-				return fetch.ErrTooManyRedirects
-			}
-			if err := checkURL(req.URL, p.Hosts); err != nil {
-				return err
-			}
-			if p.UserAgent != "" {
-				req.Header.Set("User-Agent", p.UserAgent)
-			}
-			return nil
-		},
-	}
-}
-
-func checkURL(u *url.URL, hosts []string) error {
-	if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("%w: %q", ErrForbiddenHost, u.String())
-	}
-	if !matchHost(hosts, u.Hostname()) {
-		return fmt.Errorf("%w: %s", ErrForbiddenHost, u.Hostname())
-	}
-	return nil
-}
-
 func (p PageFetcher) Fetch(ctx context.Context, req fetch.Request) (fetch.Response, error) {
 	target, err := url.Parse(req.URL)
 	if err != nil {
 		return fetch.Response{}, &fetch.Error{Err: fmt.Errorf("%w: %q", fetch.ErrInvalidURL, req.URL)}
 	}
-	if err := checkURL(target, p.Hosts); err != nil {
+	if err := p.Guard.checkURL(target, p.Hosts); err != nil {
 		return fetch.Response{}, &fetch.Error{Err: err}
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
@@ -137,7 +162,11 @@ func (p PageFetcher) Fetch(ctx context.Context, req fetch.Request) (fetch.Respon
 	if p.UserAgent != "" {
 		httpReq.Header.Set("User-Agent", p.UserAgent)
 	}
-	resp, err := p.client().Do(httpReq)
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = defaultPageTimeout
+	}
+	resp, err := p.Guard.client(p.Hosts, p.UserAgent, timeout).Do(httpReq)
 	if err != nil {
 		return fetch.Response{}, &fetch.Error{Retryable: retryableTransport(err), Err: err}
 	}

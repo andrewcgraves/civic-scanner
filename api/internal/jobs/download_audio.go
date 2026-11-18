@@ -34,6 +34,7 @@ const (
 	audioKeyFileExtension = ".mp3"
 	dailyRetry            = 12 * time.Hour
 	weeklyRetry           = 6*24*time.Hour + 12*time.Hour
+	noMediaDailyFor       = 3 * 24 * time.Hour
 	failureWriteTimeout   = 10 * time.Second
 )
 
@@ -57,24 +58,36 @@ func AudioKey(recordingID uuid.UUID) string {
 }
 
 func PermanentFailure(kind string) bool {
-	switch kind {
-	case media.KindUnsupported, media.KindNoMedia, media.KindNoAudio, media.KindMalformed:
-		return true
-	}
-	return false
+	return kind == media.KindInvalidURL
 }
 
-func retryAfter(kind string, now time.Time) *time.Time {
+type failureContext struct {
+	now          time.Time
+	meetingStart time.Time
+	previous     string
+}
+
+func retryAfter(kind string, c failureContext) *time.Time {
 	var wait time.Duration
-	switch {
-	case PermanentFailure(kind):
+	switch kind {
+	case media.KindInvalidURL:
 		return nil
-	case kind == media.KindRefused || kind == media.KindLimit:
-		wait = weeklyRetry
-	default:
+	case media.KindUnavailable, media.KindTransient:
 		wait = dailyRetry
+	case media.KindNoMedia:
+		wait = weeklyRetry
+		if c.meetingStart.IsZero() || c.now.Sub(c.meetingStart) < noMediaDailyFor {
+			wait = dailyRetry
+		}
+	case media.KindIncomplete:
+		wait = dailyRetry
+		if c.previous == media.KindIncomplete {
+			wait = weeklyRetry
+		}
+	default:
+		wait = weeklyRetry
 	}
-	at := now.Add(wait)
+	at := c.now.Add(wait)
 	return &at
 }
 
@@ -290,9 +303,13 @@ func (w *DownloadAudioWorker) failed(ctx context.Context, logger *slog.Logger, j
 	if retryable && job.Attempt < job.MaxAttempts {
 		return err
 	}
-	failure := store.DownloadFailure{Kind: kind, RetryAfter: retryAfter(kind, w.clock.Now())}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureWriteTimeout)
 	defer cancel()
+	fc := failureContext{now: w.clock.Now(), previous: rec.Download.Failure}
+	if meeting, merr := w.store.GetMeeting(writeCtx, rec.MeetingID); merr == nil {
+		fc.meetingStart = meeting.StartsAt
+	}
+	failure := store.DownloadFailure{Kind: kind, RetryAfter: retryAfter(kind, fc)}
 	if _, recErr := w.store.RecordDownloadFailure(writeCtx, rec.ID, failure); recErr != nil {
 		logger.WarnContext(ctx, "download failure not recorded", "error", recErr)
 	}

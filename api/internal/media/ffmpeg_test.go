@@ -1,11 +1,14 @@
 package media
 
 import (
-	"encoding/pem"
+	"bytes"
+	"crypto/x509"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +24,7 @@ import (
 
 var loopbackGuard = Guard{
 	AllowAddress: func(netip.Addr) bool { return true },
-	AllowPort:    func(string) bool { return true },
+	AllowPort:    func(string, string) bool { return true },
 }
 
 func requireFFmpeg(t *testing.T) {
@@ -69,6 +72,7 @@ func mediaDir(t *testing.T) string {
 	}
 	writeFile(t, filepath.Join(dir, "inflated.m3u8"), inflated)
 	writeFile(t, filepath.Join(dir, "live.m3u8"), strings.Replace(string(playlist), "#EXT-X-ENDLIST", "", 1))
+	writeFile(t, filepath.Join(dir, "swap.m3u8"), string(playlist))
 	writeFile(t, filepath.Join(dir, "master.m3u8"), "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nplaylist.m3u8\n")
 	writeFile(t, filepath.Join(dir, "self.m3u8"), "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nself.m3u8\n")
 	writeFile(t, filepath.Join(dir, "nested.m3u8"), "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100000\nmaster.m3u8\n")
@@ -81,6 +85,8 @@ type mediaServer struct {
 	agents   []string
 	failSeg  map[string]int
 	requests atomic.Int64
+
+	swapRequests atomic.Int64
 }
 
 func newMediaServer(t *testing.T, dir string) *mediaServer {
@@ -96,6 +102,12 @@ func newMediaServer(t *testing.T, dir string) *mediaServer {
 		switch {
 		case status != 0:
 			http.Error(w, "nope", status)
+		case r.URL.Path == "/swap.m3u8":
+			if s.swapRequests.Add(1) == 1 {
+				files.ServeHTTP(w, r)
+				return
+			}
+			_, _ = w.Write([]byte("#EXTM3U\n#EXTINF:4.0,\nhttpproxy://127.0.0.1:1/seg.ts\n#EXT-X-ENDLIST\n"))
 		case r.URL.Path == "/redirect.mp4":
 			http.Redirect(w, r, r.URL.Query().Get("to"), http.StatusFound) //nolint:gosec
 		default:
@@ -237,10 +249,80 @@ func TestExtractAudioRefusesMissingAndFailingSegments(t *testing.T) {
 	}
 }
 
+type tcpTrap struct {
+	listener net.Listener
+	accepted atomic.Int64
+}
+
+func newTrap(t *testing.T) *tcpTrap {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	trap := &tcpTrap{listener: ln}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			trap.accepted.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	return trap
+}
+
+func (tr *tcpTrap) addr() string { return tr.listener.Addr().String() }
+
+func hostileURIs(addr string) map[string]string {
+	return map[string]string{
+		"httpproxy": "httpproxy://" + addr + "/seg.ts",
+		"https":     "https://" + addr + "/seg.ts",
+		"tcp":       "tcp://" + addr,
+		"tls":       "tls://" + addr,
+		"crypto":    "crypto+http://" + addr + "/seg.ts",
+		"concat":    "concat:http://" + addr + "/a.ts|http://" + addr + "/b.ts",
+		"subfile":   "subfile,,start,0,end,0,,:http://" + addr + "/seg.ts",
+		"data":      "data:video/mp2t;base64,R0dHRw==",
+		"file":      "file:/etc/hosts",
+		"udp":       "udp://" + addr,
+	}
+}
+
+func TestFFmpegCannotReachTheNetworkExceptThroughTheGateway(t *testing.T) {
+	requireFFmpeg(t)
+	trap := newTrap(t)
+	tool := realTool(t).withDefaults()
+	for name, uri := range hostileURIs(trap.addr()) {
+		t.Run(name, func(t *testing.T) {
+			gw := startGateway(t, GatewayConfig{Hosts: tool.Hosts, Guard: loopbackGuard, MaxRequests: 50})
+			playlists := map[string]string{
+				"segment": "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n" + uri + "\n#EXT-X-ENDLIST\n",
+				"variant": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n" + uri + "\n",
+				"key":     "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + uri + "\"\n#EXTINF:4.0,\n" + gw.Serve([]byte("x"), "seg.ts") + "\n#EXT-X-ENDLIST\n",
+			}
+			for kind, body := range playlists {
+				dst := filepath.Join(t.TempDir(), "audio.mp3")
+				_, _, _ = tool.run(t.Context(), 30*time.Second, 0, tool.ffmpegArgs(gw.Serve([]byte(body), "playlist.m3u8"), dst), noProxyEnv())
+				if _, err := CheckMP3(dst, 1); err == nil && name != "data" {
+					t.Errorf("%s %s: ffmpeg produced audio", name, kind)
+				}
+			}
+			if n := trap.accepted.Load(); n != 0 {
+				t.Errorf("%s: ffmpeg opened %d connections outside the gateway", name, n)
+			}
+		})
+	}
+}
+
 func TestExtractAudioStaysOnAllowedHosts(t *testing.T) {
 	requireFFmpeg(t)
 	dir := mediaDir(t)
 	srv := newMediaServer(t, dir)
+	trap := newTrap(t)
 	tool := realTool(t)
 
 	t.Run("redirect to another host", func(t *testing.T) {
@@ -255,6 +337,15 @@ func TestExtractAudioStaysOnAllowedHosts(t *testing.T) {
 		}
 	})
 
+	for name, uri := range hostileURIs(trap.addr()) {
+		t.Run("redirect to "+name, func(t *testing.T) {
+			err := tool.ExtractAudio(t.Context(), srv.localhost()+"/redirect.mp4?to="+url.QueryEscape(uri), filepath.Join(t.TempDir(), "a.mp3"))
+			if !errors.Is(err, ErrForbiddenHost) {
+				t.Errorf("ExtractAudio = %v, want ErrForbiddenHost", err)
+			}
+		})
+	}
+
 	t.Run("segment on another host", func(t *testing.T) {
 		writeFile(t, filepath.Join(dir, "foreign.m3u8"),
 			"#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n"+srv.URL+"/seg0.ts\n#EXT-X-ENDLIST\n")
@@ -268,10 +359,30 @@ func TestExtractAudioStaysOnAllowedHosts(t *testing.T) {
 		}
 	})
 
+	t.Run("segment that is a playlist", func(t *testing.T) {
+		writeFile(t, filepath.Join(dir, "nested.ts"), "#EXTM3U\n#EXTINF:4.0,\nhttp://"+trap.addr()+"/seg.ts\n#EXT-X-ENDLIST\n")
+		writeFile(t, filepath.Join(dir, "smuggle.m3u8"), "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nnested.ts\n#EXT-X-ENDLIST\n")
+		err := tool.ExtractAudio(t.Context(), srv.localhost()+"/smuggle.m3u8", filepath.Join(t.TempDir(), "a.mp3"))
+		if !errors.Is(err, ErrForbiddenHost) {
+			t.Errorf("ExtractAudio = %v, want ErrForbiddenHost", err)
+		}
+	})
+
+	t.Run("playlist swapped after inspection", func(t *testing.T) {
+		before := srv.swapRequests.Load()
+		dst := filepath.Join(t.TempDir(), "a.mp3")
+		if err := tool.ExtractAudio(t.Context(), srv.localhost()+"/swap.m3u8", dst); err != nil {
+			t.Fatalf("ExtractAudio = %v", err)
+		}
+		if n := srv.swapRequests.Load() - before; n != 1 {
+			t.Errorf("the origin playlist was fetched %d times, want once", n)
+		}
+	})
+
 	t.Run("allowed name on a private address", func(t *testing.T) {
 		public := tool
 		public.Hosts = []string{"localhost", "127.0.0.1"}
-		public.Guard = Guard{}
+		public.Guard = Guard{AllowPort: loopbackGuard.AllowPort}
 		before := srv.requests.Load()
 		for _, name := range []string{"meeting.mp4", "playlist.m3u8"} {
 			err := public.ExtractAudio(t.Context(), srv.localhost()+"/"+name, filepath.Join(t.TempDir(), "a.mp3"))
@@ -284,23 +395,88 @@ func TestExtractAudioStaysOnAllowedHosts(t *testing.T) {
 		}
 	})
 
-	t.Run("https through the tunnel", func(t *testing.T) {
-		tlsSrv := httptest.NewTLSServer(http.FileServer(http.Dir(dir)))
-		defer tlsSrv.Close()
-		caFile := filepath.Join(t.TempDir(), "ca.pem")
-		writeFile(t, caFile, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: tlsSrv.Certificate().Raw})))
-		tunnel := tool
-		tunnel.Hosts = []string{"127.0.0.1"}
-		tunnel.Env = []string{"SSL_CERT_FILE=" + caFile}
-		dst := filepath.Join(t.TempDir(), "a.mp3")
-		if err := tunnel.ExtractAudio(t.Context(), tlsSrv.URL+"/meeting.mp4", dst); err != nil {
-			t.Fatalf("ExtractAudio over https: %v", err)
-		}
-		tunnel.Hosts = []string{"localhost"}
-		if err := tunnel.ExtractAudio(t.Context(), tlsSrv.URL+"/meeting.mp4", dst); !errors.Is(err, ErrForbiddenHost) {
-			t.Errorf("ExtractAudio to a host off the list over https = %v, want ErrForbiddenHost", err)
+	t.Run("port off the default", func(t *testing.T) {
+		strict := tool
+		strict.Guard = Guard{AllowAddress: loopbackGuard.AllowAddress}
+		err := strict.ExtractAudio(t.Context(), srv.localhost()+"/meeting.mp4", filepath.Join(t.TempDir(), "a.mp3"))
+		if !errors.Is(err, ErrForbiddenHost) {
+			t.Errorf("ExtractAudio = %v, want ErrForbiddenHost", err)
 		}
 	})
+
+	if n := trap.accepted.Load(); n != 0 {
+		t.Errorf("%d connections reached the trap", n)
+	}
+}
+
+func TestExtractAudioOverHTTPSVerifiesCertificatesInGo(t *testing.T) {
+	requireFFmpeg(t)
+	dir := mediaDir(t)
+	tlsSrv := httptest.NewTLSServer(http.FileServer(http.Dir(dir)))
+	defer tlsSrv.Close()
+	pool := x509.NewCertPool()
+	pool.AddCert(tlsSrv.Certificate())
+	tool := realTool(t)
+	tool.Hosts = []string{"127.0.0.1"}
+	tool.Guard.RootCAs = pool
+	for _, name := range []string{"meeting.mp4", "playlist.m3u8"} {
+		dst := filepath.Join(t.TempDir(), "a.mp3")
+		if err := tool.ExtractAudio(t.Context(), tlsSrv.URL+"/"+name, dst); err != nil {
+			t.Errorf("%s over https: %v", name, err)
+		}
+	}
+
+	untrusted := realTool(t)
+	untrusted.Hosts = []string{"127.0.0.1"}
+	err := untrusted.ExtractAudio(t.Context(), tlsSrv.URL+"/meeting.mp4", filepath.Join(t.TempDir(), "a.mp3"))
+	if err == nil || FailureKind(err) != KindTransient {
+		t.Errorf("untrusted certificate = %v (kind %s), want a transient failure", err, FailureKind(err))
+	}
+	err = untrusted.ExtractAudio(t.Context(), tlsSrv.URL+"/playlist.m3u8", filepath.Join(t.TempDir(), "a.mp3"))
+	if err == nil || FailureKind(err) != KindTransient {
+		t.Errorf("untrusted certificate for a playlist = %v (kind %s), want a transient failure", err, FailureKind(err))
+	}
+}
+
+type slowWriter struct{ http.ResponseWriter }
+
+func (s slowWriter) Write(p []byte) (int, error) {
+	written := 0
+	for len(p) > 0 {
+		n := min(len(p), 16<<10)
+		time.Sleep(60 * time.Millisecond)
+		m, err := s.ResponseWriter.Write(p[:n])
+		written += m
+		if err != nil {
+			return written, err
+		}
+		s.ResponseWriter.(http.Flusher).Flush()
+		p = p[n:]
+	}
+	return written, nil
+}
+
+func TestGatewayStreamsALongTransferToFFmpeg(t *testing.T) {
+	requireFFmpeg(t)
+	dir := mediaDir(t)
+	data, err := os.ReadFile(filepath.Join(dir, "meeting.mp4")) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(slowWriter{w}, r, "meeting.mp4", time.Time{}, bytes.NewReader(data))
+	}))
+	defer srv.Close()
+	tool := realTool(t)
+	tool.IdleTimeout = 300 * time.Millisecond
+	dst := filepath.Join(t.TempDir(), "a.mp3")
+	start := time.Now()
+	if err := tool.ExtractAudio(t.Context(), strings.Replace(srv.URL, "127.0.0.1", "localhost", 1)+"/meeting.mp4", dst); err != nil {
+		t.Fatalf("ExtractAudio = %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 600*time.Millisecond {
+		t.Errorf("transfer took %s, want longer than the idle timeout", elapsed)
+	}
 }
 
 func TestDownloaderResolvesAPlayerPageAndStoresOnlyAudio(t *testing.T) {

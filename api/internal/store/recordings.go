@@ -51,7 +51,7 @@ type Recording struct {
 }
 
 var downloadFailureKinds = map[string]bool{
-	"unsupported": true, "no_media": true, "no_audio": true, "malformed": true, "refused": true,
+	"invalid_url": true, "unsupported": true, "no_media": true, "no_audio": true, "malformed": true, "refused": true,
 	"limit": true, "unavailable": true, "incomplete": true, "transient": true,
 }
 

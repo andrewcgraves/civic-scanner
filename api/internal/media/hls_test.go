@@ -38,14 +38,49 @@ func mediaPlaylist(segments int, extra string) string {
 func TestInspectPlaylistReadsAWowzaStyleMasterAndChunklist(t *testing.T) {
 	fake := playlists(map[string]string{
 		hlsBase + "playlist.m3u8":     wowzaMaster,
-		hlsBase + "chunklist_w1.m3u8": mediaPlaylist(3, "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n"),
+		hlsBase + "chunklist_w1.m3u8": mediaPlaylist(3, "#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-KEY:METHOD=NONE\n#EXT-X-SESSION-DATA:DATA-ID=\"x\",URI=\"https://evil.test/x.json\"\n"),
 	})
-	got, err := InspectPlaylist(t.Context(), fake, DefaultHosts.Media, hlsBase+"playlist.m3u8")
+	got, err := InspectPlaylist(t.Context(), fake, DefaultHosts.Media, Guard{}, hlsBase+"playlist.m3u8")
 	if err != nil {
 		t.Fatalf("InspectPlaylist: %v", err)
 	}
-	if got != (Playlist{Duration: 30 * time.Second, Entries: 4, Playlists: 2}) {
+	if got.Duration != 30*time.Second || got.AudioDuration != 30*time.Second || got.Entries != 4 || got.Playlists != 2 {
 		t.Errorf("InspectPlaylist = %+v", got)
+	}
+
+	gw := startGateway(t, GatewayConfig{Hosts: DefaultHosts.Media})
+	local := got.Serve(gw)
+	if !strings.HasSuffix(local, "/playlist.m3u8") {
+		t.Errorf("served top playlist = %s", local)
+	}
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	var served, upstream []string
+	for _, r := range gw.routes {
+		if r.body != nil {
+			served = append(served, string(r.body))
+		} else {
+			upstream = append(upstream, r.upstream)
+		}
+	}
+	if len(served) != 2 || len(upstream) != 4 || upstream[0] != hlsBase+"init.mp4" || upstream[1] != hlsBase+"media_w1_0.ts" {
+		t.Fatalf("routes: served %d playlists, upstream %v", len(served), upstream)
+	}
+	for _, body := range served {
+		for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
+			if strings.Contains(line, "://") && !strings.Contains(line, "http://127.0.0.1:") {
+				t.Errorf("served playlist line %q does not go through the gateway", line)
+			}
+		}
+		if strings.Contains(body, "evil.test") || strings.Contains(body, "SESSION-DATA") {
+			t.Errorf("unknown URI tag passed through:\n%s", body)
+		}
+	}
+	if !strings.Contains(served[0], "#EXT-X-MAP:URI=\"http://127.0.0.1:") || !strings.Contains(served[0], "#EXT-X-KEY:METHOD=NONE") {
+		t.Errorf("chunklist not rewritten:\n%s", served[0])
+	}
+	if !strings.Contains(served[1], "/r/4/chunklist_w1.m3u8") {
+		t.Errorf("master does not point at the served chunklist:\n%s", served[1])
 	}
 }
 
@@ -58,7 +93,15 @@ func TestInspectPlaylistRejectsUnsafeOrBrokenPlaylists(t *testing.T) {
 		"not a playlist":          {map[string]string{top: "<html>error</html>"}, ErrMalformed},
 		"segment off the list":    {map[string]string{top: "#EXTM3U\n#EXTINF:10,\nhttps://evil.test/seg.ts\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
 		"local file segment":      {map[string]string{top: "#EXTM3U\n#EXTINF:10,\nfile:///etc/passwd\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
-		"key off the list":        {map[string]string{top: "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"http://169.254.169.254/key\"\n#EXTINF:10,\ns.ts\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
+		"key off the list":        {map[string]string{top: "#EXTM3U\n#EXT-X-KEY:METHOD=NONE,URI=\"http://169.254.169.254/key\"\n#EXTINF:10,\ns.ts\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
+		"encrypted":               {map[string]string{top: "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n#EXTINF:10,\ns.ts\n#EXT-X-ENDLIST\n"}, ErrUnsupported},
+		"key without method":      {map[string]string{top: "#EXTM3U\n#EXT-X-KEY:URI=\"key.bin\"\n#EXTINF:10,\ns.ts\n#EXT-X-ENDLIST\n"}, ErrUnsupported},
+		"httpproxy segment":       {map[string]string{top: "#EXTM3U\n#EXTINF:10,\nhttpproxy://archive-stream.granicus.com/s.ts\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
+		"crypto segment":          {map[string]string{top: "#EXTM3U\n#EXTINF:10,\ncrypto+https://archive-stream.granicus.com/s.ts\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
+		"concat segment":          {map[string]string{top: "#EXTM3U\n#EXTINF:10,\nconcat:https://archive-stream.granicus.com/a.ts\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
+		"subfile segment":         {map[string]string{top: "#EXTM3U\n#EXTINF:10,\nsubfile,,start,0,end,0,,:https://archive-stream.granicus.com/a.ts\n#EXT-X-ENDLIST\n"}, ErrMalformed},
+		"data segment":            {map[string]string{top: "#EXTM3U\n#EXTINF:10,\ndata:video/mp2t;base64,AAAA\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
+		"segment on port 8443":    {map[string]string{top: "#EXTM3U\n#EXTINF:10,\nhttps://archive-stream.granicus.com:8443/s.ts\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
 		"map off the list":        {map[string]string{top: "#EXTM3U\n#EXT-X-MAP:URI=\"https://evil.test/init.mp4\"\n#EXTINF:10,\ns.ts\n#EXT-X-ENDLIST\n"}, ErrForbiddenHost},
 		"variant off the list":    {map[string]string{top: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhttps://evil.test/v.m3u8\n"}, ErrForbiddenHost},
 		"audio off the list":      {map[string]string{top: "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",URI=\"https://evil.test/a.m3u8\"\n"}, ErrForbiddenHost},
@@ -78,7 +121,7 @@ func TestInspectPlaylistRejectsUnsafeOrBrokenPlaylists(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := InspectPlaylist(t.Context(), playlists(tc.pages), DefaultHosts.Media, top)
+			_, err := InspectPlaylist(t.Context(), playlists(tc.pages), DefaultHosts.Media, Guard{}, top)
 			if errors.Is(tc.want, fetch.ErrInvalidURL) {
 				var fetchErr *fetch.Error
 				if !errors.As(err, &fetchErr) || fetchErr.StatusCode != 404 {
@@ -98,11 +141,40 @@ func TestInspectPlaylistTakesTheLongestRendition(t *testing.T) {
 	fake := playlists(map[string]string{
 		top:                    "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nvideo.m3u8\n",
 		hlsBase + "audio.m3u8": mediaPlaylist(5, "#EXT-X-MAP:URI=\"init.mp4\"\n"),
-		hlsBase + "video.m3u8": mediaPlaylist(4, ""),
+		hlsBase + "video.m3u8": mediaPlaylist(6, ""),
 	})
-	got, err := InspectPlaylist(t.Context(), fake, DefaultHosts.Media, top)
-	if err != nil || got.Duration != 50*time.Second || got.Playlists != 3 || got.Entries != 10 {
+	got, err := InspectPlaylist(t.Context(), fake, DefaultHosts.Media, Guard{}, top)
+	if err != nil || got.Duration != 60*time.Second || got.AudioDuration != 50*time.Second || got.Playlists != 3 || got.Entries != 12 {
 		t.Errorf("InspectPlaylist = %+v, %v", got, err)
+	}
+}
+
+func TestInspectPlaylistUsesTheAudioRenditionForTheAudioLength(t *testing.T) {
+	top := hlsBase + "playlist.m3u8"
+	fake := playlists(map[string]string{
+		top:                    "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nvideo.m3u8\n",
+		hlsBase + "audio.m3u8": mediaPlaylist(4, ""),
+		hlsBase + "video.m3u8": mediaPlaylist(6, ""),
+	})
+	got, err := InspectPlaylist(t.Context(), fake, DefaultHosts.Media, Guard{}, top)
+	if err != nil || got.Duration != 60*time.Second || got.AudioDuration != 40*time.Second {
+		t.Errorf("InspectPlaylist = %+v, %v", got, err)
+	}
+}
+
+func TestAttribute(t *testing.T) {
+	line := `#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",URI="audio.m3u8",KEYURI="x"`
+	if v, start, end, ok := attribute(line, "URI"); !ok || v != "audio.m3u8" || line[start:end] != "audio.m3u8" {
+		t.Errorf("attribute(URI) = %q %v", v, ok)
+	}
+	if v, _, _, ok := attribute("#EXT-X-KEY:METHOD=NONE,IV=0x1", "METHOD"); !ok || v != "NONE" {
+		t.Errorf("attribute(METHOD) = %q %v", v, ok)
+	}
+	if _, _, _, ok := attribute(`#EXT-X-MAP:URI="unterminated`, "URI"); ok {
+		t.Error("unterminated attribute accepted")
+	}
+	if _, _, _, ok := attribute("#EXTINF:10,", "URI"); ok {
+		t.Error("missing attribute found")
 	}
 }
 

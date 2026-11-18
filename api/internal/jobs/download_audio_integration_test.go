@@ -291,6 +291,7 @@ func TestDownloadAudioFailures(t *testing.T) {
 	pool := testdb.Pool(t)
 	agencyID := seedAgency(t, pool, "jobs-test-audio-fail-"+randomSuffix(t), "live")
 	weekly := fixedNow.Add(6*24*time.Hour + 12*time.Hour)
+	daily := fixedNow.Add(12 * time.Hour)
 	cases := map[string]struct {
 		storage    storage.Store
 		err        error
@@ -299,8 +300,11 @@ func TestDownloadAudioFailures(t *testing.T) {
 		failure    string
 		retryAfter *time.Time
 	}{
-		"no media in the player":   {storagetest.New(), media.ErrNoMedia, "cancelled", 1, media.KindNoMedia, nil},
-		"host not allowed":         {storagetest.New(), media.ErrForbiddenHost, "cancelled", 1, media.KindUnsupported, nil},
+		"no media in the player":   {storagetest.New(), media.ErrNoMedia, "cancelled", 1, media.KindNoMedia, &daily},
+		"host not allowed":         {storagetest.New(), media.ErrForbiddenHost, "cancelled", 1, media.KindUnsupported, &weekly},
+		"not an http url":          {storagetest.New(), media.ErrInvalidURL, "cancelled", 1, media.KindInvalidURL, nil},
+		"incomplete":               {storagetest.New(), media.ErrIncomplete, "cancelled", 1, media.KindIncomplete, &daily},
+		"unrecognised":             {storagetest.New(), media.ErrUnrecognized, "retryable", 1, "", nil},
 		"bot check on the player":  {storagetest.New(), media.ErrBlocked, "retryable", 1, "", nil},
 		"media host refused":       {storagetest.New(), media.ErrRefused, "cancelled", 1, media.KindRefused, &weekly},
 		"too long":                 {storagetest.New(), media.ErrLimitExceeded, "cancelled", 1, media.KindLimit, &weekly},
@@ -392,18 +396,18 @@ func TestFailedDownloadsAreRetriedOnTheirOwnSchedule(t *testing.T) {
 
 	clock.Set(fixedNow.Add(7 * 24 * time.Hour))
 	h.checkAndWait(slug, day(7), "completed")
-	waitForDownloads(3)
+	waitForDownloads(4)
 
 	recs := recordingsOf(t, pool, meetingsOf(t, pool, agencyID)["refused"].ID)
 	if len(recs) != 1 || recs[0].Download.Attempts != 2 || recs[0].Download.Failure != media.KindRefused {
 		t.Errorf("refused recording = %+v", recs)
 	}
 	recs = recordingsOf(t, pool, meetingsOf(t, pool, agencyID)["no-media"].ID)
-	if len(recs) != 1 || recs[0].Download.Attempts != 1 || recs[0].Download.Failure != media.KindNoMedia {
+	if len(recs) != 1 || recs[0].Download.Attempts != 2 || recs[0].Download.Failure != media.KindNoMedia {
 		t.Errorf("no-media recording = %+v", recs)
 	}
-	if calls := downloader.calls(); len(calls) != 3 {
-		t.Errorf("downloads = %d, want 3", len(calls))
+	if calls := downloader.calls(); len(calls) != 4 {
+		t.Errorf("downloads = %d, want 4", len(calls))
 	}
 
 	downloader.mu.Lock()
@@ -643,7 +647,10 @@ func TestDownloadAudioFromAGranicusStyleHLSStreamIntoTheBucket(t *testing.T) {
 			UserAgent: "CivicScanner-test",
 			Env:       testbin.CoverEnv(),
 			Hosts:     []string{"127.0.0.1"},
-			Guard:     media.Guard{AllowAddress: func(netip.Addr) bool { return true }},
+			Guard: media.Guard{
+				AllowAddress: func(netip.Addr) bool { return true },
+				AllowPort:    func(string, string) bool { return true },
+			},
 		},
 	}
 
