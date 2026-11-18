@@ -324,7 +324,7 @@ type Meeting struct {
 
 `Status` is `sources.StatusScheduled`, `StatusHeld` or `StatusCancelled`, the values the `meetings` table accepts.
 
-Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock}`: `fetch.New(cfg.Fetch)` and `sources.SystemClock{}`. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` (the Legistar adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
+Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock}`: `fetch.New(cfg.Fetch)` and `sources.SystemClock{}`. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` (the Legistar adapter below) and `metrolink` (the Granicus adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
 
 An adapter must guarantee:
 
@@ -382,6 +382,43 @@ How the adapter reads Legistar:
 The daily check calls only the API host, which has no `robots.txt`. The agenda host `metro.legistar1.com` and the player host `metro.granicus.com` disallow crawlers. The check does not touch them; the later stages that do identify themselves with `FETCH_USER_AGENT` (see [Fetching](#fetching)).
 
 The fixtures in `internal/sources/legistar/testdata` are real LA Metro responses recorded on 2026-11-17 and trimmed to a few events and fields: `metro_board_events.json` (the board-only query for 2026-01-01 to 2027-01-31) and `metro_events_with_committee.json` (a board meeting and a Planning and Programming Committee meeting from an unfiltered query). LA Metro had no upcoming board meeting without an agenda that day, so that case, the time edge cases and the status edge cases use events built in the tests.
+
+### Granicus
+
+`internal/sources/granicus` reads any agency that publishes its meetings through a Granicus `ViewPublisher` page, from that view's two RSS feeds: `https://{host}/ViewPublisherRSS.php?view_id={view}&mode=agendas` and `&mode=vod`. One agency is one `granicus.Config`:
+
+```go
+var Metrolink = granicus.Config{
+	Host:       "metrolink.granicus.com",
+	ViewID:     8,
+	BoardNames: []string{"Board of Directors", "Special Board of Directors", "Special Board Meeting", "Board Meeting"},
+	TimeZone:   "America/Los_Angeles",
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `Host` | The agency's Granicus host, with no scheme, port or path. |
+| `ViewID` | The `view_id` of the agency's publisher page. |
+| `BoardNames` | Meeting names of the full board, matched whole and without regard to case or repeated spaces. Everything else (committees, workshops, single-item attachments) is dropped. |
+| `TimeZone` | IANA zone of the agency's wall-clock times. |
+
+To add a Granicus agency, find the `view_id` in the `ViewPublisher.php` iframe on its board page, list the meeting names in its agenda feed, add a `Config` next to `Metrolink` in `internal/sources/granicus/agencies.go`, register `granicus.Constructor(cfg)` under the agency's slug in `cmd/worker/adapters.go`, and record both feeds as fixtures. `Constructor` panics on an invalid config; `granicus.New` returns the error.
+
+How the adapter reads Granicus:
+
+- **Feeds.** Two GETs per check: the agenda feed, then the video feed. Each lists the view's latest 100 archived clips, newest first, with no date filter, so the adapter keeps the board clips whose start falls in the window. A clip in both feeds is one meeting.
+- **Ids and titles.** `SourceID` is the `clip_id` from the item's link, which the agenda and video feeds share. The RSS `guid` is not used. An item title is `{name} - {Mon DD, YYYY}`; the name, without the date, is the `Title` and is matched against `BoardNames`.
+- **Time.** From `gran:pubDateParts` (`yr`, `mo`, `day`, `hr`, `min`), read as wall-clock time in the agency's zone and converted to UTC. The RSS `pubDate` is not used: its offset is always `-0800` and its hour is sometimes on a 12-hour clock (Metrolink's 2:30 PM meeting on 2026-10-09 has `02:30:00 -0800`).
+- **Status.** `cancelled` when the name ends in a cancel marker such as `- CANCELLED` or `(Cancelled)` (the marker is removed before matching the name). Otherwise `held` when the start time has passed and the clip is in the video feed. Otherwise `scheduled`.
+- **URLs.** `AgendaURL` is the agenda feed's link, `https://{host}/AgendaViewer.php?view_id={view}&clip_id={clip}`, which redirects to the agenda PDF. `RecordingURL` is the video feed's link, `https://{host}/MediaPlayer.php?view_id={view}&clip_id={clip}`. `PageURL` is the player page when there is one and the agenda link otherwise. The adapter never fetches the agenda, the player page or the media. The player page holds the media file's uuid, which can differ from the RSS `guid`, so the recording download must read it from that page.
+- **Errors.** Fetch errors are wrapped with `%w` and keep their retryability. A body that is not RSS with a channel, or a board item whose link is not an absolute URL with a numeric `clip_id`, or whose `pubDateParts` is missing or not a real date and time, is `granicus.ErrMalformed`, which is permanent. Items with other names are dropped before they are checked. A Firecrawl fallback answer (markdown) is malformed in the same way as for Legistar.
+
+Limits: the feeds hold archived clips only. Granicus lists upcoming meetings separately on the `ViewPublisher` page under `event_id`, a different id from the clip's, so they are not read: reading both would store one meeting twice. A meeting appears once Granicus archives its clip, so it is not known in advance; how soon after the meeting that happens has not been measured. On 2026-11-18 Metrolink's page listed no upcoming events.
+
+`metrolink.granicus.com` serves `User-agent: * / Disallow: /` in `robots.txt`. Following the decision in CIV-62, the daily check fetches the two feeds once a day with `FETCH_USER_AGENT` (see [Fetching](#fetching)).
+
+The fixtures in `internal/sources/granicus/testdata` are the real Metrolink feeds recorded on 2026-11-18 and trimmed to their first six items: five Board of Directors meetings (2026-07-24 to 2026-11-13) and one Budget, Audit, and Finance Committee meeting. Both feeds list the same clips. Upcoming, cancelled and agenda-only meetings, and the malformed cases, use feeds built in the tests.
 
 ### Follow-up jobs
 
