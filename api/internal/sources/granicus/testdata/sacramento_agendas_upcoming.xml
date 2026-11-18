@@ -1,0 +1,69 @@
+<?xml version="1.0" ?>
+<?xml-stylesheet href="browserfriendlyRSS_Layout.xslt" type="text/xsl" media="screen"?>
+<rss version="2.0" 
+    xmlns:dc="https://purl.org/dc/elements/1.1/" 
+    xmlns:gran="https://www.granicus.com/schema/rss-supplements" >
+<channel>
+  <title>City of Sacramento: Landing Page (Agenda Feed)</title>
+  <gran:sourceURL>https://sacramento.granicus.com/ViewPublisherRSS.php?view_id=21&amp;mode=agendas</gran:sourceURL>
+  <link>https://sacramento.granicus.com/ViewPublisher.php?view_id=21</link>
+  <description></description>
+  <language>en-us</language>
+<item>
+  <guid isPermaLink="false">df0281cd-87e8-4650-8496-33b45cff6f6a</guid>
+  <title>Active Transportation Commission - Nov 19, 2026</title>
+  <link>https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;event_id=6450</link>
+  <pubDate>Thu, 12 Nov 2026 03:57:52 -0800</pubDate>
+  <gran:pubDateParts yr='2026' mo='11' day='12' hr='15' min='57' sec='0' tz='8' />
+  <description>
+    <![CDATA[
+      <p style='margin-top:2px;'>
+The agenda for Active Transportation Commission dated Thursday, 19 November 2026  has been published. Access it here:<br />      <a href="https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;event_id=6450" style='margin-right:50px;'>https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;event_id=6450</a>
+      </p>
+    ]]>
+  </description>
+</item>
+<item>
+  <guid isPermaLink="false">e7a37e78-caac-46e5-996d-ba5ecdd93e31</guid>
+  <title>Administration, Investment, &amp; Fiscal Management Board - Nov 19, 2026</title>
+  <link>https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;event_id=6443</link>
+  <pubDate>Thu, 12 Nov 2026 01:13:30 -0800</pubDate>
+  <gran:pubDateParts yr='2026' mo='11' day='12' hr='13' min='13' sec='0' tz='8' />
+  <description>
+    <![CDATA[
+      <p style='margin-top:2px;'>
+The agenda for Administration, Investment, &amp; Fiscal Management Board dated Thursday, 19 November 2026  has been published. Access it here:<br />      <a href="https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;event_id=6443" style='margin-right:50px;'>https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;event_id=6443</a>
+      </p>
+    ]]>
+  </description>
+</item>
+<item>
+  <guid isPermaLink="false">15aeec70-1ccc-4cba-9fee-17f23024a3a9</guid>
+  <title>Active Transportation Commission - Oct 15, 2026</title>
+  <pubDate>Thu, 15 Oct 2026 05:45:00 -0800</pubDate>
+  <gran:pubDateParts yr='2026' mo='10' day='15' hr='17' min='45' sec='0' tz='7' />
+  <link>https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;clip_id=6915</link>
+  <description>
+    <![CDATA[
+      <p style='margin-top:2px;'>
+The agenda for Active Transportation Commission dated Thursday, 15 October 2026  has been archived. Access it here:<br />      <a href="https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;clip_id=6915" style='margin-right:50px;'>https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;clip_id=6915</a>
+      </p>
+    ]]>
+  </description>
+</item>
+<item>
+  <guid isPermaLink="false">af4266be-8524-412c-b4a0-a27e054c0e73</guid>
+  <title>Housing Code Advisory and Appeals Board - CANCELLED - Jul 22, 2026</title>
+  <pubDate>Wed, 22 Jul 2026 05:30:00 -0800</pubDate>
+  <gran:pubDateParts yr='2026' mo='07' day='22' hr='17' min='30' sec='0' tz='7' />
+  <link>https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;clip_id=6828</link>
+  <description>
+    <![CDATA[
+      <p style='margin-top:2px;'>
+The agenda for Housing Code Advisory and Appeals Board - CANCELLED dated Wednesday, 22 July 2026  has been archived. Access it here:<br />      <a href="https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;clip_id=6828" style='margin-right:50px;'>https://sacramento.granicus.com/AgendaViewer.php?view_id=21&amp;clip_id=6828</a>
+      </p>
+    ]]>
+  </description>
+</item>
+</channel>
+</rss>

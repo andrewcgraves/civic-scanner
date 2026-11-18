@@ -51,7 +51,7 @@ func run(ctx context.Context) error {
 	firecrawl := fetch.NewFirecrawl(cfg.Fetch)
 	fetcher := fetch.NewFallback(fetch.NewPlain(cfg.Fetch), firecrawl)
 	pdfExtractor := extract.NewSubprocess(cfg.Extract)
-	registry := sources.NewRegistry(sources.Deps{Fetcher: fetcher, Clock: sources.SystemClock{}}, adapters)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fetcher, Clock: sources.SystemClock{}, Logger: logger}, adapters)
 	client, err := jobs.NewClient(pool, logger, jobs.Config{
 		Registry:     registry,
 		Fetcher:      fetcher,

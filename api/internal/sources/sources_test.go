@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -12,6 +13,16 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
 )
+
+func TestDepsLogDefaultsToADiscardingLogger(t *testing.T) {
+	if (sources.Deps{}).Log() == nil {
+		t.Fatal("Log() = nil")
+	}
+	logger := slog.New(slog.DiscardHandler)
+	if got := (sources.Deps{Logger: logger}).Log(); got != logger {
+		t.Errorf("Log() = %p, want the configured logger %p", got, logger)
+	}
+}
 
 func validMeeting() sources.Meeting {
 	return sources.Meeting{

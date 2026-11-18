@@ -104,14 +104,14 @@ func TestMeetingEventsMigrationRollsBackAndReapplies(t *testing.T) {
 		t.Fatal("meeting_events missing after Up")
 	}
 
-	if _, err := provider.DownTo(ctx, 5); err != nil {
-		t.Fatalf("DownTo(5): %v", err)
+	if _, err := provider.DownTo(ctx, 4); err != nil {
+		t.Fatalf("DownTo(4): %v", err)
 	}
 	if tableExists(t, pool, schema, "meeting_events") {
 		t.Error("meeting_events still exists after rolling back 00006")
 	}
 	if !tableExists(t, pool, schema, "agenda_versions") {
-		t.Error("agenda_versions missing after rolling back only 00006")
+		t.Error("agenda_versions missing after rolling back to 00004")
 	}
 
 	if _, err := provider.Up(ctx); err != nil {
@@ -119,5 +119,41 @@ func TestMeetingEventsMigrationRollsBackAndReapplies(t *testing.T) {
 	}
 	if !tableExists(t, pool, schema, "meeting_events") {
 		t.Error("meeting_events missing after reapplying")
+	}
+}
+
+func TestRecordingsMigrationRollsBackAndReapplies(t *testing.T) {
+	ctx := t.Context()
+	provider, pool, schema := isolatedProvider(t)
+	tables := []string{"recordings", "transcripts"}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	for _, table := range tables {
+		if !tableExists(t, pool, schema, table) {
+			t.Fatalf("%s missing after Up", table)
+		}
+	}
+
+	if _, err := provider.DownTo(ctx, 6); err != nil {
+		t.Fatalf("DownTo(6): %v", err)
+	}
+	for _, table := range tables {
+		if tableExists(t, pool, schema, table) {
+			t.Errorf("%s still exists after rolling back 00007", table)
+		}
+	}
+	if !tableExists(t, pool, schema, "meeting_events") {
+		t.Error("meeting_events missing after rolling back only 00007")
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	for _, table := range tables {
+		if !tableExists(t, pool, schema, table) {
+			t.Errorf("%s missing after reapplying", table)
+		}
 	}
 }

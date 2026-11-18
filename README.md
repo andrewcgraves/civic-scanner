@@ -341,7 +341,7 @@ type Meeting struct {
 
 `Status` is `sources.StatusScheduled`, `StatusHeld` or `StatusCancelled`, the values the `meetings` table accepts.
 
-Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock}`: `fetch.New(cfg.Fetch)` and `sources.SystemClock{}`. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` (the Legistar adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
+Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock, Logger}`: plain HTTP with the Firecrawl fallback (the composition `fetch.New(cfg.Fetch)` returns; the worker builds it from its parts so it can also give the Firecrawl fetcher to `process_agenda`), `sources.SystemClock{}` and the worker's logger. `Deps.Log()` returns the logger, or one that discards everything when none is set, as in most tests. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` (the Legistar adapter below) and `metrolink` (the Granicus adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
 
 An adapter must guarantee:
 
@@ -399,6 +399,60 @@ How the adapter reads Legistar:
 The daily check calls only the API host, which has no `robots.txt`. The agenda host `metro.legistar1.com` and the player host `metro.granicus.com` disallow crawlers. The check does not touch them; the later stages that do identify themselves with `FETCH_USER_AGENT` (see [Fetching](#fetching)).
 
 The fixtures in `internal/sources/legistar/testdata` are real LA Metro responses recorded on 2026-11-17 and trimmed to a few events and fields: `metro_board_events.json` (the board-only query for 2026-01-01 to 2027-01-31) and `metro_events_with_committee.json` (a board meeting and a Planning and Programming Committee meeting from an unfiltered query). LA Metro had no upcoming board meeting without an agenda that day, so that case, the time edge cases and the status edge cases use events built in the tests.
+
+### Granicus
+
+`internal/sources/granicus` reads any agency that publishes its meetings through a Granicus `ViewPublisher` page, from that view's two RSS feeds: `https://{host}/ViewPublisherRSS.php?view_id={view}&mode=agendas` and `&mode=vod`. One agency is one `granicus.Config`:
+
+```go
+var Metrolink = granicus.Config{
+	Host:       "metrolink.granicus.com",
+	ViewID:     8,
+	BoardNames: []string{"Board of Directors", "Board of Directors - Special Meeting", "Special Board of Directors", "Board Meeting", ...},
+	TimeZone:   "America/Los_Angeles",
+	StartTime:  "10:00",
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `Host` | The agency's Granicus host, with no scheme, port or path. |
+| `ViewID` | The `view_id` of the agency's publisher page. |
+| `BoardNames` | Meeting names of the full board, matched whole after the title is cleaned (below), without regard to case or repeated spaces. The matched entry, as written here, is the meeting's `Title` and the start of its `SourceID`. |
+| `TimeZone` | IANA zone of the agency's wall-clock times. |
+| `StartTime` | The board's usual start, `15:04`, local. Upcoming meetings carry no start time in the feed, so they start at this time until the archived clip gives the real one. |
+
+To add a Granicus agency, find the `view_id` in the `ViewPublisher.php` iframe on its board page, list the meeting names in its agenda feed, add a `Config` next to `Metrolink` in `internal/sources/granicus/agencies.go`, register `granicus.Constructor(cfg)` under the agency's slug in `cmd/worker/adapters.go`, and record both feeds as fixtures. `Constructor` panics on an invalid config; `granicus.New` returns the error.
+
+How the adapter reads Granicus:
+
+- **Feeds.** Two GETs per check: the agenda feed, then the video feed. Neither takes a date filter. The agenda feed lists the view's latest 100 archived clips (link `AgendaViewer.php?view_id={view}&clip_id={clip}`) and, on hosts that have any, the upcoming meetings whose agenda is published (link `AgendaViewer.php?view_id={view}&event_id={event}`). The video feed lists the same clips (link `MediaPlayer.php?view_id={view}&clip_id={clip}`) and no upcoming meetings; event items in it are ignored. Metrolink listed no upcoming meetings on 2026-11-18; the event shape is taken from Sacramento's feed (`testdata/sacramento_agendas_upcoming.xml`).
+- **Titles.** An item title is `{name} - {Mon DD, YYYY}`, and that date is the meeting's local date. The name is cleaned before it is matched: a leading `*`, a cancel marker at either end (`CANCELLED - `, `Cancelled: `, ` - CANCELLED`, ` (Cancelled)`), a trailing correction marker (` - CORRECTED AGENDA`, ` - Revised`, ` - Amended`, ` - Updated`) and a trailing parenthesis such as ` (9/9/11)` are removed. Items whose cleaned name is not in `BoardNames` are dropped; a dropped title that contains "board" is logged at info level so a missed board meeting is visible.
+- **Board names for Metrolink.** Checked against all 653 clips on Metrolink's publisher page on 2026-11-18. Kept: "Board of Directors" (the only name since 2023), and the older full-board names "Board Meeting", "Metrolink Board Meeting", "Special Board Meeting", "Special Board of Directors", "Board Meeting - Emergency", "Board Meeting and Workshop", "Board Meeting and Budget Workshop", "Special Board Meeting and Annual Workshop", "Special Board of Directors' Annual Strategic Session" and "Board of Directors' Annual Strategic Work Session and Meeting", plus "Board of Directors - Special Meeting" for a special meeting named the current way. Dropped: committees, stand-alone board workshops ("Board Workshop", "Special Board Meeting - Safety Leadership Workshop", as LA Metro's workshops are), and single-document clips ("Board Meeting - Item No. 8 - Attachment A", "Metrolink Board Meeting (03/09/12) Item 13 - Document No. 1 CAFR").
+- **One meeting per board per day.** All items of one board name on one local title date are one meeting: upcoming events, revised agendas, the archived clip, corrected-agenda clips and the video items. There is no numbering and no splitting, so the same items always give the same meeting whatever order they arrive in or which of them the feed still lists. In Metrolink's 653 archived clips no board name repeats on one day except as a correction clip. Different names stay different meetings: "Special Board of Directors" and "Board of Directors" on one day are two. When clips of one meeting have `pubDateParts` with different start times, the adapter logs a warning with the clip ids, so a genuine second session would be visible; it is still stored as the same meeting.
+- **Ids.** `SourceID` is `{board}/{date}`, such as `board-of-directors/2026-12-11`: the matched board name in lower case with every run of other characters turned into `-`, and the local date from the title. An upcoming event and the clip it becomes have different Granicus ids but the same title, so they share a `SourceID` and the upsert updates one row. A clip whose title has no date takes the date from its `pubDateParts`. The RSS `guid` is not used.
+  - The id depends on the name and the date in the title. If the clerk renames a meeting between its event and its clip, or re-dates an upcoming event, the next check stores a second row under the new id and the first row stays behind as a stale `scheduled` meeting. Nothing in this story removes it; the store has no way yet to retire a meeting a source no longer lists.
+- **Merging.** Items are ordered events first, then clips, each by id, so the order is the same on every run. Within one meeting:
+  - the agenda URL and the cancel marker come from the last agenda-feed item in that order: the newest clip, or before the meeting is archived the newest event, so a revised agenda or a corrected-agenda clip wins;
+  - the recording comes from the first video item with an enclosure (the lowest clip id);
+  - the start time comes from the first clip whose `pubDateParts` falls on the title's date (below).
+- **Time.** For a clip, from `gran:pubDateParts` (`yr`, `mo`, `day`, `hr`, `min`), read as wall-clock time in the agency's zone and converted to UTC, but only when that date equals the title's date. Two of Metrolink's 100 live clips have parts on a later day: "Board of Directors - Mar 28, 2025" has `2025-04-01 09:15`, and "Board of Directors - Jan 26, 2024" has `2024-01-30 09:15`. Such a clip, or one with missing or impossible parts, starts at `StartTime` on the title's date. For an upcoming event, `pubDateParts` is when the agenda was published, not the meeting time (Sacramento's 2026-11-19 meeting has `day='12'`), so the start is also the title's date at `StartTime`. The upsert overwrites `starts_at`, so the archived clip corrects it. The RSS `pubDate` is never used: its offset is always `-0800` and its hour is sometimes on a 12-hour clock (Metrolink's 2:30 PM meeting on 2026-10-09 has `02:30:00 -0800`).
+- **Status.** `cancelled` when the meeting's agenda item (as chosen above) carries a cancel marker; with no agenda item, the last video item decides. Otherwise `held` when the start time has passed and there is a recording URL. Otherwise `scheduled`.
+- **URLs.** `AgendaURL` is the chosen agenda item's link: a clip's `AgendaViewer.php?...&clip_id=`, or an event's `AgendaViewer.php?...&event_id=` before the meeting is archived. Both redirect to the agenda PDF. `RecordingURL` is the video feed's `MediaPlayer.php` link, set only when that item has an `<enclosure>` and the meeting is not cancelled. `PageURL` is the recording URL, else the agenda URL, else the first item's link. The adapter never fetches the agenda, the player page or the media.
+- **What "held" means in practice.** Every video item seen so far has an enclosure (`DownloadFile.php?...&clip_id=`, typed `video/x-ms-wmv`): all 100 of Metrolink's and all 100 of Sacramento's on 2026-11-18, including Sacramento's clip for a cancelled meeting. So the enclosure shows a clip exists, not that it holds media, and `held` in effect means "an archived clip whose start has passed". Whether there is media is settled by the recording download, which reads the media file's uuid from the player page (it can differ from the RSS `guid`).
+- **Errors.** Fetch errors are wrapped with `%w` and keep their retryability. A body that is not RSS with a channel is `granicus.ErrMalformed`, which is permanent; this covers a Firecrawl fallback answer (markdown), as for Legistar. A board item that cannot be read (its link is not an absolute URL with a numeric `clip_id` or `event_id`, or it has no date to build its id from) is skipped, not fatal:
+  - Outside the window it is logged at debug level. The feed keeps 100 items, so failing on one would block the check for months.
+  - Inside the window, or with no date to place it, it is logged at warn level and the other meetings are still returned. One bad item must not keep the agency's other meetings, and their agendas, from being stored.
+  - Board items in the window are counted in three kinds: archived clips in the agenda feed, upcoming events in the agenda feed, and items of the video feed. If a kind has items in the window and every one of them is unreadable, the check fails with `ErrMalformed`: that is what a change in Granicus's link or title format looks like, and it can hit one kind alone (only the video links, or only upcoming links). A kind with no items in the window is fine. An unreadable agenda item is counted as a clip or an event by the `clip_id` or `event_id` in its link; with neither, as a clip when its date has passed and as an event otherwise.
+
+`metrolink.granicus.com` serves `User-agent: * / Disallow: /` in `robots.txt`. Following the decision in CIV-62, the daily check fetches the two feeds once a day with `FETCH_USER_AGENT` (see [Fetching](#fetching)).
+
+Fixtures in `internal/sources/granicus/testdata`, recorded on 2026-11-18 and trimmed:
+
+- `metrolink_agendas.xml` and `metrolink_vod.xml`: Metrolink's two feeds, seven items each: the first six (five Board of Directors meetings from 2026-07-24 to 2026-11-13 and one Budget, Audit, and Finance Committee meeting) and clip 1304, "Board of Directors - Mar 28, 2025", whose `pubDateParts` say 2025-04-01.
+- `sacramento_agendas_upcoming.xml`: the City of Sacramento's agenda feed (`sacramento.granicus.com`, view 21), a different agency used only for the shape of upcoming items: two upcoming events (`event_id` 6450 and 6443), an archived clip and a cancelled clip.
+
+Other cases (corrections, cancellations, several items for one meeting across successive runs, unreadable items) use feeds built in the tests.
 
 ### Follow-up jobs
 
@@ -511,6 +565,37 @@ The table's check constraints accept only the three types and only a JSON object
 
 **Sequence order is assignment order, not commit order.** `sequence` is taken from the identity when the row is inserted, and transactions commit in any order: a transaction that inserted sequence 41 can commit after another that inserted 42. A reader that has seen 42 may therefore see 41 appear later. A consumer must not treat "the highest sequence seen" as a safe cursor without handling transactions still in flight, or it skips events for good. `occurred_at` has the same problem and the uuid `id` has no order at all. How consumers page through the outbox and track what they have delivered belongs to the RSS and webhook stories (CIV-45, CIV-46).
 
+## Recordings and transcripts
+
+Migration `00007` adds two tables.
+
+- `recordings`: one row per recording of a meeting, unique on `(meeting_id, source_url)`, so a meeting split into several videos has several rows. `source_url` is the original recording URL and cannot be empty. `audio_key` is the [object storage](#object-storage) key of the downloaded audio and `audio_expires_at` is when that audio is due for deletion; both are null until the audio is stored, and a check constraint keeps them null or set together. `audio_deleted_at` is set when the retention job deletes the audio, so deleted audio is told apart from audio never downloaded; a check constraint allows it only while there is no audio. `seq` is an identity column that gives the order recordings were added, even within one transaction, where `created_at` is the same for every row. A partial index on `audio_expires_at` covers only rows with audio, for the retention job.
+- `transcripts`: at most one per recording (unique `recording_id`). `full_text` is the whole transcript, `segments` a JSON array of `{"start_ms", "end_ms", "text", "speaker"}` objects (`speaker` left out when empty; a check constraint requires an array), and `summary` the nullable AI summary.
+
+Both have `created_at`/`updated_at`. Neither cascades: rows are never deleted by the store.
+
+`internal/store/recordings.go` and `internal/store/transcripts.go`:
+
+| Function | Does |
+| --- | --- |
+| `UpsertRecording(ctx, in)`, `UpsertRecordingTx` | Adds a recording from `RecordingInput{MeetingID, SourceURL}`, or returns the existing one for that meeting and URL without writing to it, with `created` saying which. A missing meeting is `ErrNotFound`. |
+| `GetRecording(ctx, id)` | One recording, or `ErrNotFound`. |
+| `ListRecordings(ctx, meetingID)` | A meeting's recordings in the order they were added (by `seq`). Empty for a meeting with none. |
+| `SetRecordingAudio(ctx, id, RecordingAudio{Key, ExpiresAt})`, `SetRecordingAudioTx` | Records the stored audio and clears `AudioDeletedAt`. An empty key or zero expiry is `ErrInvalidAudio`, returned before the database is touched. A missing recording is `ErrNotFound`. |
+| `MarkRecordingAudioDeleted(ctx, id, key)` | After the audio object is deleted, sets the key and expiry to null and `AudioDeletedAt` to now, only if the recording's key is still `key`. If audio was stored again in between (or already marked deleted), nothing changes and the error is `ErrAudioChanged`. A missing recording is `ErrNotFound`. |
+| `ListRecordingsWithExpiredAudio(ctx, now, limit)` | Up to `limit` recordings that still have audio expiring at or before `now`, soonest expiry first. A `limit` below 1 is `ErrInvalidLimit`. |
+| `SaveTranscript(ctx, in)`, `SaveTranscriptTx` | Stores `TranscriptInput{RecordingID, Text, Segments}` as the recording's transcript, replacing any earlier one in place (same id), and says whether it was created. The summary is kept when the text is unchanged and cleared otherwise. Saving the same text and segments again writes nothing and leaves `UpdatedAt` alone. A missing recording is `ErrNotFound`. |
+| `GetTranscript(ctx, recordingID)` | The recording's transcript, or `ErrNotFound`. |
+| `SetTranscriptSummary(ctx, transcriptID, textHash, summary)`, `SetTranscriptSummaryTx` | Sets the AI summary and returns the updated transcript, only if `textHash` (`store.HashContent` of the text that was summarised) still matches the transcript's text. If the transcript was saved with other text meanwhile, nothing changes and the error is `ErrTranscriptChanged`. A zero hash is `ErrZeroContentHash`. A missing transcript is `ErrNotFound`. |
+
+Like `AddAgendaVersion`, the upsert and save check the parent row first (`SELECT ... FOR KEY SHARE`, which also keeps it from being deleted until the transaction ends) instead of relying on the foreign key. So `ErrNotFound` from `UpsertRecordingTx` or `SaveTranscriptTx` leaves the caller's transaction usable.
+
+The summary check hashes the stored text in Postgres (`sha256` of its UTF-8 bytes) and compares it with the caller's `store.HashContent`, so the caller never sends the text back. A transcript's `UpdatedAt` would not do: setting the summary changes it too.
+
+A `Recording` without stored audio has a nil `Audio`; `AudioDeletedAt` is set when its audio was stored and later deleted. `store.TranscriptSegment` has the same fields as `transcribe.Segment` (`Start`, `End`, `Text`, `Speaker`), so the store does not import the transcription client. Times are stored to the millisecond, rounded. A segment with a negative start or an end before its start is `ErrInvalidSegment`, returned before the database is touched. Saving no segments stores an empty array, which reads back as an empty, non-nil slice.
+
+`api/migrations/down_integration_test.go` also rolls back to `00006`, checks both tables are gone and `meeting_events` is not, and applies `00007` again.
+
 ## Transcription
 
 `internal/transcribe` turns an audio file into a timestamped transcript through the [Vercel AI Gateway speech-to-text endpoint](https://vercel.com/docs/ai-gateway/modalities/speech-to-text), using only the standard library. `transcribe.New(cfg.Transcription)` returns a `transcribe.Client`, whose one method, `Transcribe(ctx, audioPath)`, takes a file path and returns a `transcribe.Transcript`: the full `Text`, the audio `Duration`, and ordered `Segments`, each with `Start`, `End`, `Text` and an optional `Speaker`. A file path, not a reader, is the input so a multi-hundred-MB recording is never held in memory.
@@ -563,6 +648,8 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - **Expand:** only add tables or columns that old code ignores. Squawk fails CI on destructive or locking changes.
 - **Release:** new code that uses them ships behind a flag.
 - **Contract:** a later migration removes the old structures. Mark the file with a `-- migration: contract` line, which permits dropping columns and tables, and confirm the flag is fully on in production before merging.
+
+Number a new file above every migration already on `main`, and renumber a branch's migration when another lands first. Goose refuses to apply a migration numbered below the database's current version, so a lower number would fail `migrate up` at deploy. Gaps are fine: `00005` is unused because recordings (`00007`) was renumbered after meeting events (`00006`) merged.
 
 `make lint-migrations` runs `.github/scripts/lint-migrations.sh [file...]` (default: every file in `api/migrations/`), which adapts each goose file for Squawk:
 
