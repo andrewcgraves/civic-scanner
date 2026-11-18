@@ -243,6 +243,36 @@ Errors are `*fetch.Error` values, and `fetch.IsRetryable(err)` tells a worker wh
 
 Tests never call a live site or Firecrawl. `internal/fetch/fetchtest` provides `fetchtest.Fake`, a `fetch.Fetcher` for other packages' tests: `fetchtest.Returning(body)` answers every call with a 200 HTML page, `fetchtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. `Calls()` returns the requests received. The fetchers' own tests run against `httptest` servers.
 
+## Transcription
+
+`internal/transcribe` turns an audio file into a timestamped transcript through [Groq's](https://console.groq.com/docs/speech-to-text) OpenAI-compatible `POST /audio/transcriptions` endpoint, using only the standard library. `transcribe.New(cfg.Transcription)` returns a `transcribe.Client`, whose one method, `Transcribe(ctx, audioPath)`, takes a file path and returns a `transcribe.Transcript`: the full `Text`, the audio `Duration`, and ordered `Segments`, each with `Start`, `End` and `Text`. There are no speaker labels. A file path, not a reader, is the input so a multi-hundred-MB recording is streamed from disk into the request and never held in memory.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GROQ_API_KEY` | none | Groq API key, sent as `Authorization: Bearer`. A secret: set it in Railway, never in `.railway/railway.ts`. |
+| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq base URL. Must be an `http` or `https` URL with a host, or the binaries fail at startup. |
+| `TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Whisper model ID. |
+| `TRANSCRIPTION_TIMEOUT` | `5m` | Limit on one Groq request, upload included, as a Go duration. Must be positive. |
+| `TRANSCRIPTION_MAX_UPLOAD_MB` | `25` | Largest single upload, in MiB. Groq allows 25 MB on the free tier and 100 MB on the dev tier; raise this only on the dev tier. |
+
+Without `GROQ_API_KEY` the binaries start normally, and every `Transcribe` call returns `transcribe.ErrNotConfigured` without contacting Groq.
+
+Requests send `response_format=verbose_json`, `timestamp_granularities[]=segment` and `temperature=0`; the language is auto-detected.
+
+### Chunking
+
+A file at or under `TRANSCRIPTION_MAX_UPLOAD_MB` is uploaded as is. A larger file is split with `ffprobe` and `ffmpeg`, which must be on `PATH` (the worker image does not have them yet; CIV-34 adds ffmpeg). Chunks are 10 minutes long and overlap by 5 seconds, so each starts 9 minutes 55 seconds after the previous one. Each chunk is re-encoded as 16 kHz mono 32 kbps MP3 (about 2.4 MB), which is the rate Groq downsamples to anyway, so the upload limit is never a concern for a chunk. A chunk that still exceeds the limit fails with `transcribe.ErrChunkTooLarge`.
+
+Overlap means a sentence cut by a boundary is heard whole by one of the two chunks. Each chunk transcribes in order and its segment times are shifted by the chunk's offset. To keep overlapped speech from appearing twice, the boundary between two chunks is the middle of their overlap, and a segment is kept only by the chunk whose side of the boundary holds the segment's midpoint. The stitched `Text` joins the kept segments, and `Duration` is the `ffprobe` duration of the whole file. Chunks are extracted and uploaded one at a time, and the temporary directory holding them is removed on every return path, including errors and a canceled context.
+
+### Errors
+
+`Transcribe` does not retry; River retries the job, but a retry restarts the whole file. `transcribe.IsRetryable(err)` is true for network failures, the `TRANSCRIPTION_TIMEOUT` limit, a canceled context, 408, 429 (with `RetryAfter` from the `Retry-After` header when present), 5xx, and a 200 response that cannot be decoded. These are `*transcribe.Error` values. Everything else is permanent and a worker should wrap it in `river.JobCancel`: other 4xx statuses (including 413), `ErrNotConfigured`, `ErrChunkTooLarge`, `ErrResponseTooLarge` (a reply over 32 MiB), a missing audio file, and `ffmpeg` or `ffprobe` failures such as unreadable audio or a binary that is not installed.
+
+### Tests
+
+Tests never call Groq; the client's own tests run against `httptest` servers and a fake `Splitter`. One test runs real `ffmpeg` on a generated tone and skips when `ffmpeg` or `ffprobe` is not installed. `internal/transcribe/transcribetest` provides `transcribetest.Fake`, a `transcribe.Client` for other packages' tests (`Returning(transcript)`, `Failing(err)`, or a `Respond` function; `Calls()` returns the paths received), and `transcribetest.FakeSplitter`.
+
 ## Migrations
 
 Migrations are goose SQL files in `api/migrations/` and follow expand and contract:
