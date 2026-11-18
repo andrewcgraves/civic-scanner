@@ -2,7 +2,8 @@
 ALTER TABLE agencies
     ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'pending'
         CONSTRAINT agencies_status_check CHECK (status IN ('pending', 'live', 'rejected')),
-    ADD COLUMN IF NOT EXISTS website text NOT NULL DEFAULT '';
+    ADD COLUMN IF NOT EXISTS website text NOT NULL DEFAULT ''
+        CONSTRAINT agencies_live_website_check CHECK (status <> 'live' OR website <> '');
 
 INSERT INTO agencies (slug, name, status, website) VALUES
     ('metrolink', 'Metrolink', 'live', 'https://metrolinktrains.com'),
