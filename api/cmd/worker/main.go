@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
+	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
@@ -31,6 +32,12 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger := config.NewLogger(cfg)
+
+	shutdownFlags, err := featureflags.Init(ctx, cfg.FeatureFlags, logger)
+	if err != nil {
+		return err
+	}
+	defer shutdownFlags()
 
 	pool, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {

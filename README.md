@@ -31,7 +31,7 @@ make ci               # everything CI runs
 
 `make help` lists every target. The Makefile defaults `DATABASE_URL` to the compose database; override it to point at another database.
 
-The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix.
+The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`; the feature flag variables are under [Feature flags](#feature-flags)); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix.
 
 ## OpenAPI-first workflow
 
@@ -102,6 +102,23 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - In a contract file, `ban-drop-column` and `ban-drop-table` are excluded. Everything else is still checked.
 
 `.squawk.toml` excludes `require-lock-timeout` and `require-statement-timeout`: timeouts are a connection-level concern for the migrate command, not something to repeat in every file. `--exclude` on the command line replaces the config list, so `CONTRACT_EXCLUDE` in the script repeats those two rules. Keep the two lists in sync.
+
+## Feature flags
+
+Unfinished work ships dark behind a flag. The API and the worker evaluate flags through [OpenFeature](https://openfeature.dev)'s Go SDK. Handlers and jobs call `featureflags.Enabled(ctx, "new-search")` from `internal/featureflags` and never import a vendor SDK.
+
+Both binaries call `featureflags.Init` at startup, which picks the provider from these variables:
+
+| Variable | Meaning |
+| --- | --- |
+| `POSTHOG_API_KEY` | PostHog project API key. When set, PostHog decides every flag and `FEATURE_FLAGS` is ignored. |
+| `POSTHOG_HOST` | PostHog host. Empty means `https://us.i.posthog.com`; EU projects use `https://eu.i.posthog.com`. A malformed value stops the binary at startup. |
+| `FEATURE_FLAGS` | Used only without a PostHog key. A comma-separated list of the flags that are on, such as `new-search,digest-emails`. `*` turns every flag on, for staging-like runs. Empty means every flag is off. |
+
+- A flag is off unless the provider says it is on. An unknown flag, a PostHog error, and an unreachable PostHog all evaluate to off. PostHog failures other than an unknown flag are logged at `warn`.
+- PostHog evaluates each call remotely, through its `/flags` endpoint with a 3-second timeout. The distinct ID is `civic-scanner-server`, or the OpenFeature targeting key when a caller passes one, so a percentage rollout gives the same answer to every call that has no targeting key. No `$feature_flag_called` events are sent.
+- The PostHog provider (`internal/featureflags/posthog.go`) is a thin layer over the official `posthog-go` client, because no maintained OpenFeature Go provider for PostHog exists. Another vendor means another provider in that package; callers do not change.
+- OpenFeature's provider is process-wide. A test that calls `featureflags.Init` with `config.FeatureFlags{On: ...}` must not run in parallel with other flag tests. Parallel tests can register OpenFeature's `openfeature/testing` provider instead, which keys flags by test.
 
 ## Deploy
 

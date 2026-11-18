@@ -12,6 +12,8 @@ type Config struct {
 	DatabaseURL string
 	LogLevel    slog.Level
 	AppEnv      string
+
+	FeatureFlags FeatureFlags
 }
 
 func Load() (Config, error) {
@@ -19,6 +21,8 @@ func Load() (Config, error) {
 		Port:        envOr("PORT", "8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		AppEnv:      envOr("APP_ENV", "development"),
+
+		FeatureFlags: loadFeatureFlags(),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
