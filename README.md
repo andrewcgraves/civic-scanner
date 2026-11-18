@@ -450,6 +450,37 @@ The table's check constraints accept only the three types and only a JSON object
 
 **Sequence order is assignment order, not commit order.** `sequence` is taken from the identity when the row is inserted, and transactions commit in any order: a transaction that inserted sequence 41 can commit after another that inserted 42. A reader that has seen 42 may therefore see 41 appear later. A consumer must not treat "the highest sequence seen" as a safe cursor without handling transactions still in flight, or it skips events for good. `occurred_at` has the same problem and the uuid `id` has no order at all. How consumers page through the outbox and track what they have delivered belongs to the RSS and webhook stories (CIV-45, CIV-46).
 
+## Recordings and transcripts
+
+Migration `00007` adds two tables.
+
+- `recordings`: one row per recording of a meeting, unique on `(meeting_id, source_url)`, so a meeting split into several videos has several rows. `source_url` is the original recording URL and cannot be empty. `audio_key` is the [object storage](#object-storage) key of the downloaded audio and `audio_expires_at` is when that audio is due for deletion; both are null until the audio is stored, and a check constraint keeps them null or set together. `audio_deleted_at` is set when the retention job deletes the audio, so deleted audio is told apart from audio never downloaded; a check constraint allows it only while there is no audio. `seq` is an identity column that gives the order recordings were added, even within one transaction, where `created_at` is the same for every row. A partial index on `audio_expires_at` covers only rows with audio, for the retention job.
+- `transcripts`: at most one per recording (unique `recording_id`). `full_text` is the whole transcript, `segments` a JSON array of `{"start_ms", "end_ms", "text", "speaker"}` objects (`speaker` left out when empty; a check constraint requires an array), and `summary` the nullable AI summary.
+
+Both have `created_at`/`updated_at`. Neither cascades: rows are never deleted by the store.
+
+`internal/store/recordings.go` and `internal/store/transcripts.go`:
+
+| Function | Does |
+| --- | --- |
+| `UpsertRecording(ctx, in)`, `UpsertRecordingTx` | Adds a recording from `RecordingInput{MeetingID, SourceURL}`, or returns the existing one for that meeting and URL without writing to it, with `created` saying which. A missing meeting is `ErrNotFound`. |
+| `GetRecording(ctx, id)` | One recording, or `ErrNotFound`. |
+| `ListRecordings(ctx, meetingID)` | A meeting's recordings in the order they were added (by `seq`). Empty for a meeting with none. |
+| `SetRecordingAudio(ctx, id, RecordingAudio{Key, ExpiresAt})`, `SetRecordingAudioTx` | Records the stored audio and clears `AudioDeletedAt`. An empty key or zero expiry is `ErrInvalidAudio`, returned before the database is touched. A missing recording is `ErrNotFound`. |
+| `MarkRecordingAudioDeleted(ctx, id, key)` | After the audio object is deleted, sets the key and expiry to null and `AudioDeletedAt` to now, only if the recording's key is still `key`. If audio was stored again in between (or already marked deleted), nothing changes and the error is `ErrAudioChanged`. A missing recording is `ErrNotFound`. |
+| `ListRecordingsWithExpiredAudio(ctx, now, limit)` | Up to `limit` recordings that still have audio expiring at or before `now`, soonest expiry first. A `limit` below 1 is `ErrInvalidLimit`. |
+| `SaveTranscript(ctx, in)`, `SaveTranscriptTx` | Stores `TranscriptInput{RecordingID, Text, Segments}` as the recording's transcript, replacing any earlier one in place (same id), and says whether it was created. The summary is kept when the text is unchanged and cleared otherwise. Saving the same text and segments again writes nothing and leaves `UpdatedAt` alone. A missing recording is `ErrNotFound`. |
+| `GetTranscript(ctx, recordingID)` | The recording's transcript, or `ErrNotFound`. |
+| `SetTranscriptSummary(ctx, transcriptID, textHash, summary)`, `SetTranscriptSummaryTx` | Sets the AI summary and returns the updated transcript, only if `textHash` (`store.HashContent` of the text that was summarised) still matches the transcript's text. If the transcript was saved with other text meanwhile, nothing changes and the error is `ErrTranscriptChanged`. A zero hash is `ErrZeroContentHash`. A missing transcript is `ErrNotFound`. |
+
+Like `AddAgendaVersion`, the upsert and save check the parent row first (`SELECT ... FOR KEY SHARE`, which also keeps it from being deleted until the transaction ends) instead of relying on the foreign key. So `ErrNotFound` from `UpsertRecordingTx` or `SaveTranscriptTx` leaves the caller's transaction usable.
+
+The summary check hashes the stored text in Postgres (`sha256` of its UTF-8 bytes) and compares it with the caller's `store.HashContent`, so the caller never sends the text back. A transcript's `UpdatedAt` would not do: setting the summary changes it too.
+
+A `Recording` without stored audio has a nil `Audio`; `AudioDeletedAt` is set when its audio was stored and later deleted. `store.TranscriptSegment` has the same fields as `transcribe.Segment` (`Start`, `End`, `Text`, `Speaker`), so the store does not import the transcription client. Times are stored to the millisecond, rounded. A segment with a negative start or an end before its start is `ErrInvalidSegment`, returned before the database is touched. Saving no segments stores an empty array, which reads back as an empty, non-nil slice.
+
+`api/migrations/down_integration_test.go` also rolls back to `00006`, checks both tables are gone and `meeting_events` is not, and applies `00007` again.
+
 ## Transcription
 
 `internal/transcribe` turns an audio file into a timestamped transcript through the [Vercel AI Gateway speech-to-text endpoint](https://vercel.com/docs/ai-gateway/modalities/speech-to-text), using only the standard library. `transcribe.New(cfg.Transcription)` returns a `transcribe.Client`, whose one method, `Transcribe(ctx, audioPath)`, takes a file path and returns a `transcribe.Transcript`: the full `Text`, the audio `Duration`, and ordered `Segments`, each with `Start`, `End`, `Text` and an optional `Speaker`. A file path, not a reader, is the input so a multi-hundred-MB recording is never held in memory.
@@ -502,6 +533,8 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - **Expand:** only add tables or columns that old code ignores. Squawk fails CI on destructive or locking changes.
 - **Release:** new code that uses them ships behind a flag.
 - **Contract:** a later migration removes the old structures. Mark the file with a `-- migration: contract` line, which permits dropping columns and tables, and confirm the flag is fully on in production before merging.
+
+Number a new file above every migration already on `main`, and renumber a branch's migration when another lands first. Goose refuses to apply a migration numbered below the database's current version, so a lower number would fail `migrate up` at deploy. Gaps are fine: `00005` is unused because recordings (`00007`) was renumbered after meeting events (`00006`) merged.
 
 `make lint-migrations` runs `.github/scripts/lint-migrations.sh [file...]` (default: every file in `api/migrations/`), which adapts each goose file for Squawk:
 
