@@ -6,8 +6,8 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -27,52 +27,67 @@ type Config struct {
 	ViewID     int
 	BoardNames []string
 	TimeZone   string
+	StartTime  string
 }
 
 type Adapter struct {
-	cfg     Config
-	loc     *time.Location
-	fetcher fetch.Fetcher
-	clock   sources.Clock
+	cfg       Config
+	loc       *time.Location
+	startHour int
+	startMin  int
+	fetcher   fetch.Fetcher
+	clock     sources.Clock
+	logger    *slog.Logger
 }
 
 func New(cfg Config, deps sources.Deps) (*Adapter, error) {
-	cfg, loc, err := cfg.resolve()
+	a, err := cfg.adapter()
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{cfg: cfg, loc: loc, fetcher: deps.Fetcher, clock: deps.Clock}, nil
+	return a.with(deps), nil
 }
 
 func Constructor(cfg Config) sources.Constructor {
-	cfg, loc, err := cfg.resolve()
+	a, err := cfg.adapter()
 	if err != nil {
 		panic(err)
 	}
 	return func(deps sources.Deps) sources.Adapter {
-		return &Adapter{cfg: cfg, loc: loc, fetcher: deps.Fetcher, clock: deps.Clock}
+		return a.with(deps)
 	}
 }
 
-func (c Config) resolve() (Config, *time.Location, error) {
+func (a Adapter) with(deps sources.Deps) *Adapter {
+	a.fetcher = deps.Fetcher
+	a.clock = deps.Clock
+	a.logger = deps.Log()
+	return &a
+}
+
+func (c Config) adapter() (Adapter, error) {
 	c.BoardNames = slices.Clone(c.BoardNames)
 	switch {
 	case c.Host == "" || strings.ContainsAny(c.Host, "/?#:@ "):
-		return c, nil, fmt.Errorf("%w: host %q", ErrInvalidConfig, c.Host)
+		return Adapter{}, fmt.Errorf("%w: host %q", ErrInvalidConfig, c.Host)
 	case c.ViewID <= 0:
-		return c, nil, fmt.Errorf("%w: view id %d", ErrInvalidConfig, c.ViewID)
+		return Adapter{}, fmt.Errorf("%w: view id %d", ErrInvalidConfig, c.ViewID)
 	case len(c.BoardNames) == 0:
-		return c, nil, fmt.Errorf("%w: no board names", ErrInvalidConfig)
-	case slices.ContainsFunc(c.BoardNames, func(n string) bool { return normalize(n) == "" }):
-		return c, nil, fmt.Errorf("%w: board names %q", ErrInvalidConfig, c.BoardNames)
+		return Adapter{}, fmt.Errorf("%w: no board names", ErrInvalidConfig)
+	case slices.ContainsFunc(c.BoardNames, func(n string) bool { return slug(n) == "" }):
+		return Adapter{}, fmt.Errorf("%w: board names %q", ErrInvalidConfig, c.BoardNames)
 	case c.TimeZone == "":
-		return c, nil, fmt.Errorf("%w: no time zone", ErrInvalidConfig)
+		return Adapter{}, fmt.Errorf("%w: no time zone", ErrInvalidConfig)
+	}
+	start, err := time.Parse("15:04", c.StartTime)
+	if err != nil {
+		return Adapter{}, fmt.Errorf("%w: start time %q", ErrInvalidConfig, c.StartTime)
 	}
 	loc, err := time.LoadLocation(c.TimeZone)
 	if err != nil {
-		return c, nil, fmt.Errorf("%w: time zone: %w", ErrInvalidConfig, err)
+		return Adapter{}, fmt.Errorf("%w: time zone: %w", ErrInvalidConfig, err)
 	}
-	return c, loc, nil
+	return Adapter{cfg: c, loc: loc, startHour: start.Hour(), startMin: start.Minute()}, nil
 }
 
 type feed struct {
@@ -86,6 +101,9 @@ type item struct {
 	Title     string     `xml:"title"`
 	Link      string     `xml:"link"`
 	DateParts *dateParts `xml:"pubDateParts"`
+	Enclosure *struct {
+		URL string `xml:"url,attr"`
+	} `xml:"enclosure"`
 }
 
 type dateParts struct {
@@ -96,13 +114,20 @@ type dateParts struct {
 	Minute string `xml:"min,attr"`
 }
 
-type clip struct {
-	id           int
-	name         string
-	cancelled    bool
-	startsAt     time.Time
-	agendaURL    string
-	recordingURL string
+type entry struct {
+	key       string
+	name      string
+	cancelled bool
+	clipID    int
+	eventID   int
+	startsAt  time.Time
+	link      string
+	agenda    bool
+	media     bool
+}
+
+type tally struct {
+	good, bad int
 }
 
 func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]sources.Meeting, error) {
@@ -114,28 +139,24 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 	if err != nil {
 		return nil, err
 	}
-	clips := map[int]*clip{}
-	if err := a.collect(clips, agendas, func(c *clip, link string) { c.agendaURL = link }); err != nil {
-		return nil, err
-	}
-	if err := a.collect(clips, videos, func(c *clip, link string) { c.recordingURL = link }); err != nil {
-		return nil, err
+	var inWindow tally
+	entries := a.entries(ctx, agendas, true, window, &inWindow)
+	entries = append(entries, a.entries(ctx, videos, false, window, &inWindow)...)
+	if inWindow.bad > 0 && inWindow.good == 0 {
+		return nil, fmt.Errorf("%w: %s: all %d board items in the window are unreadable", ErrMalformed, a.cfg.Host, inWindow.bad)
 	}
 
-	ordered := make([]*clip, 0, len(clips))
-	for _, c := range clips {
-		if window.Contains(c.startsAt) {
-			ordered = append(ordered, c)
+	now := a.clock.Now()
+	var meetings []sources.Meeting
+	for _, m := range group(entries) {
+		meeting := m.meeting(now)
+		if window.Contains(meeting.StartsAt) {
+			meetings = append(meetings, meeting)
 		}
 	}
-	slices.SortFunc(ordered, func(x, y *clip) int {
-		return cmp.Or(x.startsAt.Compare(y.startsAt), cmp.Compare(x.id, y.id))
+	slices.SortFunc(meetings, func(x, y sources.Meeting) int {
+		return cmp.Or(x.StartsAt.Compare(y.StartsAt), strings.Compare(x.SourceID, y.SourceID))
 	})
-	now := a.clock.Now()
-	meetings := make([]sources.Meeting, len(ordered))
-	for i, c := range ordered {
-		meetings[i] = c.meeting(now)
-	}
 	return meetings, nil
 }
 
@@ -155,120 +176,210 @@ func (a *Adapter) items(ctx context.Context, mode string) ([]item, error) {
 	return f.Channel.Items, nil
 }
 
-func (a *Adapter) collect(clips map[int]*clip, items []item, set func(*clip, string)) error {
+func (a *Adapter) entries(ctx context.Context, items []item, agendaFeed bool, window sources.Window, inWindow *tally) []entry {
+	var out []entry
 	for _, it := range items {
-		name, cancelled := splitTitle(it.Title)
-		if !a.board(name) {
+		t := parseTitle(it.Title)
+		name, ok := a.boardName(t.name)
+		if !ok {
+			if strings.Contains(strings.ToLower(it.Title), "board") {
+				a.logger.InfoContext(ctx, "granicus: dropped an item that is not a configured board meeting", "host", a.cfg.Host, "title", it.Title)
+			}
 			continue
 		}
-		parsed, err := a.parse(it, name, cancelled)
-		if err != nil {
-			return fmt.Errorf("%w: item %q: %w", ErrMalformed, it.Title, err)
+		e, err := a.entry(it, t, name, agendaFeed)
+		inside := e.startsAt.IsZero() || window.Contains(e.startsAt)
+		switch {
+		case err != nil && inside:
+			inWindow.bad++
+			a.logger.WarnContext(ctx, "granicus: skipped an unreadable board item", "host", a.cfg.Host, "title", it.Title, "error", err)
+		case err != nil:
+			a.logger.DebugContext(ctx, "granicus: skipped an unreadable board item outside the window", "host", a.cfg.Host, "title", it.Title, "error", err)
+		default:
+			if inside {
+				inWindow.good++
+			}
+			if agendaFeed || e.clipID > 0 {
+				out = append(out, e)
+			}
 		}
-		c, ok := clips[parsed.id]
-		if !ok {
-			c = &parsed
-			clips[parsed.id] = c
-		}
-		set(c, strings.TrimSpace(it.Link))
 	}
-	return nil
+	return out
 }
 
-func (a *Adapter) board(name string) bool {
-	return slices.ContainsFunc(a.cfg.BoardNames, func(n string) bool {
-		return strings.EqualFold(normalize(n), name)
-	})
+func (a *Adapter) entry(it item, t title, name string, agendaFeed bool) (entry, error) {
+	e := entry{name: name, cancelled: t.cancelled, link: strings.TrimSpace(it.Link)}
+	clipID, eventID, idErr := ids(e.link)
+	e.clipID, e.eventID = clipID, eventID
+	parts, partsOK := a.parts(it.DateParts)
+	day := t.date
+	switch {
+	case t.hasDate:
+	case clipID > 0 && partsOK:
+		day = parts
+	default:
+		return e, errors.Join(idErr, errors.New("no meeting date in the title"))
+	}
+	e.startsAt = time.Date(day.Year(), day.Month(), day.Day(), a.startHour, a.startMin, 0, 0, a.loc).UTC()
+	if clipID > 0 && partsOK {
+		e.startsAt = parts.UTC()
+	}
+	if idErr != nil {
+		return e, idErr
+	}
+	e.key = slug(name) + "/" + day.Format(time.DateOnly)
+	e.agenda = agendaFeed
+	e.media = !agendaFeed && it.Enclosure != nil && strings.TrimSpace(it.Enclosure.URL) != ""
+	return e, nil
 }
 
-func (a *Adapter) parse(it item, name string, cancelled bool) (clip, error) {
-	link := strings.TrimSpace(it.Link)
-	id, err := clipID(link)
-	if err != nil {
-		return clip{}, err
-	}
-	startsAt, err := a.startsAt(it.DateParts)
-	if err != nil {
-		return clip{}, err
-	}
-	return clip{id: id, name: name, cancelled: cancelled, startsAt: startsAt}, nil
-}
-
-func clipID(link string) (int, error) {
+func ids(link string) (clipID, eventID int, err error) {
 	u, err := url.Parse(link)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return 0, fmt.Errorf("link %q", link)
+		return 0, 0, fmt.Errorf("link %q is not an absolute url", link)
 	}
-	id, err := strconv.Atoi(u.Query().Get("clip_id"))
-	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("link %q has no clip id", link)
+	q := u.Query()
+	if id, err := strconv.Atoi(q.Get("clip_id")); err == nil && id > 0 {
+		return id, 0, nil
 	}
-	return id, nil
+	if id, err := strconv.Atoi(q.Get("event_id")); err == nil && id > 0 {
+		return 0, id, nil
+	}
+	return 0, 0, fmt.Errorf("link %q has neither a clip id nor an event id", link)
 }
 
-func (a *Adapter) startsAt(p *dateParts) (time.Time, error) {
+func (a *Adapter) parts(p *dateParts) (time.Time, bool) {
 	if p == nil {
-		return time.Time{}, errors.New("no pubDateParts")
+		return time.Time{}, false
 	}
 	var n [5]int
 	for i, raw := range []string{p.Year, p.Month, p.Day, p.Hour, p.Minute} {
 		v, err := strconv.Atoi(strings.TrimSpace(raw))
 		if err != nil {
-			return time.Time{}, fmt.Errorf("pubDateParts %+v", *p)
+			return time.Time{}, false
 		}
 		n[i] = v
 	}
 	year, month, day, hour, minute := n[0], n[1], n[2], n[3], n[4]
 	if month < 1 || month > 12 || day < 1 || hour < 0 || hour > 23 || minute < 0 || minute > 59 {
-		return time.Time{}, fmt.Errorf("pubDateParts %+v", *p)
+		return time.Time{}, false
 	}
 	local := time.Date(year, time.Month(month), day, hour, minute, 0, 0, a.loc)
 	if local.Day() != day {
-		return time.Time{}, fmt.Errorf("pubDateParts %+v", *p)
+		return time.Time{}, false
 	}
-	return local.UTC(), nil
+	return local, true
 }
 
-func (c *clip) meeting(now time.Time) sources.Meeting {
-	pageURL := c.recordingURL
-	if pageURL == "" {
-		pageURL = c.agendaURL
+func (a *Adapter) boardName(name string) (string, bool) {
+	for _, n := range a.cfg.BoardNames {
+		if strings.EqualFold(normalize(n), name) {
+			return normalize(n), true
+		}
+	}
+	return "", false
+}
+
+type meeting struct {
+	sourceID string
+	entries  []entry
+}
+
+func group(entries []entry) []meeting {
+	byKey := map[string][]entry{}
+	var keys []string
+	for _, e := range entries {
+		if _, ok := byKey[e.key]; !ok {
+			keys = append(keys, e.key)
+		}
+		byKey[e.key] = append(byKey[e.key], e)
+	}
+	var out []meeting
+	for _, key := range keys {
+		for i, entries := range sessions(byKey[key]) {
+			id := key
+			if i > 0 {
+				id = key + "/" + strconv.Itoa(i+1)
+			}
+			out = append(out, meeting{sourceID: id, entries: entries})
+		}
+	}
+	return out
+}
+
+func sessions(entries []entry) [][]entry {
+	var clips, events []entry
+	for _, e := range entries {
+		if e.clipID > 0 {
+			clips = append(clips, e)
+		} else {
+			events = append(events, e)
+		}
+	}
+	if len(clips) == 0 {
+		slices.SortFunc(events, func(x, y entry) int { return cmp.Compare(x.eventID, y.eventID) })
+		var out [][]entry
+		for _, e := range events {
+			if len(out) == 0 || out[len(out)-1][0].eventID != e.eventID {
+				out = append(out, []entry{e})
+			}
+		}
+		return out
+	}
+	slices.SortFunc(clips, func(x, y entry) int {
+		return cmp.Or(x.startsAt.Compare(y.startsAt), cmp.Compare(x.clipID, y.clipID))
+	})
+	var out [][]entry
+	for _, c := range clips {
+		if n := len(out); n > 0 && out[n-1][0].startsAt.Equal(c.startsAt) {
+			out[n-1] = append(out[n-1], c)
+			continue
+		}
+		out = append(out, []entry{c})
+	}
+	for _, s := range out {
+		slices.SortStableFunc(s, func(x, y entry) int { return cmp.Compare(x.clipID, y.clipID) })
+	}
+	return out
+}
+
+func (m meeting) meeting(now time.Time) sources.Meeting {
+	first := m.entries[0]
+	var agendaURL, recordingURL, anyLink string
+	cancelled := false
+	for _, e := range m.entries {
+		if anyLink == "" {
+			anyLink = e.link
+		}
+		if e.agenda {
+			agendaURL = e.link
+			cancelled = e.cancelled
+		}
+		if e.media && recordingURL == "" {
+			recordingURL = e.link
+		}
+	}
+	if agendaURL == "" {
+		cancelled = m.entries[len(m.entries)-1].cancelled
+	}
+	if cancelled {
+		recordingURL = ""
+	}
+	pageURL := cmp.Or(recordingURL, agendaURL, anyLink)
+	status := sources.StatusScheduled
+	switch {
+	case cancelled:
+		status = sources.StatusCancelled
+	case recordingURL != "" && !first.startsAt.After(now):
+		status = sources.StatusHeld
 	}
 	return sources.Meeting{
-		SourceID:     strconv.Itoa(c.id),
-		Title:        c.name,
-		StartsAt:     c.startsAt,
-		Status:       c.status(now),
+		SourceID:     m.sourceID,
+		Title:        first.name,
+		StartsAt:     first.startsAt,
+		Status:       status,
 		PageURL:      pageURL,
-		AgendaURL:    c.agendaURL,
-		RecordingURL: c.recordingURL,
+		AgendaURL:    agendaURL,
+		RecordingURL: recordingURL,
 	}
-}
-
-func (c *clip) status(now time.Time) sources.Status {
-	switch {
-	case c.cancelled:
-		return sources.StatusCancelled
-	case !c.startsAt.After(now) && c.recordingURL != "":
-		return sources.StatusHeld
-	default:
-		return sources.StatusScheduled
-	}
-}
-
-var (
-	dateSuffix   = regexp.MustCompile(`\s+-\s+[A-Za-z]{3,9}\.? \d{1,2}, \d{4}$`)
-	cancelSuffix = regexp.MustCompile(`(?i)^(.*?)[\s(\-]*\bcancell?ed\b.*$`)
-)
-
-func splitTitle(title string) (string, bool) {
-	name := dateSuffix.ReplaceAllString(normalize(title), "")
-	if m := cancelSuffix.FindStringSubmatch(name); m != nil {
-		return strings.TrimSpace(m[1]), true
-	}
-	return name, false
-}
-
-func normalize(s string) string {
-	return strings.Join(strings.Fields(s), " ")
 }

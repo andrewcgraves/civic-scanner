@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/url"
 	"slices"
@@ -55,6 +56,14 @@ func (SystemClock) Now() time.Time { return time.Now().UTC() }
 type Deps struct {
 	Fetcher fetch.Fetcher
 	Clock   Clock
+	Logger  *slog.Logger
+}
+
+func (d Deps) Log() *slog.Logger {
+	if d.Logger == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return d.Logger
 }
 
 type Constructor func(Deps) Adapter

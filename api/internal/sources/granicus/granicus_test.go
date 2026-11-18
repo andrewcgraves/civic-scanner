@@ -60,8 +60,12 @@ func checkWindow(now time.Time) sources.Window {
 	return sources.Window{From: now.AddDate(0, 0, -30), To: now.AddDate(0, 0, 90)}
 }
 
-func agendaViewer(clip int) string {
+func clipAgenda(clip int) string {
 	return fmt.Sprintf("https://metrolink.granicus.com/AgendaViewer.php?view_id=8&clip_id=%d", clip)
+}
+
+func eventAgenda(event int) string {
+	return fmt.Sprintf("https://metrolink.granicus.com/AgendaViewer.php?view_id=8&event_id=%d", event)
 }
 
 func mediaPlayer(clip int) string {
@@ -69,16 +73,25 @@ func mediaPlayer(clip int) string {
 }
 
 func heldBoardMeeting(clip int, startsAt time.Time) sources.Meeting {
+	local := startsAt.In(losAngeles)
 	return sources.Meeting{
-		SourceID:     fmt.Sprint(clip),
+		SourceID:     "board-of-directors/" + local.Format(time.DateOnly),
 		Title:        "Board of Directors",
 		StartsAt:     startsAt,
 		Status:       sources.StatusHeld,
 		PageURL:      mediaPlayer(clip),
-		AgendaURL:    agendaViewer(clip),
+		AgendaURL:    clipAgenda(clip),
 		RecordingURL: mediaPlayer(clip),
 	}
 }
+
+var losAngeles = func() *time.Location {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		panic(err)
+	}
+	return loc
+}()
 
 func assertMeetings(t *testing.T, got, want []sources.Meeting) {
 	t.Helper()
@@ -137,6 +150,61 @@ func TestCommitteeItemsInTheRecordedFeedsAreDropped(t *testing.T) {
 	if len(got) != 0 {
 		t.Errorf("meetings = %+v, want none: the only item that day is a committee", got)
 	}
+}
+
+func TestUpcomingEventsFromARecordedGranicusFeed(t *testing.T) {
+	cfg := granicus.Config{
+		Host:       "sacramento.granicus.com",
+		ViewID:     21,
+		BoardNames: []string{"Active Transportation Commission", "Housing Code Advisory and Appeals Board"},
+		TimeZone:   "America/Los_Angeles",
+		StartTime:  "17:30",
+	}
+	a, err := granicus.New(cfg, sources.Deps{
+		Fetcher: serving(fixture(t, "sacramento_agendas_upcoming.xml"), []byte(`<rss version="2.0"><channel></channel></rss>`)),
+		Clock:   sourcestest.NewClock(recordedAt),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	window := sources.Window{From: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)}
+
+	got, err := a.Meetings(t.Context(), window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sources.Validate(got); err != nil {
+		t.Fatal(err)
+	}
+	sac := func(param string, id int) string {
+		return fmt.Sprintf("https://sacramento.granicus.com/AgendaViewer.php?view_id=21&%s=%d", param, id)
+	}
+	assertMeetings(t, got, []sources.Meeting{
+		{
+			SourceID:  "housing-code-advisory-and-appeals-board/2026-07-22",
+			Title:     "Housing Code Advisory and Appeals Board",
+			StartsAt:  time.Date(2026, 7, 23, 0, 30, 0, 0, time.UTC),
+			Status:    sources.StatusCancelled,
+			PageURL:   sac("clip_id", 6828),
+			AgendaURL: sac("clip_id", 6828),
+		},
+		{
+			SourceID:  "active-transportation-commission/2026-10-15",
+			Title:     "Active Transportation Commission",
+			StartsAt:  time.Date(2026, 10, 16, 0, 45, 0, 0, time.UTC),
+			Status:    sources.StatusScheduled,
+			PageURL:   sac("clip_id", 6915),
+			AgendaURL: sac("clip_id", 6915),
+		},
+		{
+			SourceID:  "active-transportation-commission/2026-11-19",
+			Title:     "Active Transportation Commission",
+			StartsAt:  time.Date(2026, 11, 20, 1, 30, 0, 0, time.UTC),
+			Status:    sources.StatusScheduled,
+			PageURL:   sac("event_id", 6450),
+			AgendaURL: sac("event_id", 6450),
+		},
+	})
 }
 
 func TestConstructorBuildsAnAdapterFromDeps(t *testing.T) {
