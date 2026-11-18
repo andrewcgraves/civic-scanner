@@ -14,7 +14,10 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 )
 
-const maxRetries = 2
+const (
+	maxRetries = 2
+	partSize   = 16 << 20
+)
 
 type s3Store struct {
 	client *minio.Client
@@ -52,6 +55,7 @@ func New(cfg config.Storage) (Store, error) {
 func (s *s3Store) Put(ctx context.Context, key string, body io.Reader) error {
 	_, err := s.client.PutObject(ctx, s.bucket, key, body, -1, minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
+		PartSize:    partSize,
 	})
 	return classify(err, key)
 }

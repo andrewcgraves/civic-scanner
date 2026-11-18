@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,6 +15,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
+	"github.com/andrewcgraves/civic-scanner/api/internal/storage"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
@@ -29,11 +31,17 @@ type Config struct {
 	Enabled        func(ctx context.Context, flag string) bool
 	FollowUp       FollowUp
 	AgendaFollowUp AgendaFollowUp
+	Storage        storage.Store
+	Audio          AudioDownloader
+	AudioTimeout   time.Duration
+	AudioFollowUp  AudioFollowUp
+	AudioQueue     string
+	AudioTempDir   string
 	Queue          string
 	NoPeriodicJobs bool
 }
 
-func (c Config) withDefaults() Config {
+func (c Config) withDefaults(st *store.Store) Config {
 	if c.Clock == nil {
 		c.Clock = sources.SystemClock{}
 	}
@@ -43,8 +51,20 @@ func (c Config) withDefaults() Config {
 	if c.Queue == "" {
 		c.Queue = river.QueueDefault
 	}
+	if c.AudioQueue == "" {
+		c.AudioQueue = AudioQueue
+	}
 	if c.FollowUp == nil {
-		c.FollowUp = EnqueueProcessAgenda{Queue: c.Queue}
+		c.FollowUp = FollowUps{
+			EnqueueProcessAgenda{Queue: c.Queue},
+			EnqueueDownloadAudio{Queue: c.AudioQueue, Store: st, Enabled: c.Enabled},
+		}
+	}
+	if c.AudioTimeout <= 0 {
+		c.AudioTimeout = defaultAudioTimeout
+	}
+	if c.AudioFollowUp == nil {
+		c.AudioFollowUp = NoAudioFollowUp{}
 	}
 	if c.Extractor == nil {
 		c.Extractor = extract.New(config.Extract{})
@@ -56,8 +76,8 @@ func (c Config) withDefaults() Config {
 }
 
 func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Client[pgx.Tx], error) {
-	cfg = cfg.withDefaults()
 	st := store.New(pool)
+	cfg = cfg.withDefaults(st)
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &CheckAgencyWorker{
@@ -79,6 +99,18 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		enabled:   cfg.Enabled,
 		followUp:  cfg.AgendaFollowUp,
 	})
+	river.AddWorker(workers, &DownloadAudioWorker{
+		logger:     logger,
+		pool:       pool,
+		store:      st,
+		storage:    cfg.Storage,
+		downloader: cfg.Audio,
+		clock:      cfg.Clock,
+		enabled:    cfg.Enabled,
+		followUp:   cfg.AudioFollowUp,
+		timeout:    cfg.AudioTimeout,
+		tempDir:    cfg.AudioTempDir,
+	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,
 		store:   st,
@@ -97,9 +129,13 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 	}
 
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Logger:       logger,
-		Queues:       map[string]river.QueueConfig{cfg.Queue: {MaxWorkers: 10}},
-		Workers:      workers,
-		PeriodicJobs: periodic,
+		Logger: logger,
+		Queues: map[string]river.QueueConfig{
+			cfg.Queue:      {MaxWorkers: 10},
+			cfg.AudioQueue: {MaxWorkers: audioQueueWorkers},
+		},
+		Workers:              workers,
+		PeriodicJobs:         periodic,
+		RescueStuckJobsAfter: max(rescueStuckJobsAfter, 2*(cfg.AudioTimeout+audioTimeoutHeadroom)),
 	})
 }

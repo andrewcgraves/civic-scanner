@@ -223,9 +223,23 @@ func TestNoAgendaFollowUpDoesNothing(t *testing.T) {
 }
 
 func TestConfigDefaultsEnqueueAgendasOnTheConfiguredQueue(t *testing.T) {
-	cfg := Config{Queue: "ingest"}.withDefaults()
-	if got, ok := cfg.FollowUp.(EnqueueProcessAgenda); !ok || got.Queue != "ingest" {
-		t.Errorf("FollowUp = %#v, want EnqueueProcessAgenda on ingest", cfg.FollowUp)
+	st := store.New(nil)
+	cfg := Config{Queue: "ingest"}.withDefaults(st)
+	followUps, ok := cfg.FollowUp.(FollowUps)
+	if !ok || len(followUps) != 2 {
+		t.Fatalf("FollowUp = %#v, want two follow-ups", cfg.FollowUp)
+	}
+	if got, ok := followUps[0].(EnqueueProcessAgenda); !ok || got.Queue != "ingest" {
+		t.Errorf("FollowUp[0] = %#v, want EnqueueProcessAgenda on ingest", followUps[0])
+	}
+	if got, ok := followUps[1].(EnqueueDownloadAudio); !ok || got.Queue != AudioQueue || got.Store != st || got.Enabled == nil {
+		t.Errorf("FollowUp[1] = %#v, want EnqueueDownloadAudio on the audio queue", followUps[1])
+	}
+	if cfg.AudioTimeout != time.Hour {
+		t.Errorf("AudioTimeout = %v", cfg.AudioTimeout)
+	}
+	if _, ok := cfg.AudioFollowUp.(NoAudioFollowUp); !ok {
+		t.Errorf("AudioFollowUp = %#v", cfg.AudioFollowUp)
 	}
 	if _, ok := cfg.Extractor.(*extract.Extractor); !ok {
 		t.Errorf("Extractor = %#v", cfg.Extractor)
@@ -233,7 +247,7 @@ func TestConfigDefaultsEnqueueAgendasOnTheConfiguredQueue(t *testing.T) {
 	if _, ok := cfg.AgendaFollowUp.(NoAgendaFollowUp); !ok {
 		t.Errorf("AgendaFollowUp = %#v", cfg.AgendaFollowUp)
 	}
-	if got := (Config{}).withDefaults().FollowUp.(EnqueueProcessAgenda).Queue; got != river.QueueDefault {
+	if got := (Config{}).withDefaults(st).FollowUp.(FollowUps)[0].(EnqueueProcessAgenda).Queue; got != river.QueueDefault {
 		t.Errorf("default queue = %q", got)
 	}
 }

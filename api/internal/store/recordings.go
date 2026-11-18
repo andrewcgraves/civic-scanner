@@ -190,6 +190,39 @@ func setRecordingAudio(ctx context.Context, q querier, recordingID uuid.UUID, au
 	return r, nil
 }
 
+const addRecordingAudioSQL = `
+UPDATE recordings SET audio_key = $2, audio_expires_at = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND audio_key IS NULL AND audio_deleted_at IS NULL
+RETURNING ` + recordingColumns
+
+func (s *Store) AddRecordingAudio(ctx context.Context, recordingID uuid.UUID, audio RecordingAudio) (Recording, error) {
+	if err := validateAudio(audio); err != nil {
+		return Recording{}, err
+	}
+	return addRecordingAudio(ctx, s.pool, recordingID, audio)
+}
+
+func (s *Store) AddRecordingAudioTx(ctx context.Context, tx pgx.Tx, recordingID uuid.UUID, audio RecordingAudio) (Recording, error) {
+	if err := validateAudio(audio); err != nil {
+		return Recording{}, err
+	}
+	return addRecordingAudio(ctx, tx, recordingID, audio)
+}
+
+func addRecordingAudio(ctx context.Context, q querier, recordingID uuid.UUID, audio RecordingAudio) (Recording, error) {
+	r, err := scanRecording(q.QueryRow(ctx, addRecordingAudioSQL, recordingID, audio.Key, audio.ExpiresAt))
+	if err == nil {
+		return r, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Recording{}, fmt.Errorf("add recording audio: %w", err)
+	}
+	if _, err := getRecording(ctx, q, recordingID); err != nil {
+		return Recording{}, fmt.Errorf("add recording audio: recording %s: %w", recordingID, err)
+	}
+	return Recording{}, fmt.Errorf("add recording audio: recording %s already has audio or had it deleted: %w", recordingID, ErrAudioChanged)
+}
+
 func (s *Store) MarkRecordingAudioDeleted(ctx context.Context, recordingID uuid.UUID, key string) (Recording, error) {
 	r, err := scanRecording(s.pool.QueryRow(ctx, `
 UPDATE recordings SET audio_key = NULL, audio_expires_at = NULL, audio_deleted_at = clock_timestamp(), updated_at = clock_timestamp()

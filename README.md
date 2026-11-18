@@ -210,7 +210,7 @@ Tests never call the gateway. `internal/llm/llmtest` provides `llmtest.Fake`, an
 
 ## Object storage
 
-`internal/storage` stores the audio track of meeting recordings in a [Railway bucket](https://docs.railway.com/storage-buckets), which speaks the S3 API. `storage.New(cfg.Storage)` returns a `storage.Store` with five methods: `Put` (streams from an `io.Reader`), `Get` (returns a streaming `io.ReadCloser`), `Delete` (a missing key is not an error), `Stat` (key, size, last modified) and `ListOlderThan` (keys last modified before a time, for the retention job). Keys are chosen by the caller. Nothing calls the store yet.
+`internal/storage` stores the audio track of meeting recordings in a [Railway bucket](https://docs.railway.com/storage-buckets), which speaks the S3 API. `storage.New(cfg.Storage)` returns a `storage.Store` with five methods: `Put` (streams from an `io.Reader`), `Get` (returns a streaming `io.ReadCloser`), `Delete` (a missing key is not an error), `Stat` (key, size, last modified) and `ListOlderThan` (keys last modified before a time, for the retention job). Keys are chosen by the caller. The `download_audio` job is the first caller (see [Recording audio](#recording-audio)). `Put` uploads in 16 MiB multipart parts, so an upload of unknown length buffers at most one part in memory; without a part size, `minio-go` sizes parts for a 5 TiB object and buffers about 537 MiB.
 
 It uses [`minio-go`](https://github.com/minio/minio-go) rather than the AWS SDK for Go v2: it takes any S3-compatible endpoint, streams an unsized `io.Reader` as a multipart upload without a seekable body, switches between path-style and virtual-hosted-style addressing with one option, and pulls in far fewer dependencies.
 
@@ -233,7 +233,7 @@ Tests of code that uses a store use `storage/storagetest`: `storagetest.New()` i
 
 Setting any of the variables without a valid endpoint, bucket, access key and secret makes `storage.New` fail.
 
-In production the `audio` bucket is defined in `.railway/railway.ts` and the API service's `STORAGE_*` variables reference it. Objects are meant to be deleted after about six months; the retention job that does it is not built yet, and Railway buckets have no lifecycle rules.
+In production the `audio` bucket is defined in `.railway/railway.ts` and the API service's `STORAGE_*` variables reference it. Objects are meant to be deleted after about six months; the retention job that does it is not built yet (CIV-42), and Railway buckets have no lifecycle rules. The worker needs the same `STORAGE_*` variables to store audio; without them `download_audio` jobs are cancelled before anything is downloaded.
 
 Locally, `make dev-db` also starts [Adobe S3Mock](https://github.com/adobe/S3Mock) on `localhost:9090` with a `civic-audio` bucket (the image is small, needs no start arguments so it works as a CI service container, and accepts any credentials). The Makefile exports matching `STORAGE_*` defaults, which `make test-integration` and `make coverage` use. The `api-integration` CI job runs the same image as a service container.
 
@@ -272,7 +272,7 @@ Tests never call a live site or Firecrawl. `internal/fetch/fetchtest` provides `
 
 ## Ingestion
 
-The worker checks every live agency once a day for board meetings, records them, and stores the text of each published agenda. These are the first links of the pipeline (check agency, process agenda, download audio, transcribe, summarize). Three River jobs in `internal/jobs` do it, behind the `ingest-check-agencies` feature flag.
+The worker checks every live agency once a day for board meetings, records them, and stores the text of each published agenda. It also downloads the audio track of each held meeting's recording. These are the first links of the pipeline (check agency, process agenda, download audio, transcribe, summarize). Four River jobs in `internal/jobs` do it, behind the `ingest-check-agencies` feature flag; the audio download is also behind its own flag, `ingest-download-audio` (see [Recording audio](#recording-audio)).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -289,7 +289,7 @@ The worker checks every live agency once a day for board meetings, records them,
 2. It looks up the agency's source adapter by slug. An agency with no adapter is skipped: an info log, and the job completes. So is an agency that is no longer live.
 3. It asks the adapter for meetings in the window from 30 days before now to 90 days after. The look-back catches recordings, minutes and status changes posted after a meeting; the look-ahead covers the meeting calendars agencies publish for the coming quarter.
 4. It checks the result with `sources.Validate`. A result that breaks the adapter contract cancels the job and writes nothing.
-5. In one transaction for the agency, it upserts each meeting with `store.UpsertMeetingTx` (unique on agency and source id, so a rerun updates rows instead of duplicating them; a changed title or start time updates the row) and hands each one to the follow-up hook, which inserts a `process_agenda` job for every meeting with an agenda URL. Any error rolls back the whole agency, including the jobs it inserted.
+5. In one transaction for the agency, it upserts each meeting with `store.UpsertMeetingTx` (unique on agency and source id, so a rerun updates rows instead of duplicating them; a changed title or start time updates the row) and hands each one to the follow-up hook, which inserts a `process_agenda` job for every meeting with an agenda URL and, with `ingest-download-audio` on, records the recording and inserts a `download_audio` job for every held meeting with a recording URL. Any error rolls back the whole agency, including the jobs it inserted.
 
 `process_agenda` downloads one meeting's agenda and stores its text as an agenda version (see [Agendas](#agendas)). Its args are the meeting id and the agenda URL. It is unique by args, queue and UTC day, like `check_agency`, so a meeting's agenda is read at most once a day per URL. Every daily check enqueues it again for every meeting in the window that has an agenda, because an agency can replace an agenda without changing its URL; an unchanged agenda stores nothing. The job has a 5 minute timeout and at most 5 attempts.
 
@@ -456,7 +456,7 @@ Other cases (corrections, cancellations, several items for one meeting across su
 
 ### Follow-up jobs
 
-`check_agency` enqueues `process_agenda` when a meeting has an agenda URL, in the same transaction as the upsert; the recording story will enqueue `download-audio` when it has a recording URL. The seam is `jobs.FollowUp`:
+`check_agency` enqueues `process_agenda` when a meeting has an agenda URL, in the same transaction as the upsert; it also enqueues `download_audio` for a held meeting with a recording URL (see [Recording audio](#recording-audio)). The seam is `jobs.FollowUp`:
 
 ```go
 type FollowUp interface {
@@ -471,7 +471,7 @@ type UpsertedMeeting struct {
 }
 ```
 
-`check_agency` calls it for every upserted meeting, inside the upsert transaction; an error rolls back the agency's whole check. The default, `jobs.EnqueueProcessAgenda{Queue}` on the client's queue, inserts `process_agenda` with `river.ClientFromContextSafely[pgx.Tx](ctx)` and `InsertTx`, and does nothing for a meeting without an agenda URL. `jobs.NoFollowUp` does nothing. Another implementation is set through `jobs.Config.FollowUp`; one that also wants agendas processed calls `EnqueueProcessAgenda` itself.
+`check_agency` calls it for every upserted meeting, inside the upsert transaction; an error rolls back the agency's whole check. The default is `jobs.FollowUps{EnqueueProcessAgenda{Queue}, EnqueueDownloadAudio{Queue, Store, Enabled}}`, which runs each in order and stops at the first error. `EnqueueProcessAgenda` inserts `process_agenda` on the client's queue with `river.ClientFromContextSafely[pgx.Tx](ctx)` and `InsertTx`, and does nothing for a meeting without an agenda URL. `EnqueueDownloadAudio` is described under [Recording audio](#recording-audio). `jobs.NoFollowUp` does nothing. Another implementation is set through `jobs.Config.FollowUp`; one that also wants agendas processed or audio downloaded includes those follow-ups itself.
 
 `process_agenda` has the same kind of seam for new agenda versions, `jobs.AgendaFollowUp`:
 
@@ -486,6 +486,87 @@ It is called once for each version that was created, never for an unchanged agen
 ### Tests
 
 The unit tests use the fake adapter, fake fetcher and fake clock. The integration tests run a real River client against Postgres; the harness gives every client a fetcher that serves a plain-text agenda and an in-process PDF reader (`extract.InProcess`) unless the test sets its own, so no test reaches a real agenda host. The PDF agenda test runs the real `cmd/extract` binary, built with `testbin.BuildPackage`. Each test uses its own random queue (`jobs.Config.Queue`) and turns off the periodic job (`jobs.Config.NoPeriodicJobs`), so tests in other packages, which share the database, never work its jobs. A test that runs a check twice schedules the runs on different days, since a second check the same day is a duplicate.
+
+## Recording audio
+
+`download_audio` downloads one recording and stores its audio track, never the video, in the [bucket](#object-storage). It is enqueued by `check_agency` and works through `internal/media`, which resolves the recording URL to a media stream or file and runs `ffmpeg` under resource limits.
+
+### Enqueueing
+
+`jobs.EnqueueDownloadAudio`, one of the default [follow-ups](#follow-up-jobs), runs inside the check's upsert transaction. For a meeting that is `held` and has a recording URL, and only while `ingest-download-audio` is on, it upserts the recording (`store.UpsertRecordingTx`, unique on meeting and URL) and inserts `download_audio` with the recording id on the audio queue. It inserts nothing when the recording already has audio, or when its audio was deleted by retention (`audio_deleted_at` set), so deleted audio is never downloaded again. A scheduled or cancelled meeting gets no recording row and no job.
+
+`download_audio` is unique by args, queue and UTC day, like `process_agenda`. It has at most 5 attempts and a timeout of `AUDIO_TIMEOUT` plus 15 minutes for resolving the player page and uploading. It runs on its own queue, `audio` (`jobs.Config.AudioQueue`), with one worker, so the worker never runs two downloads at once: memory and disk use are those of one `ffmpeg`. River's stuck-job rescue is set to at least twice the job timeout (3 hours by default), so a long download is not rescued and run twice.
+
+### What the job does
+
+1. With `ingest-download-audio` off, it completes without doing anything. Without a bucket (`jobs.Config.Storage`) or a downloader it is cancelled (`jobs.ErrNoStorage`, `jobs.ErrNoDownloader`).
+2. It reads the recording. A missing recording cancels the job. A recording that already has audio, or whose audio was deleted by retention, completes without downloading.
+3. It asks the bucket for the key `recordings/{recording id}.mp3` (`jobs.AudioKey`). If an object is there, an earlier run uploaded it and failed before recording it, so the job records it without downloading again. A bucket that is not configured cancels the job here, before any download.
+4. It downloads the audio into a new temporary directory (removed on every return path) with `jobs.Config.Audio`, a `jobs.AudioDownloader`; the worker passes `media.NewDownloader(cfg.Audio, plain HTTP fetcher, FETCH_USER_AGENT)`.
+5. It streams the file to the bucket with `storage.Store.Put`.
+6. In one transaction it records the key and an expiry six months from now with `store.AddRecordingAudioTx`, which writes only while the recording has no audio and none was deleted, and calls the audio follow-up hook, `jobs.AudioFollowUp`, with the updated recording. If another run stored the audio meanwhile, the job completes. If retention deleted it meanwhile, the job deletes its own upload again and completes.
+
+Running the job twice for one recording downloads once: the second run finds the audio recorded (step 2) or the object in the bucket (step 3). The key depends only on the recording id, so a repeated upload replaces the same object.
+
+`AudioFollowUp` is the seam for transcription (CIV-41): `AudioStored(ctx, tx, recording)` runs in the transaction that records the audio, so a job it inserts with `InsertTx` commits or rolls back with it. It is called once per recording, never for audio that was already stored. The default, `jobs.NoAudioFollowUp`, does nothing. Retention (CIV-42) deletes the object and calls `store.MarkRecordingAudioDeleted`; the job never downloads such a recording again.
+
+Errors:
+
+- Retryable: `media.IsRetryable` (network failures and 408, 429 and 5xx answers from the player page or media host, a bot check on the player page, a canceled context or the job's own timeout), retryable bucket errors, and database and follow-up errors.
+- Permanent, cancelled with `river.JobCancel`: a recording URL on an unsupported host, a player page that names no media (`media.ErrNoMedia`), a media host's 4xx (`media.ErrRefused`; see the note on CloudFront below), media that cannot be read (`media.ErrMalformed`) or has no audio (`media.ErrNoAudio`), a limit (`media.ErrLimitExceeded`), a missing tool (`media.ErrUnavailable`), and a bucket that is not configured or refuses the request. The next day's check enqueues the recording again while its meeting is in the 30-day look-back.
+
+### Which hosts are fetched
+
+`media.DefaultHosts` lists them; a new source whose recordings live elsewhere adds its hosts there.
+
+| Kind | Hosts | Fetched by |
+| --- | --- | --- |
+| Player pages | `*.granicus.com` (`MediaPlayer.php?view_id=&clip_id=`, which redirects to `/player/clip/{id}`) | plain HTTP with `FETCH_USER_AGENT`, at most 4 MiB, no Firecrawl |
+| Media | `archive-stream.granicus.com` (HLS), `archive-video.granicus.com` (MP4), `*.googlevideo.com` (YouTube audio) | `ffmpeg`, sending `FETCH_USER_AGENT` |
+| YouTube pages | `youtube.com`, `www.youtube.com`, `m.youtube.com`, `youtu.be` | `yt-dlp` |
+
+- **Granicus** (LA Metro's Legistar `EventMedia`, Metrolink's video feed). The adapters give the `MediaPlayer.php` link. The job fetches that page and reads the media URL from it: the `.m3u8` HLS stream on `archive-stream.granicus.com` when there is one, otherwise the first `.mp4` on a media host. The page writes the URL plainly (`video_url="..."`) and JSON-escaped (`"https:\/\/..."`); both are read. The media file's uuid is read from the page, never derived from the clip id or the RSS `guid`. An RSS enclosure only shows that a clip exists, so a page that names no media is `media.ErrNoMedia` and nothing is stored. A bot check on the page (the interstitial markers of `internal/extract`) is retried. A page that redirects off `*.granicus.com` is treated as naming no media.
+- **Direct media.** A recording URL on a media host whose path ends in a media extension (`.m3u8`, `.mp4`, `.m4a`, `.mp3`, `.webm` and similar) is passed to `ffmpeg` as is. A recording URL on any host not listed is `media.ErrUnsupported`, cancelled with a log line naming the host.
+- **YouTube** (VCTC, CIV-30, not built yet). `yt-dlp --get-url -f bestaudio` resolves the page to a `googlevideo.com` audio URL, which `ffmpeg` then reads. `yt-dlp` runs under the same limits, with a 2-minute timeout, `--ignore-config`, `--no-cache-dir` and at most 64 KiB of output, and uses the image's `deno` for YouTube's JavaScript challenges. It sends its own browser-like identity, not `FETCH_USER_AGENT`; YouTube is not one of the CIV-62 hosts. Not tried against live YouTube.
+
+Following CIV-62, the Granicus hosts, whose `robots.txt` disallows all crawlers, are fetched with our identifying User-Agent, once per recording. Firecrawl is not used here: its markdown drops the player's script, and it cannot fetch media.
+
+**CloudFront.** On 2026-11-18, `archive-stream.granicus.com` and `archive-video.granicus.com` answered `403` from CloudFront to requests with `FETCH_USER_AGENT`, both for Metrolink clip 1438's HLS playlist and its MP4 (and for `robots.txt`), while `metrolink.granicus.com` served the player page. CIV-13 found that CloudFront blocks curl's default User-Agent; our identifying one is blocked as well. Until that is settled with Granicus or the agencies, Granicus downloads end in `media.ErrRefused` and are cancelled. The job does not imitate a browser.
+
+### Audio extraction
+
+`media.Tool.ExtractAudio` runs:
+
+```text
+limit -max-memory AUDIO_MAX_MEMORY -max-file-bytes AUDIO_MAX_BYTES -- \
+  ffmpeg -nostdin -loglevel error -protocol_whitelist http,https,tls,tcp,hls,crypto \
+    -format_whitelist hls,mpegts,mov,mp4,...,webvtt -rw_timeout 30s -user_agent FETCH_USER_AGENT \
+    -i MEDIA_URL -map 0:a:0 -vn -sn -dn -t AUDIO_MAX_DURATION -ac 1 -ar 16000 -c:a libmp3lame -b:a 32k -f mp3 OUT
+```
+
+- **Audio only.** `ffmpeg` reads the stream or file over HTTP itself (HLS segments one at a time, MP4 with range requests) and writes only the first audio track, re-encoded as 16 kHz mono 32 kbps MP3, about 14 MB per hour. That is the format `internal/transcribe` cuts its chunks to. The video is demuxed and dropped, never decoded or written. Nothing is held in memory; the only file on disk is the MP3.
+- **Never a page as audio.** What is stored is always the encoder's output, and the job checks that it starts with an ID3 tag or an MP3 frame header and is at least 40,000 bytes (about 10 seconds; `media.DefaultMinBytes`). An HTML page, an error page or a bot check at a media URL fails in `ffmpeg` (`Invalid data found`), and media with no audio track fails the `-map`, so neither is stored. `-protocol_whitelist` keeps a hostile playlist from reading local files, and `-format_whitelist` limits the demuxers that ever see untrusted input. HLS segment URLs come from the playlist, so `ffmpeg` follows them to whatever host it names; only the first URL is checked against the media hosts.
+- **Bounded.** The child is killed (its whole process group) when `AUDIO_TIMEOUT` passes or the job's context ends, and a read that stalls for 30 seconds fails. `-t AUDIO_MAX_DURATION` ends a stream that never ends, such as a live HLS playlist. `cmd/limit`, a small binary shipped as `/app/limit`, sets `RLIMIT_DATA` (on Linux; macOS does not allow it, so locally only the other limits apply) and `RLIMIT_FSIZE` on itself and then `exec`s the command, which inherits them: `ffmpeg` cannot map more than `AUDIO_MAX_MEMORY` of writable memory, and is killed by `SIGXFSZ` once its output passes `AUDIO_MAX_BYTES`. `MALLOC_ARENA_MAX=2` keeps glibc from reserving an arena per thread. A memory failure in the child never reaches the worker's own process.
+- **Errors.** Killed for time, size or memory (`SIGKILL`, `SIGXFSZ`, `Cannot allocate memory`) is `media.ErrLimitExceeded`. Otherwise `ffmpeg`'s message decides: `Server returned 5xx`, 408, 429, timeouts, refused or reset connections are `media.ErrNetwork` (retried); `Server returned 4xx` is `media.ErrRefused`; `matches no streams` and similar are `media.ErrNoAudio`; anything else, including a crash, is `media.ErrMalformed`. A missing `limit`, `ffmpeg` or `yt-dlp` is `media.ErrUnavailable`. On every failure the partial MP3 is removed.
+- **Finding the tools.** `AUDIO_LIMIT_BINARY`, or `limit` next to the running executable, as for `cmd/extract`; `make run-worker` builds it into `api/bin`. The worker logs the paths at startup and warns when `limit` is missing. `ffmpeg` and `yt-dlp` are looked up on `PATH` unless set.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AUDIO_LIMIT_BINARY` | `limit` next to the worker | Path to the `cmd/limit` binary. |
+| `AUDIO_FFMPEG_BINARY` | `ffmpeg` | `ffmpeg` to run. |
+| `AUDIO_YTDLP_BINARY` | `yt-dlp` | `yt-dlp` to run. |
+| `AUDIO_TIMEOUT` | `60m` | Wall-clock limit on one extraction. The job's timeout is this plus 15 minutes. Must be positive. |
+| `AUDIO_MAX_DURATION` | `12h` | Longest audio kept from one recording. Must be positive. |
+| `AUDIO_MAX_MEMORY` | `1073741824` | `RLIMIT_DATA` of the child in bytes (1 GiB). Must be positive. |
+| `AUDIO_MAX_BYTES` | `268435456` | Largest audio file in bytes (256 MiB, about 18 hours at 32 kbps). Must be positive. |
+
+### The image
+
+The image's final stage is `debian:trixie-slim` instead of distroless, because `ffmpeg` and `yt-dlp` need a C library and Python. It adds Debian's `ffmpeg` (7.1) and `python3` packages, the `yt-dlp` release `2026.10.26` (the platform-independent zipapp, downloaded from the GitHub release in its own build stage and checked against its SHA-256), and `deno` 2.9.8 copied from the official `denoland/deno:bin-2.9.8` image. It runs as `nonroot` (uid and gid 65532), as before. Bump `YTDLP_VERSION` with its `YTDLP_SHA256` together; YouTube changes often break old `yt-dlp` releases.
+
+### Tests
+
+The job's integration tests use a fake downloader and the in-memory bucket: a held meeting gets one job and one stored object, a repeat run downloads nothing, audio deleted by retention is never enqueued or downloaded, the flag off adds no recordings, each failure kind is retried or cancelled, an object left by an earlier run is recorded without a download, and the two races (another run stores the audio; retention deletes it) end as described. One test runs the whole path: `check_agency` with a Granicus-style player page, a generated HLS stream served by `httptest`, the real `cmd/limit` and `ffmpeg`, and the S3Mock bucket. `internal/media` tests the resolver against a trimmed recording of Metrolink's player page for clip 1438 (`testdata/metrolink_player_1438.html`, 2026-11-18), the tool's error classification with shell-script stand-ins for `ffmpeg` and `yt-dlp`, and real `ffmpeg` on generated MP4 and HLS media. Tests that need `ffmpeg` skip when it is not installed; the `api-integration` CI job installs it.
 
 ## Agendas
 
@@ -522,7 +603,7 @@ The normalized text is both what is stored as the version's `Text` and what is h
 
 #### PDF extraction in a child process
 
-PDFs are read in pure Go with [`github.com/ledongthuc/pdf`](https://github.com/ledongthuc/pdf), since the worker image is distroless and has no `pdftotext`. That library can loop forever or allocate without bound on a hostile or broken file: a page tree that lists itself in `/Kids`, a `/Count` of two billion, or a deflate bomb of under a megabyte that expands to gigabytes of glyphs. It does this inside its own code, where `recover` and a context cannot reach. So the worker never parses a PDF in its own process.
+PDFs are read in pure Go with [`github.com/ledongthuc/pdf`](https://github.com/ledongthuc/pdf), so the image needs no `pdftotext`. That library can loop forever or allocate without bound on a hostile or broken file: a page tree that lists itself in `/Kids`, a `/Count` of two billion, or a deflate bomb of under a megabyte that expands to gigabytes of glyphs. It does this inside its own code, where `recover` and a context cannot reach. So the worker never parses a PDF in its own process.
 
 - **The child.** `cmd/extract` is a separate binary. It reads one PDF on stdin, writes the text on stdout and exits 0, or writes the reason on stderr and exits 10 (malformed), 11 (a limit) or 12 (too little text). The Dockerfile builds every `./cmd/...` binary into `/app`, so it ships as `/app/extract` next to `/app/worker`.
 - **The parent.** `extract.Subprocess` runs it for each PDF with `exec.CommandContext`. It kills the child when `EXTRACT_PDF_TIMEOUT` passes or when the job's context ends, and reads at most `EXTRACT_MAX_TEXT_BYTES` of output, killing the child if it writes more. A child killed for time or output, or exiting 11, is `extract.ErrLimitExceeded`; a crash or an unknown exit code is `extract.ErrMalformed` with the child's stderr (at most 4 KiB). The job's own cancellation comes back as the context error, which is retried.
@@ -629,7 +710,7 @@ Models that return neither get segments from `segments`, or none (the `Text` is 
 
 ### Chunking
 
-The gateway path always re-encodes through `ffprobe` and `ffmpeg` (which must be on `PATH`; the worker image does not have them yet, CIV-34 adds ffmpeg), unless the file is an `.mp3` at or under `TRANSCRIPTION_DIRECT_UPLOAD_MB`. Chunks are 10 minutes long and overlap by 5 seconds, so each starts 9 minutes 55 seconds after the previous one. Each chunk is re-encoded as 16 kHz mono 32 kbps MP3 (about 2.4 MB, about 3.2 MB as base64). A chunk over `TRANSCRIPTION_MAX_CHUNK_MB` fails with `transcribe.ErrChunkTooLarge`. The `groq` provider uploads a file at or under `TRANSCRIPTION_MAX_UPLOAD_MB` as is and chunks larger ones.
+The gateway path always re-encodes through `ffprobe` and `ffmpeg` (which must be on `PATH`; the image installs Debian's `ffmpeg` package, see [The image](#the-image)), unless the file is an `.mp3` at or under `TRANSCRIPTION_DIRECT_UPLOAD_MB`. Chunks are 10 minutes long and overlap by 5 seconds, so each starts 9 minutes 55 seconds after the previous one. Each chunk is re-encoded as 16 kHz mono 32 kbps MP3 (about 2.4 MB, about 3.2 MB as base64). A chunk over `TRANSCRIPTION_MAX_CHUNK_MB` fails with `transcribe.ErrChunkTooLarge`. The `groq` provider uploads a file at or under `TRANSCRIPTION_MAX_UPLOAD_MB` as is and chunks larger ones.
 
 Overlap means a sentence cut by a boundary is heard whole by one of the two chunks. Each chunk transcribes in order and its segment times are shifted by the chunk's offset. To keep overlapped speech from appearing twice, the boundary between two chunks is the middle of their overlap, and a segment is kept only by the chunk whose side of the boundary holds the segment's midpoint. The stitched `Text` joins the kept segments, and `Duration` is the `ffprobe` duration of the whole file. Chunks are extracted and uploaded one at a time, and the temporary directory holding them is removed on every return path, including errors and a canceled context.
 
@@ -682,7 +763,7 @@ Merging to `main` deploys both sides.
   - No health check and no public domain: the worker serves no HTTP. A deploy goes live once the container starts; a crash restarts it up to 5 times.
   - One replica. River elects a leader for periodic jobs, so more replicas would be safe, but one is enough for a daily check.
   - On a redeploy the old worker gets SIGTERM and 30 seconds (`drainingSeconds`) before SIGKILL. The worker stops fetching new jobs and gives running ones 25 seconds to finish. A job cut off stays running in the database until River's rescuer finds it stuck and retries it.
-  - Its variables are `DATABASE_URL`, `APP_ENV` and `LOG_LEVEL`. `INGEST_CHECK_HOUR_UTC` keeps its default. No flag variables are set, so `ingest-check-agencies` is off and the daily check does nothing until the flag is turned on (see [Feature flags](#feature-flags)).
+  - Its variables are `DATABASE_URL`, `APP_ENV` and `LOG_LEVEL`. `INGEST_CHECK_HOUR_UTC` keeps its default. No flag variables are set, so `ingest-check-agencies` and `ingest-download-audio` are off and the daily check does nothing until the flags are turned on (see [Feature flags](#feature-flags)). It has no `STORAGE_*` variables yet; they must reference the `audio` bucket, as the API service's do, before `ingest-download-audio` is turned on.
 - **Web on Vercel**, with the project root directory set to `web`. Each pull request gets a preview deploy.
 
 ### Changing Railway configuration
