@@ -24,10 +24,9 @@ import (
 func newFeedServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.DiscardHandler)
-	h := httpapi.NewHandler(store.New(pool), logger, "test").WithFeeds(httpapi.FeedConfig{
-		WebURL:  "https://civic.example",
-		Enabled: func(context.Context, string) bool { return true },
-	})
+	h := httpapi.NewHandler(store.New(pool), logger, "test",
+		httpapi.WithPublicWebURL("https://civic.example"),
+		httpapi.WithFlags(func(context.Context, string) bool { return true }))
 	srv := httptest.NewServer(httpapi.NewRouter(h, logger))
 	t.Cleanup(srv.Close)
 	return srv
@@ -117,6 +116,11 @@ func TestAgencyFeedAgainstPostgres(t *testing.T) {
 		t.Fatalf("events = %+v, %v", events, err)
 	}
 
+	if cached, _ := feedRequest(t, http.MethodGet, feedURL, emptyETag); cached.StatusCode != http.StatusNotModified {
+		t.Errorf("same server within the TTL = %d, want the cached empty feed's 304", cached.StatusCode)
+	}
+	srv = newFeedServer(t, pool)
+	feedURL = srv.URL + "/v1/agencies/it-feed/feed.xml"
 	resp, body = feedRequest(t, http.MethodGet, feedURL, emptyETag)
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/rss+xml; charset=utf-8" ||
 		resp.Header.Get("Cache-Control") != "public, max-age=300" || resp.Header.Get("ETag") == emptyETag {
@@ -161,7 +165,11 @@ func TestAgencyFeedAgainstPostgres(t *testing.T) {
 	if _, err := s.SetAgendaSummary(ctx, v2.ID, "Now with a summary."); err != nil {
 		t.Fatal(err)
 	}
-	if resp, body := feedRequest(t, http.MethodGet, feedURL, etag); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Now with a summary.") {
+	if resp, _ := feedRequest(t, http.MethodGet, feedURL, etag); resp.StatusCode != http.StatusNotModified {
+		t.Errorf("within the cache TTL = %d, want the cached 304", resp.StatusCode)
+	}
+	fresh := newFeedServer(t, pool)
+	if resp, body := feedRequest(t, http.MethodGet, fresh.URL+"/v1/agencies/it-feed/feed.xml", etag); resp.StatusCode != http.StatusOK || !strings.Contains(body, "Now with a summary.") {
 		t.Errorf("after a summary was written = %d, want 200 with the summary", resp.StatusCode)
 	}
 }

@@ -105,14 +105,14 @@ func TestGetLiveAgencyFeedReadsEachEventTypeNewestFirst(t *testing.T) {
 			t.Errorf("item %d = %+v, want event %+v", i, item, e)
 		}
 	}
-	if got := feed.Items[0]; got.EventID != transcript.ID || got.AgendaVersion != nil || got.AgendaSummary != nil || got.AgendaChange != nil {
+	if got := feed.Items[0]; got.EventID != transcript.ID || got.AgendaSummary != nil || got.AgendaChange != nil {
 		t.Errorf("transcript item = %+v", got)
 	}
-	if got := feed.Items[1]; got.Type != store.EventAgendaChanged || got.AgendaVersion == nil || *got.AgendaVersion != 2 ||
+	if got := feed.Items[1]; got.Type != store.EventAgendaChanged ||
 		got.AgendaSummary != nil || got.AgendaChange == nil || *got.AgendaChange != "Item 2 added." {
 		t.Errorf("agenda changed item = %+v", got)
 	}
-	if got := feed.Items[2]; got.Type != store.EventAgendaPublished || got.AgendaVersion == nil || *got.AgendaVersion != 1 ||
+	if got := feed.Items[2]; got.Type != store.EventAgendaPublished ||
 		got.AgendaSummary == nil || *got.AgendaSummary != "First summary." || got.AgendaChange != nil {
 		t.Errorf("agenda published item = %+v", got)
 	}
@@ -223,8 +223,51 @@ func TestGetLiveAgencyFeedToleratesAMalformedAgendaPayload(t *testing.T) {
 		t.Fatalf("items = %d, want 4", len(feed.Items))
 	}
 	for _, item := range feed.Items {
-		if item.AgendaVersion != nil || item.AgendaSummary != nil {
+		if item.AgendaSummary != nil || item.AgendaChange != nil {
 			t.Errorf("item = %+v, want no agenda version", item)
 		}
+	}
+}
+
+func TestGetLiveAgencyFeedNeverShowsAnotherMeetingsAgenda(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	agencyID := seedFeedAgency(t, pool, "store-test-feed-cross", "live")
+	m := seedFeedMeeting(t, s, agencyID, "feed-cross-board")
+	other := seedFeedMeeting(t, s, agencyID, "feed-cross-other")
+	foreign, _, err := s.AddAgendaVersion(ctx, agendaInput(other.ID, "other agenda"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetAgendaSummary(ctx, foreign.ID, "Other meeting's summary."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetAgendaChangeNote(ctx, foreign.ID, "Other meeting's note."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO meeting_events (type, meeting_id, payload) VALUES ('agenda_changed', $1, $2)`,
+		m.ID, `{"agenda_version_id": "`+foreign.ID.String()+`", "version": 1}`); err != nil {
+		t.Fatal(err)
+	}
+
+	feed, err := s.GetLiveAgencyFeed(ctx, "store-test-feed-cross")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range feed.Items {
+		if item.MeetingID == m.ID && (item.AgendaSummary != nil || item.AgendaChange != nil) {
+			t.Errorf("item for %s shows another meeting's agenda: %+v", m.ID, item)
+		}
+	}
+}
+
+func TestGetLiveAgencyFeedQueryError(t *testing.T) {
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := s.GetLiveAgencyFeed(ctx, "store-test-feed"); err == nil || errors.Is(err, store.ErrNotFound) {
+		t.Errorf("err = %v, want a query error", err)
 	}
 }

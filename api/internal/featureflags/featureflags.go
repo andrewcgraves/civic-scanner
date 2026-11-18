@@ -26,6 +26,17 @@ func Enabled(ctx context.Context, flag string) bool {
 	return openfeature.NewDefaultClient().Boolean(ctx, flag, false, openfeature.EvaluationContext{})
 }
 
+func WithIdentity(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return openfeature.MergeTransactionContext(ctx, openfeature.NewEvaluationContext(id, nil))
+}
+
+func Anonymous(ctx context.Context) context.Context {
+	return openfeature.WithTransactionContext(ctx, openfeature.EvaluationContext{})
+}
+
 func newProvider(cfg config.FeatureFlags, logger *slog.Logger) (openfeature.FeatureProvider, error) {
 	if cfg.PostHogKey != "" {
 		return newPostHogProvider(cfg, logger)

@@ -55,7 +55,6 @@ func goldenFeed() store.AgencyFeed {
 				MeetingID:       meeting,
 				MeetingTitle:    "Regular Board Meeting",
 				MeetingStartsAt: time.Date(2027, 1, 29, 2, 0, 0, 0, time.UTC),
-				AgendaVersion:   ptr(2),
 				AgendaSummary:   ptr("The board will vote on the K Line extension.\nPublic comment opens at 6 PM."),
 				AgendaChange:    ptr("Item 7, the bus lane contract, was added."),
 			},
@@ -66,7 +65,6 @@ func goldenFeed() store.AgencyFeed {
 				MeetingID:       meeting,
 				MeetingTitle:    "Regular Board Meeting",
 				MeetingStartsAt: time.Date(2027, 1, 29, 2, 0, 0, 0, time.UTC),
-				AgendaVersion:   ptr(1),
 				AgendaSummary:   ptr("The board will vote on the K Line extension & fares."),
 			},
 		},
@@ -75,7 +73,7 @@ func goldenFeed() store.AgencyFeed {
 
 func feedRouter(s Store, enabled func(context.Context, string) bool, webURL string) http.Handler {
 	logger := slog.New(slog.DiscardHandler)
-	return NewRouter(NewHandler(s, logger, "test").WithFeeds(FeedConfig{WebURL: webURL, Enabled: enabled}), logger)
+	return NewRouter(NewHandler(s, logger, "test", WithFlags(enabled), WithPublicWebURL(webURL)), logger)
 }
 
 func serveFeed(t *testing.T, h http.Handler, method, path string, header http.Header) *httptest.ResponseRecorder {
@@ -320,9 +318,11 @@ func TestAgencyFeedConditionalRequests(t *testing.T) {
 		})
 	}
 
-	if rec := serveFeed(t, h, http.MethodGet, path, http.Header{"If-None-Match": {etag, `"stale"`}}); rec.Code != http.StatusBadRequest ||
-		!strings.Contains(rec.Body.String(), `"code":"invalid_parameter"`) {
-		t.Errorf("several If-None-Match lines = %d %s, want 400 invalid_parameter", rec.Code, rec.Body)
+	if rec := serveFeed(t, h, http.MethodGet, path, http.Header{"If-None-Match": {`"stale"`, etag}}); rec.Code != http.StatusNotModified {
+		t.Errorf("several If-None-Match lines = %d %s, want 304", rec.Code, rec.Body)
+	}
+	if rec := serveFeed(t, h, http.MethodGet, path, http.Header{"If-None-Match": {`"stale"`, `"older"`}}); rec.Code != http.StatusOK {
+		t.Errorf("several non-matching If-None-Match lines = %d, want 200", rec.Code)
 	}
 
 	head := serveFeed(t, h, http.MethodHead, path, nil)
@@ -397,21 +397,11 @@ func TestAgencyFeedStoreError(t *testing.T) {
 	}
 }
 
-func TestWithFeedsDefaultsToTheFeatureFlag(t *testing.T) {
-	h := NewHandler(fakeStore{}, slog.New(slog.DiscardHandler), "test").WithFeeds(FeedConfig{WebURL: testWebURL})
-	if h.feeds.Enabled == nil {
-		t.Fatal("Enabled is nil")
-	}
-	if h.feeds.Enabled(t.Context(), FeedsFlag) {
-		t.Error("the feed flag is on without a provider, want off")
-	}
-}
-
 func TestAgendaPostedWithoutSummaryStillReads(t *testing.T) {
-	item := feedItem(store.FeedItem{
+	item, _ := feedRenderer{webURL: testWebURL}.item(store.FeedItem{
 		EventID: uuid.New(), Type: store.EventAgendaPublished, MeetingID: uuid.New(),
 		MeetingTitle: "Finance Committee", MeetingStartsAt: time.Date(2027, 7, 1, 17, 30, 0, 0, time.UTC),
-	}, "OCTA", testWebURL)
+	}, "OCTA")
 	if item.Title != "Agenda posted: Finance Committee (Jul 1, 2027)" {
 		t.Errorf("title = %q", item.Title)
 	}
@@ -419,7 +409,7 @@ func TestAgendaPostedWithoutSummaryStillReads(t *testing.T) {
 	if item.Description != want {
 		t.Errorf("description = %q, want %q", item.Description, want)
 	}
-	changed := feedItem(store.FeedItem{Type: store.EventAgendaChanged, MeetingTitle: "Finance Committee"}, "OCTA", testWebURL)
+	changed, _ := feedRenderer{webURL: testWebURL}.item(store.FeedItem{Type: store.EventAgendaChanged, MeetingTitle: "Finance Committee"}, "OCTA")
 	if strings.Contains(changed.Description, "What changed") {
 		t.Errorf("description without a change note = %q", changed.Description)
 	}

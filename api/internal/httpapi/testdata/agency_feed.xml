@@ -3,7 +3,7 @@
   <channel>
     <title>LA Metro meetings</title>
     <link>https://civic.example/agencies/la-metro</link>
-    <description>&lt;p&gt;Agendas, agenda changes and transcripts of LA Metro meetings.&lt;/p&gt;</description>
+    <description>Agendas, agenda changes and transcripts of LA Metro meetings.</description>
     <language>en-us</language>
     <atom:link href="https://civic.example/agencies/la-metro/feed.xml" rel="self" type="application/rss+xml"></atom:link>
     <lastBuildDate>Sat, 30 Jan 2027 04:15:00 +0000</lastBuildDate>

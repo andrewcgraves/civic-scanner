@@ -12,6 +12,7 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/httpapi"
@@ -45,6 +46,14 @@ func run(ctx context.Context) error {
 	}
 	defer shutdownFlags()
 
+	verifier, err := auth.New(cfg.WorkOS, auth.WithLogger(logger))
+	if err != nil {
+		return err
+	}
+	if !verifier.Configured() {
+		logger.WarnContext(ctx, "WorkOS is not configured, signed-in endpoints will refuse requests")
+	}
+
 	pool, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
@@ -53,7 +62,7 @@ func run(ctx context.Context) error {
 
 	srv := &http.Server{
 		Addr:              net.JoinHostPort("", cfg.Port),
-		Handler:           httpapi.NewRouter(httpapi.NewHandler(store.New(pool), logger, version).WithFeeds(httpapi.FeedConfig{WebURL: cfg.Web.PublicURL}), logger),
+		Handler:           httpapi.NewRouter(httpapi.NewHandler(store.New(pool), logger, version, httpapi.WithAuthenticator(verifier), httpapi.WithPublicWebURL(cfg.Web.PublicURL)), logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/open-feature/go-sdk/openfeature"
+
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 )
 
@@ -44,5 +46,22 @@ func TestWildcardTurnsEveryFlagOn(t *testing.T) {
 		if !Enabled(t.Context(), flag) {
 			t.Errorf("%s evaluated to off with the wildcard set", flag)
 		}
+	}
+}
+
+func TestWithIdentitySetsTheTargetingKey(t *testing.T) {
+	ctx := WithIdentity(t.Context(), "user_01")
+	if got := openfeature.TransactionContext(ctx).TargetingKey(); got != "user_01" {
+		t.Errorf("targeting key = %q, want user_01", got)
+	}
+	if got := WithIdentity(t.Context(), ""); got != t.Context() {
+		t.Error("an empty identity changed the context")
+	}
+}
+
+func TestAnonymousDropsTheTargetingKey(t *testing.T) {
+	ctx := Anonymous(WithIdentity(t.Context(), "user_01"))
+	if got := openfeature.TransactionContext(ctx).TargetingKey(); got != "" {
+		t.Errorf("targeting key = %q, want none", got)
 	}
 }

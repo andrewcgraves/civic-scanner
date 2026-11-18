@@ -22,7 +22,6 @@ type FeedItem struct {
 	MeetingID       uuid.UUID
 	MeetingTitle    string
 	MeetingStartsAt time.Time
-	AgendaVersion   *int
 	AgendaSummary   *string
 	AgendaChange    *string
 }
@@ -30,7 +29,7 @@ type FeedItem struct {
 const agencyFeedSQL = `
 SELECT a.id, a.slug, a.name, a.website, a.created_at,
        e.id, e.type, e.occurred_at, e.meeting_id, e.title, e.starts_at,
-       av.version, av.summary, av.change_note
+       av.summary, av.change_note
 FROM agencies a
 LEFT JOIN LATERAL (
     SELECT ev.id, ev.sequence, ev.type, ev.occurred_at, ev.meeting_id, ev.payload, m.title, m.starts_at
@@ -76,12 +75,11 @@ func (s *Store) GetLiveAgencyFeed(ctx context.Context, slug string) (AgencyFeed,
 			meetingID  *uuid.UUID
 			title      *string
 			startsAt   *time.Time
-			version    *int
 			item       FeedItem
 		)
 		if err := rows.Scan(&a.ID, &a.Slug, &a.Name, &a.Website, &a.CreatedAt,
 			&eventID, &eventType, &occurredAt, &meetingID, &title, &startsAt,
-			&version, &item.AgendaSummary, &item.AgendaChange); err != nil {
+			&item.AgendaSummary, &item.AgendaChange); err != nil {
 			return AgencyFeed{}, fmt.Errorf("scan agency feed: %w", err)
 		}
 		found = true
@@ -94,7 +92,6 @@ func (s *Store) GetLiveAgencyFeed(ctx context.Context, slug string) (AgencyFeed,
 		item.MeetingID = *meetingID
 		item.MeetingTitle = *title
 		item.MeetingStartsAt = *startsAt
-		item.AgendaVersion = version
 		feed.Items = append(feed.Items, item)
 	}
 	if err := rows.Err(); err != nil {

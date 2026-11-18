@@ -21,6 +21,7 @@ func TestLoadWebPublicURL(t *testing.T) {
 		"https://civicscanner.org":       "https://civicscanner.org",
 		" https://civicscanner.org/ ":    "https://civicscanner.org",
 		"http://localhost:3000":          "http://localhost:3000",
+		"https://example.com:65535":      "https://example.com:65535",
 		"https://example.com/civic/":     "https://example.com/civic",
 		"https://preview.example.com///": "https://preview.example.com",
 	} {
@@ -47,6 +48,9 @@ func TestLoadWebErrors(t *testing.T) {
 		"https://example.com/?",
 		"https://example.com/#top",
 		"https://exa mple.com",
+		"https://example.com:0",
+		"https://example.com:65536",
+		"https://example.com:99999",
 	} {
 		t.Setenv("PUBLIC_WEB_URL", value)
 		if _, err := Load(); err == nil {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
@@ -15,52 +16,49 @@ import (
 )
 
 const (
-	FeedsFlag         = "agency-rss-feeds"
+	FlagAgencyFeeds   = "agency-rss-feeds"
 	feedCacheControl  = "public, max-age=300"
 	feedETagHashBytes = 16
 )
 
-type FeedConfig struct {
-	WebURL  string
-	Enabled func(ctx context.Context, flag string) bool
-}
-
-func (h *Handler) WithFeeds(cfg FeedConfig) *Handler {
-	if cfg.Enabled == nil {
-		cfg.Enabled = featureflags.Enabled
-	}
-	h.feeds = cfg
-	return h
+func WithPublicWebURL(webURL string) HandlerOption {
+	return func(h *Handler) { h.webURL = webURL }
 }
 
 type feedResult struct {
-	body        []byte
-	etag        string
+	feed        renderedFeed
 	notModified bool
 	notFound    bool
-	err         bool
+	failed      bool
 }
 
 func (h *Handler) agencyFeed(ctx context.Context, slug string, ifNoneMatch *string) feedResult {
-	if h.feeds.WebURL == "" || h.feeds.Enabled == nil || !h.feeds.Enabled(ctx, FeedsFlag) {
+	ctx = featureflags.Anonymous(ctx)
+	if h.webURL == "" || !h.enabled(ctx, FlagAgencyFeeds) {
 		return feedResult{notFound: true}
 	}
-	feed, err := h.store.GetLiveAgencyFeed(ctx, slug)
+	feed, err := h.feeds.get(ctx, slug, h.loadFeed)
 	if errors.Is(err, store.ErrNotFound) {
 		return feedResult{notFound: true}
 	}
 	if err != nil {
 		h.logger.ErrorContext(ctx, "get agency feed failed", "slug", slug, "error", err)
-		return feedResult{err: true}
+		return feedResult{failed: true}
 	}
-	body, err := renderFeed(feed, h.feeds.WebURL)
+	return feedResult{feed: feed, notModified: ifNoneMatch != nil && etagMatches(*ifNoneMatch, feed.etag)}
+}
+
+func (h *Handler) loadFeed(ctx context.Context, slug string) (renderedFeed, error) {
+	feed, err := h.store.GetLiveAgencyFeed(ctx, slug)
 	if err != nil {
-		h.logger.ErrorContext(ctx, "render agency feed failed", "slug", slug, "error", err)
-		return feedResult{err: true}
+		return renderedFeed{}, err
+	}
+	body, err := feedRenderer{webURL: h.webURL, now: time.Now, summaryGrace: agendaSummaryGrace}.render(feed)
+	if err != nil {
+		return renderedFeed{}, err
 	}
 	sum := sha256.Sum256(body)
-	etag := `"` + hex.EncodeToString(sum[:feedETagHashBytes]) + `"`
-	return feedResult{body: body, etag: etag, notModified: ifNoneMatch != nil && etagMatches(*ifNoneMatch, etag)}
+	return renderedFeed{body: body, etag: `"` + hex.EncodeToString(sum[:feedETagHashBytes]) + `"`}, nil
 }
 
 func etagMatches(header, etag string) bool {
@@ -88,15 +86,15 @@ func (h *Handler) GetAgencyFeed(ctx context.Context, req v1.GetAgencyFeedRequest
 	switch {
 	case r.notFound:
 		return v1.GetAgencyFeed404JSONResponse{NotFoundJSONResponse: agencyNotFound}, nil
-	case r.err:
+	case r.failed:
 		return v1.GetAgencyFeeddefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	case r.notModified:
-		return v1.GetAgencyFeed304Response{Headers: notModifiedHeaders(r.etag)}, nil
+		return v1.GetAgencyFeed304Response{Headers: notModifiedHeaders(r.feed.etag)}, nil
 	}
 	return v1.GetAgencyFeed200ApplicationrssXmlCharsetUtf8Response{AgencyFeedApplicationrssXmlCharsetUtf8Response: v1.AgencyFeedApplicationrssXmlCharsetUtf8Response{
-		Body:          bytes.NewReader(r.body),
-		Headers:       feedHeaders(r.etag),
-		ContentLength: int64(len(r.body)),
+		Body:          bytes.NewReader(r.feed.body),
+		Headers:       feedHeaders(r.feed.etag),
+		ContentLength: int64(len(r.feed.body)),
 	}}, nil
 }
 
@@ -105,14 +103,14 @@ func (h *Handler) HeadAgencyFeed(ctx context.Context, req v1.HeadAgencyFeedReque
 	switch {
 	case r.notFound:
 		return v1.HeadAgencyFeed404JSONResponse{NotFoundJSONResponse: agencyNotFound}, nil
-	case r.err:
+	case r.failed:
 		return v1.HeadAgencyFeeddefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	case r.notModified:
-		return v1.HeadAgencyFeed304Response{Headers: notModifiedHeaders(r.etag)}, nil
+		return v1.HeadAgencyFeed304Response{Headers: notModifiedHeaders(r.feed.etag)}, nil
 	}
 	return v1.HeadAgencyFeed200ApplicationrssXmlCharsetUtf8Response{AgencyFeedApplicationrssXmlCharsetUtf8Response: v1.AgencyFeedApplicationrssXmlCharsetUtf8Response{
 		Body:          bytes.NewReader(nil),
-		Headers:       feedHeaders(r.etag),
-		ContentLength: int64(len(r.body)),
+		Headers:       feedHeaders(r.feed.etag),
+		ContentLength: int64(len(r.feed.body)),
 	}}, nil
 }

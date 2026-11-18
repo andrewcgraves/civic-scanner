@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,15 +16,15 @@ import (
 
 func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger))
+	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), authenticate(h.auth, logger))
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	})
-	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Allow", http.MethodGet)
+	r.MethodNotAllowed(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Allow", allowedMethods(r, req.URL.Path))
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	})
-	v1.HandlerWithOptions(v1.NewStrictHandler(h, nil), v1.ChiServerOptions{
+	v1.HandlerWithOptions(v1.NewStrictHandler(h, []v1.StrictMiddlewareFunc{noStore}), v1.ChiServerOptions{
 		BaseURL:    "/v1",
 		BaseRouter: r,
 		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -31,6 +32,27 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 		},
 	})
 	return r
+}
+
+func allowedMethods(routes chi.Routes, path string) string {
+	var allowed []string
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		if routes.Match(chi.NewRouteContext(), method, path) {
+			allowed = append(allowed, method)
+		}
+	}
+	return strings.Join(allowed, ", ")
+}
+
+func joinHeaderLines(name string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if values := r.Header.Values(name); len(values) > 1 {
+				r.Header.Set(name, strings.Join(values, ", "))
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {

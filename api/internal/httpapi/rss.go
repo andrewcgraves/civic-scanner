@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"html"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -15,12 +16,15 @@ import (
 )
 
 const (
-	maxFeedTitleBytes = 300
-	maxFeedTextBytes  = 8000
-	feedLanguage      = "en-us"
-	atomNamespace     = "http://www.w3.org/2005/Atom"
-	feedTimeZone      = "America/Los_Angeles"
-	ellipsis          = "…"
+	maxFeedTitleBytes  = 300
+	maxFeedTextBytes   = 4000
+	maxFeedBytes       = 1 << 20
+	itemIndent         = "    "
+	agendaSummaryGrace = time.Duration(0)
+	feedLanguage       = "en-us"
+	atomNamespace      = "http://www.w3.org/2005/Atom"
+	feedTimeZone       = "America/Los_Angeles"
+	ellipsis           = "…"
 )
 
 var meetingTimeZone = mustLoadLocation(feedTimeZone)
@@ -69,74 +73,136 @@ type rssGUID struct {
 	Value       string `xml:",chardata"`
 }
 
-func renderFeed(feed store.AgencyFeed, webURL string) ([]byte, error) {
+type feedRenderer struct {
+	webURL       string
+	now          func() time.Time
+	summaryGrace time.Duration
+	maxBytes     int
+}
+
+func (r feedRenderer) render(feed store.AgencyFeed) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := r.write(&buf, feed); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func (r feedRenderer) write(w io.Writer, feed store.AgencyFeed) error {
+	maxBytes := r.maxBytes
+	if maxBytes == 0 {
+		maxBytes = maxFeedBytes
+	}
 	agencyName := plainLine(feed.Agency.Name, maxFeedTitleBytes)
-	agencyPage := webURL + "/agencies/" + url.PathEscape(feed.Agency.Slug)
+	agencyPage := r.webURL + "/agencies/" + url.PathEscape(feed.Agency.Slug)
 	doc := rssDocument{
 		Version: "2.0",
 		Atom:    atomNamespace,
 		Channel: rssChannel{
 			Title:       agencyName + " meetings",
 			Link:        agencyPage,
-			Description: htmlParagraphs("Agendas, agenda changes and transcripts of " + agencyName + " meetings."),
+			Description: "Agendas, agenda changes and transcripts of " + agencyName + " meetings.",
 			Language:    feedLanguage,
 			Self:        atomLink{Href: agencyPage + "/feed.xml", Rel: "self", Type: "application/rss+xml"},
-			Items:       make([]rssItem, 0, len(feed.Items)),
 		},
 	}
-	if len(feed.Items) > 0 {
-		doc.Channel.LastBuildDate = rfc1123(feed.Items[0].OccurredAt)
+
+	var items []rssItem
+	var occurred []time.Time
+	for _, event := range feed.Items {
+		if item, ok := r.item(event, agencyName); ok {
+			items = append(items, item)
+			occurred = append(occurred, event.OccurredAt)
+		}
 	}
-	for _, item := range feed.Items {
-		doc.Channel.Items = append(doc.Channel.Items, feedItem(item, agencyName, webURL))
+	if len(items) > 0 {
+		doc.Channel.LastBuildDate = rfc1123(occurred[0])
+	}
+	size, err := encodedSize(doc)
+	if err != nil {
+		return err
+	}
+	size += len(xml.Header) + 1
+	for _, item := range items {
+		itemSize, err := encodedSize(item)
+		if err != nil {
+			return err
+		}
+		if size += itemSize + len(itemIndent) + 1; size > maxBytes {
+			break
+		}
+		doc.Channel.Items = append(doc.Channel.Items, item)
 	}
 
-	var buf bytes.Buffer
-	buf.WriteString(xml.Header)
-	enc := xml.NewEncoder(&buf)
+	if _, err := io.WriteString(w, xml.Header); err != nil {
+		return fmt.Errorf("write feed: %w", err)
+	}
+	enc := xml.NewEncoder(w)
 	enc.Indent("", "  ")
 	if err := enc.Encode(doc); err != nil {
-		return nil, fmt.Errorf("encode feed: %w", err)
+		return fmt.Errorf("encode feed: %w", err)
 	}
-	buf.WriteByte('\n')
-	return buf.Bytes(), nil
+	if _, err := io.WriteString(w, "\n"); err != nil {
+		return fmt.Errorf("write feed: %w", err)
+	}
+	return nil
 }
 
-func feedItem(item store.FeedItem, agencyName, webURL string) rssItem {
-	meeting := plainLine(item.MeetingTitle, maxFeedTitleBytes)
+func encodedSize(v any) (int, error) {
+	out, err := xml.MarshalIndent(v, itemIndent, "  ")
+	if err != nil {
+		return 0, fmt.Errorf("measure feed: %w", err)
+	}
+	return len(out), nil
+}
+
+func (r feedRenderer) item(event store.FeedItem, agencyName string) (rssItem, bool) {
+	meeting := plainLine(event.MeetingTitle, maxFeedTitleBytes)
 	if meeting == "" {
 		meeting = "Meeting"
 	}
-	startsAt := item.MeetingStartsAt.In(meetingTimeZone)
+	startsAt := event.MeetingStartsAt.In(meetingTimeZone)
 	day := startsAt.Format("Jan 2, 2006")
 	when := startsAt.Format("Monday, January 2, 2006 at 3:04 PM MST")
 
 	var title string
 	var paragraphs []string
-	switch item.Type {
+	switch event.Type {
 	case store.EventAgendaPublished:
+		if !r.agendaReady(event) {
+			return rssItem{}, false
+		}
 		title = "Agenda posted: "
 		paragraphs = append(paragraphs, fmt.Sprintf("%s posted the agenda for %s, %s.", agencyName, meeting, when))
-		paragraphs = append(paragraphs, summaryParagraphs(item.AgendaSummary)...)
+		paragraphs = append(paragraphs, summaryParagraphs(event.AgendaSummary)...)
 	case store.EventAgendaChanged:
+		if !r.agendaReady(event) {
+			return rssItem{}, false
+		}
 		title = "Agenda updated: "
 		paragraphs = append(paragraphs, fmt.Sprintf("%s changed the agenda for %s, %s.", agencyName, meeting, when))
-		if note := plainText(deref(item.AgendaChange), maxFeedTextBytes); note != "" {
+		if note := plainText(deref(event.AgendaChange), maxFeedTextBytes); note != "" {
 			paragraphs = append(paragraphs, "What changed: "+note)
 		}
-		paragraphs = append(paragraphs, summaryParagraphs(item.AgendaSummary)...)
-	default:
+		paragraphs = append(paragraphs, summaryParagraphs(event.AgendaSummary)...)
+	case store.EventTranscriptReady:
 		title = "Transcript ready: "
 		paragraphs = append(paragraphs, fmt.Sprintf("A transcript of %s, %s, is ready.", meeting, when))
+	default:
+		return rssItem{}, false
 	}
 
 	return rssItem{
 		Title:       title + meeting + " (" + day + ")",
-		Link:        webURL + "/meetings/" + item.MeetingID.String(),
+		Link:        r.webURL + "/meetings/" + event.MeetingID.String(),
 		Description: htmlParagraphs(paragraphs...),
-		GUID:        rssGUID{IsPermaLink: "false", Value: item.EventID.String()},
-		PubDate:     rfc1123(item.OccurredAt),
-	}
+		GUID:        rssGUID{IsPermaLink: "false", Value: event.EventID.String()},
+		PubDate:     rfc1123(event.OccurredAt),
+	}, true
+}
+
+func (r feedRenderer) agendaReady(event store.FeedItem) bool {
+	return r.summaryGrace <= 0 || event.AgendaSummary != nil || r.now().Sub(event.OccurredAt) >= r.summaryGrace
 }
 
 func summaryParagraphs(summary *string) []string {

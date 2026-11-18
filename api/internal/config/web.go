@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -24,6 +25,8 @@ func loadWeb() (Web, error) {
 		err = errors.New("must be an http or https URL")
 	case u.Host == "":
 		err = errors.New("must have a host")
+	case !validPort(u.Port()):
+		err = errors.New("port must be between 1 and 65535")
 	case u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "":
 		err = errors.New("must not have user info, a query or a fragment")
 	}
@@ -31,4 +34,12 @@ func loadWeb() (Web, error) {
 		return Web{}, fmt.Errorf("PUBLIC_WEB_URL: %w", err)
 	}
 	return Web{PublicURL: strings.TrimRight(u.String(), "/")}, nil
+}
+
+func validPort(port string) bool {
+	if port == "" {
+		return true
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
 }

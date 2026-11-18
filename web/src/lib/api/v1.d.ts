@@ -128,6 +128,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/me": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get the signed-in user
+     * @description Returns the user the bearer token belongs to, a WorkOS access token. The first request with a valid token creates the user. The token is checked first: a missing or invalid token is a 401 and a token that cannot be checked a 503, whether or not accounts are turned on. A valid token for whom accounts are turned off is a 404. Every response carries `Cache-Control: no-store`.
+     */
+    get: operations["getMe"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -250,6 +270,20 @@ export interface components {
       /** @description Opaque speaker label. Segments with the same label have the same speaker, but two labels may still be the same person. Absent when the speaker is unknown. */
       speaker?: string;
     };
+    User: {
+      /**
+       * Format: uuid
+       * @description The user's id in this service.
+       */
+      id: string;
+      /** @description The email address from the latest access token that carried one, or null when none has. Not an identifier: it can change. */
+      email: string | null;
+      /**
+       * Format: date-time
+       * @description When the user was first seen.
+       */
+      createdAt: string;
+    };
     Error: {
       /** @description Stable machine-readable error code. */
       code: string;
@@ -278,6 +312,28 @@ export interface components {
       };
       content?: never;
     };
+    /** @description The request has no bearer token, or the token is not valid. `code` is `unauthorized`; the message does not say why the token was rejected. */
+    Unauthorized: {
+      headers: {
+        /** @description Always `Bearer`. */
+        "WWW-Authenticate": string;
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The token cannot be checked right now. `code` is `auth_not_configured` when the API has no WorkOS client id and `auth_unavailable` when WorkOS's signing keys cannot be fetched, or when the token's signing key is not in the cached key set and the set cannot be refreshed yet. A client should retry later and must not sign the user out. */
+    AuthUnavailable: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
     /** @description A query parameter is invalid. `code` is `invalid_cursor` for a bad cursor and `invalid_parameter` for any other parameter. */
     BadRequest: {
       headers: {
@@ -287,7 +343,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description No live agency has this slug, or no meeting of a live agency has this id. */
+    /** @description No live agency has this slug, no meeting of a live agency has this id, or the route is turned off for the signed-in user. */
     NotFound: {
       headers: {
         [name: string]: unknown;
@@ -320,6 +376,8 @@ export interface components {
     ETag: string;
     /** @description How long caches and feed readers may reuse the response. */
     CacheControl: string;
+    /** @description Always `no-store`. */
+    NoStore: string;
   };
   pathItems: never;
 }
@@ -543,6 +601,40 @@ export interface operations {
       400: components["responses"]["BadRequest"];
       404: components["responses"]["NotFound"];
       405: components["responses"]["MethodNotAllowed"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  getMe: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The signed-in user. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["User"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["AuthUnavailable"];
       /** @description Unexpected error. */
       default: {
         headers: {
