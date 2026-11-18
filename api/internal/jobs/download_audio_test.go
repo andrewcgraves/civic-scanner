@@ -77,7 +77,7 @@ func TestDownloadAudioWithoutDownloaderIsCancelled(t *testing.T) {
 }
 
 func TestConfigDefaultsToAnUnconfiguredBucket(t *testing.T) {
-	cfg := Config{}.withDefaults(store.New(nil))
+	cfg := Config{}.withDefaults(discard, store.New(nil))
 	if _, err := cfg.Storage.Stat(t.Context(), "k"); !errors.Is(err, storage.ErrNotConfigured) {
 		t.Errorf("default storage Stat = %v, want ErrNotConfigured", err)
 	}

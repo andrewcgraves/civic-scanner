@@ -13,6 +13,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
+	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/media"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/storage"
@@ -60,6 +61,10 @@ func run(ctx context.Context) error {
 	audio := media.NewDownloader(cfg.Audio, cfg.Fetch.UserAgent)
 	pdfExtractor := extract.NewSubprocess(cfg.Extract)
 	registry := sources.NewRegistry(sources.Deps{Fetcher: fetcher, Clock: sources.SystemClock{}, Logger: logger}, adapters)
+	var summarizer llm.Client
+	if cfg.LLM.APIKey != "" {
+		summarizer = llm.New(cfg.LLM)
+	}
 	client, err := jobs.NewClient(pool, logger, jobs.Config{
 		Registry:     registry,
 		Fetcher:      fetcher,
@@ -69,6 +74,9 @@ func run(ctx context.Context) error {
 		Storage:      bucket,
 		Audio:        audio,
 		AudioTimeout: cfg.Audio.Timeout,
+		LLM:          summarizer,
+		SummaryTier:  llm.Tier(cfg.Summary.AgendaTier),
+		LLMTimeout:   cfg.LLM.Timeout,
 	})
 	if err != nil {
 		return err
@@ -77,7 +85,8 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC,
-		"pdf_extractor", pdfExtractor.Binary, "audio_limit", audio.Tool.Limit, "ffmpeg", audio.Tool.FFmpeg, "yt_dlp", audio.Tool.YTDLP,
+		"pdf_extractor", pdfExtractor.Binary, "agenda_summary_tier", cfg.Summary.AgendaTier, "llm_configured", summarizer != nil,
+		"audio_limit", audio.Tool.Limit, "ffmpeg", audio.Tool.FFmpeg, "yt_dlp", audio.Tool.YTDLP,
 		"storage_configured", cfg.Storage.Configured())
 	if _, err := os.Stat(pdfExtractor.Binary); err != nil {
 		logger.WarnContext(ctx, "pdf extractor not found: PDF agendas will be cancelled; build it next to the worker or set EXTRACT_PDF_BINARY",

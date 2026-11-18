@@ -14,6 +14,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch/fetchtest"
+	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
@@ -224,7 +225,7 @@ func TestNoAgendaFollowUpDoesNothing(t *testing.T) {
 
 func TestConfigDefaultsEnqueueAgendasOnTheConfiguredQueue(t *testing.T) {
 	st := store.New(nil)
-	cfg := Config{Queue: "ingest"}.withDefaults(st)
+	cfg := Config{Queue: "ingest"}.withDefaults(discard, st)
 	followUps, ok := cfg.FollowUp.(FollowUps)
 	if !ok || len(followUps) != 2 {
 		t.Fatalf("FollowUp = %#v, want two follow-ups", cfg.FollowUp)
@@ -244,10 +245,13 @@ func TestConfigDefaultsEnqueueAgendasOnTheConfiguredQueue(t *testing.T) {
 	if _, ok := cfg.Extractor.(*extract.Extractor); !ok {
 		t.Errorf("Extractor = %#v", cfg.Extractor)
 	}
-	if _, ok := cfg.AgendaFollowUp.(NoAgendaFollowUp); !ok {
-		t.Errorf("AgendaFollowUp = %#v", cfg.AgendaFollowUp)
+	if got, ok := cfg.AgendaFollowUp.(EnqueueSummarizeAgenda); !ok || got.Queue != "ingest" || got.Logger != discard {
+		t.Errorf("AgendaFollowUp = %#v, want EnqueueSummarizeAgenda on ingest", cfg.AgendaFollowUp)
 	}
-	if got := (Config{}).withDefaults(st).FollowUp.(FollowUps)[0].(EnqueueProcessAgenda).Queue; got != river.QueueDefault {
+	if cfg.SummaryTier != llm.TierRoutine || cfg.LLMTimeout != 2*time.Minute {
+		t.Errorf("SummaryTier = %q, LLMTimeout = %v, want routine and 2m", cfg.SummaryTier, cfg.LLMTimeout)
+	}
+	if got := (Config{}).withDefaults(discard, st).FollowUp.(FollowUps)[0].(EnqueueProcessAgenda).Queue; got != river.QueueDefault {
 		t.Errorf("default queue = %q", got)
 	}
 }

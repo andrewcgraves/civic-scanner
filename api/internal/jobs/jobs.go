@@ -14,6 +14,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
+	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/storage"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
@@ -37,11 +38,14 @@ type Config struct {
 	AudioFollowUp  AudioFollowUp
 	AudioQueue     string
 	AudioTempDir   string
+	LLM            llm.Client
+	SummaryTier    llm.Tier
+	LLMTimeout     time.Duration
 	Queue          string
 	NoPeriodicJobs bool
 }
 
-func (c Config) withDefaults(st *store.Store) Config {
+func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
 	if c.Clock == nil {
 		c.Clock = sources.SystemClock{}
 	}
@@ -73,14 +77,20 @@ func (c Config) withDefaults(st *store.Store) Config {
 		c.Extractor = extract.New(config.Extract{})
 	}
 	if c.AgendaFollowUp == nil {
-		c.AgendaFollowUp = NoAgendaFollowUp{}
+		c.AgendaFollowUp = EnqueueSummarizeAgenda{Queue: c.Queue, Logger: logger}
+	}
+	if c.SummaryTier == "" {
+		c.SummaryTier = llm.TierRoutine
+	}
+	if c.LLMTimeout <= 0 {
+		c.LLMTimeout = defaultLLMTimeout
 	}
 	return c
 }
 
 func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Client[pgx.Tx], error) {
 	st := store.New(pool)
-	cfg = cfg.withDefaults(st)
+	cfg = cfg.withDefaults(logger, st)
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &CheckAgencyWorker{
@@ -114,6 +124,22 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		timeout:    cfg.AudioTimeout,
 		tempDir:    cfg.AudioTempDir,
 	})
+	river.AddWorker(workers, &SummarizeAgendaWorker{
+		logger:     logger,
+		store:      st,
+		llm:        cfg.LLM,
+		tier:       cfg.SummaryTier,
+		llmTimeout: cfg.LLMTimeout,
+		enabled:    cfg.Enabled,
+	})
+	river.AddWorker(workers, &EnqueueAgendaSummariesWorker{
+		logger:  logger,
+		store:   st,
+		clock:   cfg.Clock,
+		llm:     cfg.LLM,
+		enabled: cfg.Enabled,
+		queue:   cfg.Queue,
+	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,
 		store:   st,
@@ -128,11 +154,17 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 			schedule,
 			periodicChecks(schedule, cfg.Clock, cfg.Queue),
 			&river.PeriodicJobOpts{ID: EnqueueAgencyChecksArgs{}.Kind(), RunOnStart: true},
+		), river.NewPeriodicJob(
+			river.PeriodicInterval(summarySweepInterval),
+			periodicSummarySweep(cfg.Clock, cfg.Queue),
+			&river.PeriodicJobOpts{ID: EnqueueAgendaSummariesArgs{}.Kind(), RunOnStart: true},
 		))
 	}
 
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Logger: logger,
+		Logger:                      logger,
+		CancelledJobRetentionPeriod: summaryFailureBackoff,
+		DiscardedJobRetentionPeriod: summaryFailureBackoff,
 		Queues: map[string]river.QueueConfig{
 			cfg.Queue:      {MaxWorkers: 10},
 			cfg.AudioQueue: {MaxWorkers: audioQueueWorkers},
