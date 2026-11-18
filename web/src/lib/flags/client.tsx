@@ -4,13 +4,10 @@ import {
   OpenFeature,
   OpenFeatureProvider,
   useBooleanFlagValue,
-  type Provider,
 } from "@openfeature/react-sdk";
-import { PostHogWebProvider } from "@posthog/openfeature-web-provider";
-import posthog from "posthog-js";
 import type { ReactNode } from "react";
 
-import { readFlagSource, type FlagSource } from "./config";
+import { readFlagSource } from "./config";
 import { memoryWebProvider } from "./memory";
 
 const FLAGS_ONLY = {
@@ -32,18 +29,26 @@ const FLAGS_ONLY = {
   disable_web_experiments: true,
 } as const;
 
-function createProvider(source: FlagSource): Provider {
-  if (source.kind === "memory") {
-    return memoryWebProvider(source.on);
-  }
-  if (typeof window === "undefined") {
-    return memoryWebProvider([]);
-  }
-  posthog.init(source.key, { api_host: source.host, ...FLAGS_ONLY });
-  return new PostHogWebProvider(posthog, { sendFeatureFlagEvents: false });
+async function startPostHog(key: string, host: string): Promise<void> {
+  const [{ default: posthog }, { PostHogWebProvider }] = await Promise.all([
+    import("posthog-js"),
+    import("@posthog/openfeature-web-provider"),
+  ]);
+  posthog.init(key, { api_host: host, ...FLAGS_ONLY });
+  OpenFeature.setProvider(
+    new PostHogWebProvider(posthog, { sendFeatureFlagEvents: false }),
+  );
 }
 
-OpenFeature.setProvider(createProvider(readFlagSource()));
+const source = readFlagSource();
+OpenFeature.setProvider(
+  memoryWebProvider(source.kind === "memory" ? source.on : []),
+);
+if (source.kind === "posthog" && typeof window !== "undefined") {
+  startPostHog(source.key, source.host).catch((error: unknown) => {
+    console.error("Feature flags could not start PostHog", error);
+  });
+}
 
 export function FlagsProvider({ children }: { children: ReactNode }) {
   return <OpenFeatureProvider>{children}</OpenFeatureProvider>;

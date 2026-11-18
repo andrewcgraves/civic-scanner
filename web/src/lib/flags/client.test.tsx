@@ -19,7 +19,20 @@ const posthog = vi.hoisted(() => {
   };
 });
 
-vi.mock("posthog-js", () => ({ default: posthog }));
+const loaded = vi.hoisted(() => ({
+  posthogJs: vi.fn(),
+  webProvider: vi.fn(),
+}));
+
+vi.mock("posthog-js", () => {
+  loaded.posthogJs();
+  return { default: posthog };
+});
+
+vi.mock("@posthog/openfeature-web-provider", async (importOriginal) => {
+  loaded.webProvider();
+  return importOriginal();
+});
 
 async function renderFlag(
   flag: string,
@@ -45,6 +58,20 @@ async function renderFlag(
 describe("useFlag with in-memory flags", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it("does not load PostHog code", async () => {
+    loaded.posthogJs.mockClear();
+    loaded.webProvider.mockClear();
+
+    await renderFlag("new-search", {
+      NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
+    });
+
+    expect(screen.getByText("on")).toBeInTheDocument();
+    expect(loaded.posthogJs).not.toHaveBeenCalled();
+    expect(loaded.webProvider).not.toHaveBeenCalled();
   });
 
   it("is on for a listed flag", async () => {
@@ -155,6 +182,28 @@ describe("useFlag with PostHog", () => {
       expect(posthog.getFeatureFlagResult).toHaveBeenCalled();
     });
     expect(screen.getByText("off")).toBeInTheDocument();
+  });
+
+  it("stays off and reports it when PostHog cannot load", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const failure = new Error("chunk failed to load");
+    vi.doMock("posthog-js", () => {
+      throw failure;
+    });
+
+    await renderFlag("new-search", { NEXT_PUBLIC_POSTHOG_KEY: "phc_test" });
+
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        "Feature flags could not start PostHog",
+        expect.objectContaining({ cause: failure }),
+      );
+    });
+    expect(screen.getByText("off")).toBeInTheDocument();
+    vi.doMock("posthog-js", () => ({ default: posthog }));
+    consoleError.mockRestore();
   });
 
   it("renders flags off on the server without starting PostHog", async () => {
