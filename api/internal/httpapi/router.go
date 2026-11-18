@@ -23,7 +23,7 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 		w.Header().Set("Allow", http.MethodGet)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	})
-	v1.HandlerWithOptions(v1.NewStrictHandler(h, nil), v1.ChiServerOptions{
+	v1.HandlerWithOptions(v1.NewStrictHandler(h, []v1.StrictMiddlewareFunc{noStore}), v1.ChiServerOptions{
 		BaseURL:    "/v1",
 		BaseRouter: r,
 		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {

@@ -192,14 +192,20 @@ paths:
       summary: Get the signed-in user
       description: >-
         Returns the user the bearer token belongs to, a WorkOS access token.
-        The first request with a valid token creates the user. Returns 404
-        while accounts are turned off.
+        The first request with a valid token creates the user. The token is
+        checked first: a missing or invalid token is a 401 and a token that
+        cannot be checked a 503, whether or not accounts are turned on. A
+        valid token for whom accounts are turned off is a 404. Every response
+        carries `Cache-Control: no-store`.
       tags: [users]
       security:
         - bearerAuth: []
       responses:
         "200":
           description: The signed-in user.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
           content:
             application/json:
               schema:
@@ -227,6 +233,11 @@ components:
       description: The agency's slug, e.g. `la-metro`.
       schema:
         type: string
+  headers:
+    NoStore:
+      description: Always `no-store`.
+      schema:
+        type: string
   securitySchemes:
     bearerAuth:
       type: http
@@ -244,6 +255,8 @@ components:
           required: true
           schema:
             type: string
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
       content:
         application/json:
           schema:
@@ -252,7 +265,13 @@ components:
       description: >-
         The token cannot be checked right now. `code` is
         `auth_not_configured` when the API has no WorkOS client id and
-        `auth_unavailable` when WorkOS's signing keys cannot be fetched.
+        `auth_unavailable` when WorkOS's signing keys cannot be fetched, or
+        when the token's signing key is not in the cached key set and the
+        set cannot be refreshed yet. A client should retry later and must
+        not sign the user out.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
       content:
         application/json:
           schema:
@@ -268,7 +287,7 @@ components:
     NotFound:
       description: >-
         No live agency has this slug, no meeting of a live agency has this
-        id, or the route is turned off.
+        id, or the route is turned off for the signed-in user.
       content:
         application/json:
           schema:

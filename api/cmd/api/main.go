@@ -45,7 +45,7 @@ func run(ctx context.Context) error {
 	}
 	defer shutdownFlags()
 
-	verifier, err := auth.New(cfg.WorkOS)
+	verifier, err := auth.New(cfg.WorkOS, auth.WithLogger(logger))
 	if err != nil {
 		return err
 	}

@@ -29,9 +29,21 @@ var (
 		Body:    v1.Error{Code: "unauthorized", Message: "a valid bearer token is required"},
 		Headers: v1.UnauthorizedResponseHeaders{WWWAuthenticate: "Bearer"},
 	}
-	authNotConfigured = v1.AuthUnavailableJSONResponse{Code: "auth_not_configured", Message: "sign-in is not available on this server"}
-	authUnavailable   = v1.AuthUnavailableJSONResponse{Code: "auth_unavailable", Message: "sign-in cannot be checked right now, try again shortly"}
+	authNotConfigured = v1.AuthUnavailableJSONResponse{Body: v1.Error{Code: "auth_not_configured", Message: "sign-in is not available on this server"}}
+	authUnavailable   = v1.AuthUnavailableJSONResponse{Body: v1.Error{Code: "auth_unavailable", Message: "sign-in cannot be checked right now, try again shortly"}}
 )
+
+var privateOperations = map[string]bool{"GetMe": true}
+
+func noStore(f v1.StrictHandlerFunc, operationID string) v1.StrictHandlerFunc {
+	if !privateOperations[operationID] {
+		return f
+	}
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
+		w.Header().Set("Cache-Control", "no-store")
+		return f(ctx, w, r, request)
+	}
+}
 
 type authContextKey struct{}
 
@@ -57,10 +69,8 @@ func authenticate(a Authenticator, logger *slog.Logger) func(http.Handler) http.
 			switch {
 			case result.err == nil:
 				ctx = featureflags.WithIdentity(ctx, result.identity.UserID)
-			case errors.Is(result.err, auth.ErrUnavailable):
-				logger.WarnContext(ctx, "bearer token not checked", "error", result.err, "request_id", middleware.GetReqID(ctx))
-			case errors.Is(result.err, auth.ErrInvalidToken):
-				logger.DebugContext(ctx, "bearer token rejected", "error", result.err, "request_id", middleware.GetReqID(ctx))
+			case errors.Is(result.err, auth.ErrUnavailable), errors.Is(result.err, auth.ErrInvalidToken):
+				logger.DebugContext(ctx, "bearer token not accepted", "error", result.err, "request_id", middleware.GetReqID(ctx))
 			}
 			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, authContextKey{}, result)))
 		})
@@ -100,10 +110,14 @@ func (h *Handler) requireUser(ctx context.Context) (store.User, error) {
 }
 
 func (h *Handler) GetMe(ctx context.Context, _ v1.GetMeRequestObject) (v1.GetMeResponseObject, error) {
-	if !h.enabled(ctx, FlagAccounts) {
+	_, err := IdentityFrom(ctx)
+	if err == nil && !h.enabled(ctx, FlagAccounts) {
 		return v1.GetMe404JSONResponse{NotFoundJSONResponse: v1.NotFoundJSONResponse{Code: "not_found", Message: "not found"}}, nil
 	}
-	user, err := h.requireUser(ctx)
+	var user store.User
+	if err == nil {
+		user, err = h.requireUser(ctx)
+	}
 	switch {
 	case errors.Is(err, ErrNoCredentials), errors.Is(err, auth.ErrInvalidToken):
 		return v1.GetMe401JSONResponse{UnauthorizedJSONResponse: unauthorized}, nil
@@ -115,5 +129,5 @@ func (h *Handler) GetMe(ctx context.Context, _ v1.GetMeRequestObject) (v1.GetMeR
 		h.logger.ErrorContext(ctx, "get me failed", "error", err)
 		return v1.GetMedefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	}
-	return v1.GetMe200JSONResponse{Id: user.ID, Email: user.Email, CreatedAt: user.CreatedAt.UTC()}, nil
+	return v1.GetMe200JSONResponse{Body: v1.User{Id: user.ID, Email: user.Email, CreatedAt: user.CreatedAt.UTC()}}, nil
 }

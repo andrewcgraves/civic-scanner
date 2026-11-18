@@ -113,7 +113,7 @@ export interface paths {
     };
     /**
      * Get the signed-in user
-     * @description Returns the user the bearer token belongs to, a WorkOS access token. The first request with a valid token creates the user. Returns 404 while accounts are turned off.
+     * @description Returns the user the bearer token belongs to, a WorkOS access token. The first request with a valid token creates the user. The token is checked first: a missing or invalid token is a 401 and a token that cannot be checked a 503, whether or not accounts are turned on. A valid token for whom accounts are turned off is a 404. Every response carries `Cache-Control: no-store`.
      */
     get: operations["getMe"];
     put?: never;
@@ -273,15 +273,17 @@ export interface components {
       headers: {
         /** @description Always `Bearer`. */
         "WWW-Authenticate": string;
+        "Cache-Control": components["headers"]["NoStore"];
         [name: string]: unknown;
       };
       content: {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description The token cannot be checked right now. `code` is `auth_not_configured` when the API has no WorkOS client id and `auth_unavailable` when WorkOS's signing keys cannot be fetched. */
+    /** @description The token cannot be checked right now. `code` is `auth_not_configured` when the API has no WorkOS client id and `auth_unavailable` when WorkOS's signing keys cannot be fetched, or when the token's signing key is not in the cached key set and the set cannot be refreshed yet. A client should retry later and must not sign the user out. */
     AuthUnavailable: {
       headers: {
+        "Cache-Control": components["headers"]["NoStore"];
         [name: string]: unknown;
       };
       content: {
@@ -297,7 +299,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description No live agency has this slug, no meeting of a live agency has this id, or the route is turned off. */
+    /** @description No live agency has this slug, no meeting of a live agency has this id, or the route is turned off for the signed-in user. */
     NotFound: {
       headers: {
         [name: string]: unknown;
@@ -323,7 +325,10 @@ export interface components {
     AgencySlug: string;
   };
   requestBodies: never;
-  headers: never;
+  headers: {
+    /** @description Always `no-store`. */
+    NoStore: string;
+  };
   pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -509,6 +514,7 @@ export interface operations {
       /** @description The signed-in user. */
       200: {
         headers: {
+          "Cache-Control": components["headers"]["NoStore"];
           [name: string]: unknown;
         };
         content: {

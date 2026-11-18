@@ -580,7 +580,14 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	return r
 }
 
-type AuthUnavailableJSONResponse Error
+type AuthUnavailableResponseHeaders struct {
+	CacheControl *string
+}
+type AuthUnavailableJSONResponse struct {
+	Body Error
+
+	Headers AuthUnavailableResponseHeaders
+}
 
 type BadRequestJSONResponse Error
 
@@ -596,6 +603,7 @@ type MethodNotAllowedJSONResponse struct {
 type NotFoundJSONResponse Error
 
 type UnauthorizedResponseHeaders struct {
+	CacheControl    *string
 	WWWAuthenticate string
 }
 type UnauthorizedJSONResponse struct {
@@ -873,15 +881,25 @@ type GetMeResponseObject interface {
 	VisitGetMeResponse(w http.ResponseWriter) error
 }
 
-type GetMe200JSONResponse User
+type GetMe200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type GetMe200JSONResponse struct {
+	Body    User
+	Headers GetMe200ResponseHeaders
+}
 
 func (response GetMe200JSONResponse) VisitGetMeResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
 	w.WriteHeader(200)
 	_, err := buf.WriteTo(w)
 	return err
@@ -896,6 +914,9 @@ func (response GetMe401JSONResponse) VisitGetMeResponse(w http.ResponseWriter) e
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
 	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
 	w.WriteHeader(401)
 	_, err := buf.WriteTo(w)
@@ -938,10 +959,13 @@ type GetMe503JSONResponse struct{ AuthUnavailableJSONResponse }
 func (response GetMe503JSONResponse) VisitGetMeResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
 	w.WriteHeader(503)
 	_, err := buf.WriteTo(w)
 	return err

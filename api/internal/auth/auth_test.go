@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -34,7 +35,7 @@ var (
 	testKeys []*rsa.PrivateKey
 )
 
-func rsaKey(t *testing.T, i int) *rsa.PrivateKey {
+func rsaKey(t testing.TB, i int) *rsa.PrivateKey {
 	t.Helper()
 	keyOnce.Do(func() {
 		for range 3 {
@@ -134,7 +135,7 @@ func segment(v any) string {
 	return b64(out)
 }
 
-func sign(t *testing.T, key *rsa.PrivateKey, header, claims map[string]any) string {
+func sign(t testing.TB, key *rsa.PrivateKey, header, claims map[string]any) string {
 	t.Helper()
 	input := segment(header) + "." + segment(claims)
 	digest := sha256.Sum256([]byte(input))
@@ -160,6 +161,7 @@ func validClaims(c *clock) map[string]any {
 		"permissions": []string{"posts:read"},
 		"email":       "ada@example.com",
 		"jti":         "jti_01TEST",
+		"auth_time":   c.unix(-time.Hour),
 		"iat":         c.unix(-time.Minute),
 		"exp":         c.unix(4 * time.Minute),
 	}
@@ -215,6 +217,9 @@ func TestVerifyValidToken(t *testing.T) {
 		UserID: "user_01TEST", SessionID: "session_01TEST", OrganizationID: "org_01TEST", Role: "member",
 		Permissions: []string{"posts:read"}, Email: "ada@example.com", ExpiresAt: f.clock.Now().Add(4 * time.Minute).Truncate(time.Second),
 	}
+	if id.Actor != "" {
+		t.Errorf("Actor = %q without an act claim", id.Actor)
+	}
 	if id.UserID != want.UserID || id.SessionID != want.SessionID || id.OrganizationID != want.OrganizationID ||
 		id.Role != want.Role || !slices.Equal(id.Permissions, want.Permissions) || id.Email != want.Email || !id.ExpiresAt.Equal(want.ExpiresAt) {
 		t.Errorf("identity = %+v, want %+v", id, want)
@@ -249,6 +254,13 @@ func TestVerifyRejectsClaims(t *testing.T) {
 		{"missing sid", with(base, "sid", nil)},
 		{"agent token", with(base, "sub_profile", "ai_agent")},
 		{"widget token", with(base, "sub_type", "authkit")},
+		{"null sub_profile", with(base, "sub_profile", json.RawMessage("null"))},
+		{"null sub_type", with(base, "sub_type", json.RawMessage("null"))},
+		{"empty sub_type", with(base, "sub_type", "")},
+		{"missing auth_time", with(base, "auth_time", nil)},
+		{"null auth_time", with(base, "auth_time", json.RawMessage("null"))},
+		{"auth_time as string", with(base, "auth_time", "1700000000")},
+		{"act not an object", with(base, "act", "admin@example.com")},
 		{"aud of wrong type", with(base, "aud", 12)},
 	}
 	for _, tt := range tests {
@@ -278,6 +290,18 @@ func TestVerifyAcceptsWithinLeeway(t *testing.T) {
 				t.Errorf("err = %v, want nil", err)
 			}
 		})
+	}
+}
+
+func TestVerifyCarriesTheActor(t *testing.T) {
+	f := newFixture(t)
+	claims := with(validClaims(f.clock), "act", map[string]any{"sub": "admin@example.com"})
+	id, err := f.verify(sign(t, rsaKey(t, 0), rs256("k1"), claims))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.Actor != "admin@example.com" || id.UserID != "user_01TEST" {
+		t.Errorf("identity = %+v, want actor admin@example.com acting as user_01TEST", id)
 	}
 }
 
@@ -385,6 +409,8 @@ func TestVerifyRejectsMalformed(t *testing.T) {
 		"header trailing":     b64([]byte(`{"alg":"RS256","kid":"k1"}{}`)) + "." + parts[1] + "." + parts[2],
 		"missing kid":         segment(map[string]any{"alg": "RS256"}) + "." + parts[1] + "." + parts[2],
 		"crit header":         sign(t, rsaKey(t, 0), map[string]any{"alg": "RS256", "kid": "k1", "crit": []string{"exp"}}, claims),
+		"null crit header":    sign(t, rsaKey(t, 0), map[string]any{"alg": "RS256", "kid": "k1", "crit": nil}, claims),
+		"empty crit header":   sign(t, rsaKey(t, 0), map[string]any{"alg": "RS256", "kid": "k1", "crit": []string{}}, claims),
 		"signature encoding":  parts[0] + "." + parts[1] + ".***",
 		"tampered payload":    tampered,
 		"signed by other key": otherKey,
@@ -423,8 +449,12 @@ func TestUnknownKidIsRejectedAfterOneBoundedRefresh(t *testing.T) {
 	f.clock.Advance(time.Minute)
 	for i := range 20 {
 		_, err := f.verify(sign(t, rsaKey(t, 1), rs256("unknown-"+string(rune('a'+i))), validClaims(f.clock)))
-		if !errors.Is(err, ErrInvalidToken) {
-			t.Fatalf("unknown kid %d: err = %v, want ErrInvalidToken", i, err)
+		want := ErrUnavailable
+		if i == 0 {
+			want = ErrInvalidToken
+		}
+		if !errors.Is(err, want) {
+			t.Fatalf("unknown kid %d: err = %v, want %v", i, err, want)
 		}
 	}
 	if hits := f.server.hits.Load(); hits != 2 {
@@ -444,16 +474,21 @@ func TestUnknownKidIsAcceptedAfterRotation(t *testing.T) {
 
 	f.clock.Advance(5 * time.Second)
 	rotated := func() string { return sign(t, rsaKey(t, 1), rs256("k2"), validClaims(f.clock)) }
-	if _, err := f.verify(rotated()); !errors.Is(err, ErrInvalidToken) {
-		t.Fatalf("within the refresh interval: err = %v, want ErrInvalidToken", err)
+	if _, err := f.verify(rotated()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("within the refresh interval: err = %v, want ErrUnavailable", err)
 	}
 
 	f.clock.Advance(jwksMinRefresh)
 	if _, err := f.verify(rotated()); err != nil {
 		t.Fatalf("after rotation: %v", err)
 	}
-	if _, err := f.verify(sign(t, rsaKey(t, 0), rs256("k1"), validClaims(f.clock))); !errors.Is(err, ErrInvalidToken) {
-		t.Errorf("retired key: err = %v, want ErrInvalidToken", err)
+	retired := func() string { return sign(t, rsaKey(t, 0), rs256("k1"), validClaims(f.clock)) }
+	if _, err := f.verify(retired()); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("retired key within the refresh interval: err = %v, want ErrUnavailable", err)
+	}
+	f.clock.Advance(jwksMinRefresh)
+	if _, err := f.verify(retired()); !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("retired key after a fresh fetch: err = %v, want ErrInvalidToken", err)
 	}
 }
 
@@ -683,3 +718,50 @@ func TestDefaultClientIsUsedWithoutOption(t *testing.T) {
 		t.Errorf("url = %q", v.keys.url)
 	}
 }
+
+func TestJWKSTruncatedBody(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"keys":[`))
+	}))
+	t.Cleanup(srv.Close)
+	v, err := New(config.WorkOS{ClientID: testClientID, BaseURL: srv.URL, Issuers: []string{testIssuer}}, WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = v.Verify(t.Context(), sign(t, rsaKey(t, 0), rs256("k1"), validClaims(newClock())))
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "jwks read") {
+		t.Errorf("err = %v, want an ErrUnavailable read error", err)
+	}
+}
+
+func TestJWKSRefreshFailureIsLoggedOncePerAttempt(t *testing.T) {
+	var logged atomic.Int32
+	logger := slog.New(countingHandler{&logged})
+	f := newFixture(t)
+	f.server.set(func(s *jwksServer) { s.status = http.StatusBadGateway })
+	v, err := New(config.WorkOS{ClientID: testClientID, BaseURL: f.server.URL, Issuers: []string{testIssuer}},
+		WithHTTPClient(f.server.Client()), WithClock(f.clock.Now), WithLogger(logger))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		if _, err := v.Verify(t.Context(), sign(t, rsaKey(t, 0), rs256("k1"), validClaims(f.clock))); !errors.Is(err, ErrUnavailable) {
+			t.Fatalf("err = %v, want ErrUnavailable", err)
+		}
+	}
+	if n := logged.Load(); n != 1 {
+		t.Errorf("log lines = %d, want 1", n)
+	}
+}
+
+type countingHandler struct{ n *atomic.Int32 }
+
+func (h countingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h countingHandler) Handle(context.Context, slog.Record) error {
+	h.n.Add(1)
+	return nil
+}
+func (h countingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h countingHandler) WithGroup(string) slog.Handler      { return h }

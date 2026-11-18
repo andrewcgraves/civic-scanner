@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -39,6 +40,7 @@ type Identity struct {
 	Role           string
 	Permissions    []string
 	Email          string
+	Actor          string
 	ExpiresAt      time.Time
 }
 
@@ -55,11 +57,14 @@ type Option func(*options)
 type options struct {
 	client *http.Client
 	now    func() time.Time
+	logger *slog.Logger
 }
 
 func WithHTTPClient(c *http.Client) Option { return func(o *options) { o.client = c } }
 
 func WithClock(now func() time.Time) Option { return func(o *options) { o.now = now } }
+
+func WithLogger(l *slog.Logger) Option { return func(o *options) { o.logger = l } }
 
 func New(cfg config.WorkOS, opts ...Option) (*Verifier, error) {
 	if !cfg.Configured() {
@@ -73,7 +78,7 @@ func New(cfg config.WorkOS, opts ...Option) (*Verifier, error) {
 	if err != nil || u.Scheme != "https" || u.Host == "" {
 		return nil, fmt.Errorf("auth: JWKS URL must be https, got %q", jwksURL)
 	}
-	o := options{now: time.Now}
+	o := options{now: time.Now, logger: slog.New(slog.DiscardHandler)}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -88,7 +93,7 @@ func New(cfg config.WorkOS, opts ...Option) (*Verifier, error) {
 		clientID: cfg.ClientID,
 		issuers:  slices.Clone(cfg.Issuers),
 		audience: cfg.Audience,
-		keys:     newJWKS(jwksURL, &pinned, o.now),
+		keys:     newJWKS(jwksURL, &pinned, o.now, o.logger),
 		now:      o.now,
 	}, nil
 }
@@ -108,9 +113,9 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
 	}
 
 	var header struct {
-		Alg  string   `json:"alg"`
-		Kid  string   `json:"kid"`
-		Crit []string `json:"crit"`
+		Alg  string          `json:"alg"`
+		Kid  string          `json:"kid"`
+		Crit json.RawMessage `json:"crit"`
 	}
 	if err := decodeSegment(parts[0], &header); err != nil {
 		return Identity{}, invalid("header: " + err.Error())
@@ -152,25 +157,28 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
 		Role:           c.Role,
 		Permissions:    c.Permissions,
 		Email:          c.Email,
+		Actor:          c.actor(),
 		ExpiresAt:      c.ExpiresAt.Time(),
 	}, nil
 }
 
 type claims struct {
-	Issuer         string       `json:"iss"`
-	Subject        string       `json:"sub"`
-	Audience       audience     `json:"aud"`
-	ClientID       string       `json:"client_id"`
-	SessionID      string       `json:"sid"`
-	OrganizationID string       `json:"org_id"`
-	Role           string       `json:"role"`
-	Permissions    []string     `json:"permissions"`
-	Email          string       `json:"email"`
-	SubProfile     *string      `json:"sub_profile"`
-	SubType        *string      `json:"sub_type"`
-	ExpiresAt      *numericDate `json:"exp"`
-	IssuedAt       *numericDate `json:"iat"`
-	NotBefore      *numericDate `json:"nbf"`
+	Issuer         string          `json:"iss"`
+	Subject        string          `json:"sub"`
+	Audience       audience        `json:"aud"`
+	ClientID       string          `json:"client_id"`
+	SessionID      string          `json:"sid"`
+	OrganizationID string          `json:"org_id"`
+	Role           string          `json:"role"`
+	Permissions    []string        `json:"permissions"`
+	Email          string          `json:"email"`
+	Act            *actor          `json:"act"`
+	SubProfile     json.RawMessage `json:"sub_profile"`
+	SubType        json.RawMessage `json:"sub_type"`
+	AuthTime       *numericDate    `json:"auth_time"`
+	ExpiresAt      *numericDate    `json:"exp"`
+	IssuedAt       *numericDate    `json:"iat"`
+	NotBefore      *numericDate    `json:"nbf"`
 }
 
 func (v *Verifier) check(c claims) error {
@@ -186,10 +194,12 @@ func (v *Verifier) check(c claims) error {
 		return invalid("missing sub")
 	case c.SessionID == "":
 		return invalid("missing sid")
-	case c.SubProfile != nil && *c.SubProfile != "user":
+	case c.SubProfile != nil && string(c.SubProfile) != `"user"`:
 		return invalid("not a user token")
 	case c.SubType != nil:
 		return invalid("not a user token")
+	case c.AuthTime == nil:
+		return invalid("missing auth_time")
 	case c.ExpiresAt == nil:
 		return invalid("missing exp")
 	case !now.Before(c.ExpiresAt.Time().Add(clockLeeway)):
@@ -202,6 +212,17 @@ func (v *Verifier) check(c claims) error {
 		return invalid("not yet valid")
 	}
 	return nil
+}
+
+type actor struct {
+	Subject string `json:"sub"`
+}
+
+func (c claims) actor() string {
+	if c.Act == nil {
+		return ""
+	}
+	return c.Act.Subject
 }
 
 func invalid(reason string) error {

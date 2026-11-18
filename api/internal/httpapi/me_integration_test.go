@@ -108,6 +108,7 @@ func (s meServer) claims(sub string, exp time.Duration) map[string]any {
 		"sid":       "session_integration",
 		"email":     "ada@example.com",
 		"iat":       now.Add(-time.Minute).Unix(),
+		"auth_time": now.Add(-time.Hour).Unix(),
 		"exp":       now.Add(exp).Unix(),
 	}
 }
@@ -230,8 +231,12 @@ func TestGetMeFlagOffCreatesNoUser(t *testing.T) {
 	s := newMeServer(t, false)
 	token := signedToken(t, s.key, "k1", s.claims(s.users, 5*time.Minute))
 
-	if status, _, raw := getWithToken(t, s.url+"/v1/me", token); status != http.StatusNotFound {
-		t.Errorf("status = %d, body %s, want 404", status, raw)
+	if status, header, raw := getWithToken(t, s.url+"/v1/me", token); status != http.StatusNotFound || header.Get("Cache-Control") != "no-store" {
+		t.Errorf("status = %d, Cache-Control %q, body %s, want 404 no-store", status, header.Get("Cache-Control"), raw)
+	}
+	expired := signedToken(t, s.key, "k1", s.claims(s.users, -time.Hour))
+	if status, _, raw := getWithToken(t, s.url+"/v1/me", expired); status != http.StatusUnauthorized {
+		t.Errorf("expired token with the flag off: status = %d, body %s, want 401", status, raw)
 	}
 	var n int
 	if err := testdb.Pool(t).QueryRow(t.Context(), `SELECT count(*) FROM users WHERE workos_user_id = $1`, s.users).Scan(&n); err != nil {

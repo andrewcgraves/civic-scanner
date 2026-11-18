@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +90,9 @@ func TestGetMeReturnsTheSignedInUser(t *testing.T) {
 	if want := []store.UserInput{{WorkOSUserID: "user_01", Email: email}}; len(calls.inputs) != 1 || calls.inputs[0] != want[0] {
 		t.Errorf("EnsureUser inputs = %+v, want %+v", calls.inputs, want)
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
 	if strings.Contains(rec.Body.String(), "user_01") {
 		t.Errorf("response exposes the WorkOS user id: %s", rec.Body)
 	}
@@ -128,6 +133,9 @@ func TestGetMeRejects(t *testing.T) {
 			}
 			if got := rec.Header().Get("WWW-Authenticate"); got != "Bearer" {
 				t.Errorf("WWW-Authenticate = %q, want Bearer", got)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
 			}
 			if body := decodeError(t, rec); body.Code != "unauthorized" || body.Message != "a valid bearer token is required" {
 				t.Errorf("body = %+v", body)
@@ -170,6 +178,9 @@ func TestGetMeUnavailable(t *testing.T) {
 			if body := decodeError(t, rec); body.Code != tt.wantCode {
 				t.Errorf("code = %q, want %q", body.Code, tt.wantCode)
 			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
 			if tt.auth.unconfigured && len(tt.auth.seen) != 0 {
 				t.Errorf("Verify called while unconfigured: %v", tt.auth.seen)
 			}
@@ -191,40 +202,67 @@ func TestGetMeStoreError(t *testing.T) {
 	h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(a), WithFlags(flagsOn(true)))
 
 	rec := request(t, h, "/v1/me", "Bearer good")
-	if rec.Code != http.StatusInternalServerError || decodeError(t, rec).Code != "internal_error" {
+	if rec.Code != http.StatusInternalServerError || decodeError(t, rec).Code != "internal_error" || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("status %d, body %s", rec.Code, rec.Body)
 	}
 }
 
-func TestGetMeIsNotFoundWhileTheFlagIsOff(t *testing.T) {
-	calls := &userCalls{}
-	a := &fakeAuth{tokens: map[string]auth.Identity{"good": {UserID: "user_01"}}}
-	h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(a), WithFlags(flagsOn(false)))
-
-	for _, authorization := range []string{"", "Bearer good", "Bearer bad"} {
-		rec := request(t, h, "/v1/me", authorization)
-		if rec.Code != http.StatusNotFound || decodeError(t, rec).Code != "not_found" {
-			t.Errorf("%q: status %d, body %s", authorization, rec.Code, rec.Body)
-		}
+func TestGetMeChecksTheTokenBeforeTheFlag(t *testing.T) {
+	tests := []struct {
+		name          string
+		flagOn        bool
+		auth          *fakeAuth
+		authorization string
+		wantStatus    int
+		wantCode      string
+	}{
+		{"flag off, valid token", false, &fakeAuth{tokens: map[string]auth.Identity{"good": {UserID: "user_01"}}}, "Bearer good", http.StatusNotFound, "not_found"},
+		{"flag off, no token", false, &fakeAuth{}, "", http.StatusUnauthorized, "unauthorized"},
+		{"flag off, invalid token", false, &fakeAuth{}, "Bearer expired", http.StatusUnauthorized, "unauthorized"},
+		{"flag off, keys unavailable", false, &fakeAuth{err: auth.ErrUnavailable}, "Bearer good", http.StatusServiceUnavailable, "auth_unavailable"},
+		{"flag off, not configured", false, &fakeAuth{unconfigured: true}, "", http.StatusServiceUnavailable, "auth_not_configured"},
 	}
-	if len(calls.inputs) != 0 {
-		t.Errorf("EnsureUser called with the flag off: %+v", calls.inputs)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := &userCalls{}
+			h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(tt.auth), WithFlags(flagsOn(tt.flagOn)))
+			rec := request(t, h, "/v1/me", tt.authorization)
+			if rec.Code != tt.wantStatus || decodeError(t, rec).Code != tt.wantCode {
+				t.Errorf("status %d, body %s, want %d %s", rec.Code, rec.Body, tt.wantStatus, tt.wantCode)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			if len(calls.inputs) != 0 {
+				t.Errorf("EnsureUser called: %+v", calls.inputs)
+			}
+		})
 	}
 }
 
-func TestFlagIsEvaluatedForTheSignedInUser(t *testing.T) {
+func TestFlagIsEvaluatedOnlyForAVerifiedUser(t *testing.T) {
 	var targeting []string
 	enabled := func(ctx context.Context, _ string) bool {
 		targeting = append(targeting, openfeature.TransactionContext(ctx).TargetingKey())
-		return false
+		return ctx.Value(authContextKey{}).(authResult).identity.UserID == "user_01"
 	}
-	a := &fakeAuth{tokens: map[string]auth.Identity{"good": {UserID: "user_01"}}}
-	h := NewHandler(fakeStore{}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(a), WithFlags(enabled))
+	calls := &userCalls{user: store.User{ID: uuid.New()}}
+	a := &fakeAuth{tokens: map[string]auth.Identity{"good": {UserID: "user_01"}, "other": {UserID: "user_02"}}}
+	h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(a), WithFlags(enabled))
 
-	request(t, h, "/v1/me", "Bearer good")
-	request(t, h, "/v1/me", "Bearer bad")
-	if len(targeting) != 2 || targeting[0] != "user_01" || targeting[1] != "" {
-		t.Errorf("targeting keys = %q, want [user_01 \"\"]", targeting)
+	for authorization, want := range map[string]int{
+		"Bearer good":  http.StatusOK,
+		"Bearer other": http.StatusNotFound,
+		"Bearer bad":   http.StatusUnauthorized,
+		"":             http.StatusUnauthorized,
+	} {
+		if rec := request(t, h, "/v1/me", authorization); rec.Code != want {
+			t.Errorf("%q: status %d, want %d", authorization, rec.Code, want)
+		}
+	}
+	slices.Sort(targeting)
+	if want := []string{"user_01", "user_02"}; !slices.Equal(targeting, want) {
+		t.Errorf("targeting keys = %q, want %q", targeting, want)
 	}
 }
 
@@ -236,10 +274,13 @@ func TestPublicEndpointsIgnoreBadTokens(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := NewHandler(liveStore(), slog.New(slog.DiscardHandler), "test", WithAuthenticator(a), WithFlags(flagsOn(true)))
-			for _, authorization := range []string{"Bearer expired.token.here", "Basic abc", "Bearer"} {
-				for _, path := range []string{"/v1/healthz", "/v1/agencies", "/v1/agencies/la-metro"} {
-					if rec := request(t, h, path, authorization); rec.Code != http.StatusOK {
-						t.Errorf("%s with %q: status %d", path, authorization, rec.Code)
+			for _, path := range []string{"/v1/healthz", "/v1/agencies", "/v1/agencies/la-metro", "/v1/agencies/unknown"} {
+				baseline := request(t, h, path, "")
+				for _, authorization := range []string{"Bearer expired.token.here", "Basic abc", "Bearer"} {
+					rec := request(t, h, path, authorization)
+					if rec.Code != baseline.Code || rec.Body.String() != baseline.Body.String() || !maps.EqualFunc(rec.Header(), baseline.Header(), slices.Equal) {
+						t.Errorf("%s with %q: %d %v %s, want %d %v %s", path, authorization,
+							rec.Code, rec.Header(), rec.Body, baseline.Code, baseline.Header(), baseline.Body)
 					}
 				}
 			}
@@ -250,5 +291,9 @@ func TestPublicEndpointsIgnoreBadTokens(t *testing.T) {
 func TestIdentityFromWithoutMiddleware(t *testing.T) {
 	if _, err := IdentityFrom(t.Context()); !errors.Is(err, ErrNoCredentials) {
 		t.Errorf("err = %v, want ErrNoCredentials", err)
+	}
+	h := NewHandler(fakeStore{}, slog.New(slog.DiscardHandler), "test")
+	if _, err := h.requireUser(t.Context()); !errors.Is(err, ErrNoCredentials) {
+		t.Errorf("requireUser err = %v, want ErrNoCredentials", err)
 	}
 }

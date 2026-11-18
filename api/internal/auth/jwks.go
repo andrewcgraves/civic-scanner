@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"sync"
@@ -39,6 +40,7 @@ type jwks struct {
 	url    string
 	client *http.Client
 	now    func() time.Time
+	logger *slog.Logger
 
 	mu          sync.Mutex
 	set         *keySet
@@ -47,8 +49,8 @@ type jwks struct {
 	inflight    chan struct{}
 }
 
-func newJWKS(url string, client *http.Client, now func() time.Time) *jwks {
-	return &jwks{url: url, client: client, now: now}
+func newJWKS(url string, client *http.Client, now func() time.Time, logger *slog.Logger) *jwks {
+	return &jwks{url: url, client: client, now: now, logger: logger}
 }
 
 func (j *jwks) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
@@ -74,15 +76,15 @@ func (j *jwks) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 			return nil, fmt.Errorf("%w: %w", ErrUnavailable, ctx.Err())
 		}
 	}
-	return j.lookup(kid)
+	return j.lookup(kid, wait != nil)
 }
 
-func (j *jwks) lookup(kid string) (*rsa.PublicKey, error) {
+func (j *jwks) lookup(kid string, refreshed bool) (*rsa.PublicKey, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	set := j.set
 	if set == nil || j.now().Sub(set.fetchedAt) >= jwksMaxStale {
-		return nil, fmt.Errorf("%w: %w", ErrUnavailable, j.lastErrOr(errNoKeys))
+		return nil, fmt.Errorf("%w: %w", ErrUnavailable, j.lastErr)
 	}
 	if key := set.keys[kid]; key != nil {
 		return key, nil
@@ -90,14 +92,10 @@ func (j *jwks) lookup(kid string) (*rsa.PublicKey, error) {
 	if j.lastErr != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnavailable, j.lastErr)
 	}
-	return nil, fmt.Errorf("%w: %w", ErrInvalidToken, errUnknownKey)
-}
-
-func (j *jwks) lastErrOr(fallback error) error {
-	if j.lastErr != nil {
-		return j.lastErr
+	if !refreshed {
+		return nil, fmt.Errorf("%w: %w until the key set can be refreshed", ErrUnavailable, errUnknownKey)
 	}
-	return fallback
+	return nil, fmt.Errorf("%w: %w", ErrInvalidToken, errUnknownKey)
 }
 
 func (j *jwks) startRefreshLocked(now time.Time) chan struct{} {
@@ -119,6 +117,7 @@ func (j *jwks) refresh(done chan struct{}) {
 	j.mu.Lock()
 	if err != nil {
 		j.lastErr = err
+		j.logger.Warn("WorkOS key set refresh failed", "error", err)
 	} else {
 		j.set = &keySet{keys: keys, fetchedAt: j.now()}
 		j.lastErr = nil
