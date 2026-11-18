@@ -104,6 +104,7 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | `api` | build, vet, golangci-lint, unit tests with `-race` and coverage, codegen drift |
 | `api-integration` | unit and integration tests with `-race` and coverage, against Postgres 17 and S3Mock containers; fails below the coverage minimum |
 | `migrations-lint` | Squawk on changed migrations |
+| `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database |
 | `web` | lint, format, typecheck, tests with coverage, codegen drift, build |
 | `coverage-comment` | posts or updates the coverage comment on the pull request; not part of `ci-ok` |
 | `ci-ok` | passes when none of the above failed; the one required check on `main` |
@@ -116,7 +117,7 @@ Notes on the workflow:
 - A new push to a pull request cancels the run for the previous push. Runs on `main` are keyed by commit and never cancelled.
 - `migrations-lint` lints the migrations added or modified by the change. If none were (only the linter config or the workflow changed), it lints all of them.
 - Tool versions (Redocly CLI, Squawk, golangci-lint) and `GO_COVERAGE_MIN` are pinned in the workflow `env` and mirrored in the `Makefile` and `.github/scripts/lint-migrations.sh`. Bump them together.
-- **Planned: compatibility test.** Once there is a production version, add a job that applies the pull request's migrations, checks out the deployed commit (for example a `production` tag moved on deploy) into a second directory, and runs its `go test -tags=integration ./...` against that database. This proves each migration is backward compatible with the code in production. Add the job to the `needs` list of `ci-ok`.
+- `migrations-compat` runs `.github/scripts/check-migration-compat.sh`; see "Backward compatibility check" under Migrations. It runs only on pull requests that change `api/migrations/**` (a change to only the workflow or the script does not trigger it), never on pushes to `main`. A skipped job counts as passing in `ci-ok`; a failure fails it.
 
 ## Coverage
 
@@ -288,6 +289,15 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - In a contract file, `ban-drop-column` and `ban-drop-table` are excluded. Everything else is still checked.
 
 `.squawk.toml` excludes `require-lock-timeout` and `require-statement-timeout`: timeouts are a connection-level concern for the migrate command, not something to repeat in every file. `--exclude` on the command line replaces the config list, so `CONTRACT_EXCLUDE` in the script repeats those two rules. Keep the two lists in sync.
+
+## Backward compatibility check
+
+Railway runs migrations before the new code starts, so for a short window the old code runs against the new schema. Squawk catches risky statements; the `migrations-compat` CI job proves the result. It applies the pull request's migrations (goose and River, as `make migrate` does) to a fresh Postgres 17, checks out the pull request's base commit into `base/`, and runs that code's `go test -tags=integration ./...` against the migrated database. If the old tests fail, the migration is not backward compatible and the job says so.
+
+- The old tests call `testdb.Pool`, which runs the old code's own `migrations.Up`. Against the new schema that is a no-op: goose has nothing to apply when every source migration is already recorded, and it ignores recorded versions it has no file for. The database keeps the new schema while the old tests run.
+- The check is skipped when every added or modified migration file contains a `-- migration: contract` line, since destructive changes are expected to break old code. A pull request that mixes contract and ordinary files is still checked.
+- Run it locally against an empty database: `DATABASE_URL=... BASE_REF=origin/main .github/scripts/check-migration-compat.sh [api/migrations/NNNNN_name.sql ...]`. Set `BASE_DIR` instead of `BASE_REF` to use an existing checkout.
+- Limits: the base commit is the pull request's base when the event fired, which approximates production (`main` after the latest deploy). If the base tests need something the pull request removes, they fail, and that is the signal. Editing an already applied migration file is not modelled.
 
 ## Deploy
 
