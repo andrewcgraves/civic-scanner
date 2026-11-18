@@ -145,6 +145,62 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /agencies/{slug}/feed.xml:
+    get:
+      operationId: getAgencyFeed
+      summary: Get an agency's RSS feed
+      description: >-
+        An RSS 2.0 feed of a live agency's latest meeting events (agenda
+        published, agenda changed, transcript ready), newest first, at most
+        50 items. Each item links to the public meeting page and has the
+        event id as its GUID. Supports conditional requests with
+        `If-None-Match`. Behind the `agency-rss-feeds` flag; while the flag
+        is off, and for an unknown slug or an agency that is not live, the
+        response is the same 404.
+      tags: [agencies]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/AgencySlug"
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/AgencyFeed"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    head:
+      operationId: headAgencyFeed
+      summary: Get the headers of an agency's RSS feed
+      description: The same as `GET` without the body.
+      tags: [agencies]
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/AgencySlug"
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/AgencyFeed"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /meetings/{id}:
     get:
       operationId: getMeeting
@@ -233,7 +289,24 @@ components:
       description: The agency's slug, e.g. `la-metro`.
       schema:
         type: string
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: >-
+        ETags from earlier responses. When one matches the current feed, the
+        response is 304 with no body.
+      schema:
+        type: string
   headers:
+    ETag:
+      description: Strong validator of the feed body; changes whenever the body does.
+      schema:
+        type: string
+    CacheControl:
+      description: How long caches and feed readers may reuse the response.
+      schema:
+        type: string
     NoStore:
       description: Always `no-store`.
       schema:
@@ -245,6 +318,27 @@ components:
       bearerFormat: JWT
       description: A WorkOS AuthKit access token.
   responses:
+    AgencyFeed:
+      description: >-
+        The feed, an RSS 2.0 document in UTF-8 with an Atom self link. Item
+        titles are plain text; item descriptions are HTML-escaped plain text,
+        so readers never render agency or AI text as markup.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
+      content:
+        application/rss+xml; charset=utf-8:
+          schema:
+            type: string
+    NotModified:
+      description: The feed has not changed since the ETag the client sent.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControl"
     Unauthorized:
       description: >-
         The request has no bearer token, or the token is not valid. `code` is
