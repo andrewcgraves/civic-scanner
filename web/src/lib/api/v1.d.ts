@@ -33,7 +33,7 @@ export interface paths {
     };
     /**
      * List tracked agencies
-     * @description Returns every agency the tracker follows.
+     * @description Returns every live agency the tracker follows.
      */
     get: operations["listAgencies"];
     put?: never;
@@ -60,6 +60,11 @@ export interface components {
       /** @description URL-safe identifier, e.g. `la-metro`. */
       slug: string;
       name: string;
+      /**
+       * Format: uri
+       * @description The agency's official website.
+       */
+      website: string;
     };
     AgencyList: {
       agencies: components["schemas"]["Agency"][];
@@ -71,7 +76,19 @@ export interface components {
       message: string;
     };
   };
-  responses: never;
+  responses: {
+    /** @description The path does not support the requested method. */
+    MethodNotAllowed: {
+      headers: {
+        /** @description Methods the path supports. */
+        Allow?: string;
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+  };
   parameters: never;
   requestBodies: never;
   headers: never;
@@ -97,6 +114,7 @@ export interface operations {
           "application/json": components["schemas"]["Health"];
         };
       };
+      405: components["responses"]["MethodNotAllowed"];
       /** @description Service is unhealthy. */
       503: {
         headers: {
@@ -126,6 +144,7 @@ export interface operations {
           "application/json": components["schemas"]["AgencyList"];
         };
       };
+      405: components["responses"]["MethodNotAllowed"];
       /** @description Unexpected error. */
       default: {
         headers: {
