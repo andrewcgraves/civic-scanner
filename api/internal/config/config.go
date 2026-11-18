@@ -14,7 +14,8 @@ type Config struct {
 	AppEnv      string
 	LLM         LLM
 
-	FeatureFlags FeatureFlags
+	FeatureFlags  FeatureFlags
+	Transcription Transcription
 }
 
 func Load() (Config, error) {
@@ -34,6 +35,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.LLM = llm
+	if cfg.Transcription, err = loadTranscription(); err != nil {
+		return Config{}, err
+	}
 	if cfg.FeatureFlags, err = loadFeatureFlags(); err != nil {
 		return Config{}, err
 	}
