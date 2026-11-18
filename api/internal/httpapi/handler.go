@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
+	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
@@ -20,18 +22,33 @@ type Store interface {
 	GetLiveAgency(ctx context.Context, slug string) (store.Agency, error)
 	ListMeetings(ctx context.Context, agencyID uuid.UUID, params store.ListMeetingsParams) (store.MeetingPage, error)
 	GetLiveMeetingDetail(ctx context.Context, id uuid.UUID) (store.MeetingDetail, error)
+	EnsureUser(ctx context.Context, in store.UserInput) (store.User, bool, error)
 }
 
 type Handler struct {
 	store   Store
 	logger  *slog.Logger
 	version string
+	auth    Authenticator
+	enabled func(ctx context.Context, flag string) bool
 }
 
 var _ v1.StrictServerInterface = (*Handler)(nil)
 
-func NewHandler(s Store, logger *slog.Logger, version string) *Handler {
-	return &Handler{store: s, logger: logger, version: version}
+type HandlerOption func(*Handler)
+
+func WithAuthenticator(a Authenticator) HandlerOption { return func(h *Handler) { h.auth = a } }
+
+func WithFlags(enabled func(ctx context.Context, flag string) bool) HandlerOption {
+	return func(h *Handler) { h.enabled = enabled }
+}
+
+func NewHandler(s Store, logger *slog.Logger, version string, opts ...HandlerOption) *Handler {
+	h := &Handler{store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 func (h *Handler) GetHealth(ctx context.Context, _ v1.GetHealthRequestObject) (v1.GetHealthResponseObject, error) {

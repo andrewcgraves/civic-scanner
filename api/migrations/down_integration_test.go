@@ -157,3 +157,32 @@ func TestRecordingsMigrationRollsBackAndReapplies(t *testing.T) {
 		}
 	}
 }
+
+func TestUsersMigrationRollsBackAndReapplies(t *testing.T) {
+	ctx := t.Context()
+	provider, pool, schema := isolatedProvider(t)
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if !tableExists(t, pool, schema, "users") {
+		t.Fatal("users missing after Up")
+	}
+
+	if _, err := provider.DownTo(ctx, 7); err != nil {
+		t.Fatalf("DownTo(7): %v", err)
+	}
+	if tableExists(t, pool, schema, "users") {
+		t.Error("users still exists after rolling back 00009")
+	}
+	if !tableExists(t, pool, schema, "recordings") {
+		t.Error("recordings missing after rolling back only 00009")
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	if !tableExists(t, pool, schema, "users") {
+		t.Error("users missing after reapplying")
+	}
+}
