@@ -129,7 +129,7 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | `api` | build, vet, golangci-lint, unit tests with `-race` and coverage, codegen drift |
 | `api-integration` | unit and integration tests with `-race` and coverage, against Postgres 17 and S3Mock containers; fails below the coverage minimum |
 | `migrations-lint` | Squawk on changed migrations |
-| `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database |
+| `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database, with Postgres 17 and S3Mock containers like `api-integration` |
 | `web` | lint, format, typecheck, tests with coverage, codegen drift, build |
 | `coverage-comment` | posts or updates the coverage comment on the pull request; not part of `ci-ok` |
 | `ci-ok` | passes when none of the above failed; the one required check on `main` |
@@ -361,6 +361,27 @@ type UpsertedMeeting struct {
 ### Tests
 
 The unit tests use the fake adapter and fake clock. The integration tests run a real River client against Postgres. Each test uses its own random queue (`jobs.Config.Queue`) and turns off the periodic job (`jobs.Config.NoPeriodicJobs`), so tests in other packages, which share the database, never work its jobs. A test that runs a check twice schedules the runs on different days, since a second check the same day is a duplicate.
+
+## Agendas
+
+A meeting's agenda is kept as numbered versions in `agenda_versions` (migration `00004`). Each row belongs to one meeting and holds the source document URL, the extracted text, a content hash, a nullable AI summary, a nullable change note, and `created_at`/`updated_at`. `version` starts at 1 for each meeting and is unique per meeting. The latest version, the highest number, is the one shown. Versions are never deleted or rewritten; only the summary and the change note are set after the insert.
+
+`internal/store/agendas.go`:
+
+| Function | Does |
+| --- | --- |
+| `AddAgendaVersion(ctx, in)`, `AddAgendaVersionTx(ctx, tx, in)` | Adds a version from `AgendaVersionInput{MeetingID, SourceURL, Text, ContentHash}`. When the meeting's latest version has the same hash, it adds nothing and returns that version with `created` false; otherwise it inserts the next number and returns `created` true. A missing meeting is `ErrNotFound`. |
+| `LatestAgendaVersion(ctx, meetingID)` | The highest-numbered version, or `ErrNotFound` when the meeting has none. |
+| `ListAgendaVersions(ctx, meetingID)` | Every version, newest first. Empty for a meeting with none. |
+| `SetAgendaSummary`, `SetAgendaChangeNote` (and `...Tx`) | Sets the field on one version by id and returns the updated version. A missing version is `ErrNotFound`. |
+
+The `...Tx` variants run in the caller's transaction, so a job can add a version and enqueue its follow-up River job atomically.
+
+**Content hash.** The caller chooses what is hashed; the store chooses how. `store.ContentHash` can only be made with `store.HashContent(s)`, which returns the SHA-256 of `s` as lowercase hex, so a caller cannot pass an arbitrary string, a different algorithm or a hash of the wrong thing by accident. Its zero value is rejected with `ErrZeroContentHash` before the database is touched, and the column's check constraint accepts only 64 lowercase hex characters. Hash the text in the form that decides whether the agenda changed (for example, the normalized text, so a whitespace-only change is not a new version) and store the extracted text as `Text`. Compare hashes with `==`; `String()` gives the hex.
+
+**Concurrency.** Two jobs may add a version for the same meeting at once. `AddAgendaVersion` locks the meeting row with `SELECT ... FOR NO KEY UPDATE` before it reads the latest version, then inserts. Adds for one meeting run one at a time; adds for different meetings never wait for each other. `FOR NO KEY UPDATE` does not block inserts elsewhere that only reference the meeting by foreign key. The lock is held until the transaction ends, which for the `...Tx` variants is when the caller commits or rolls back, so keep that transaction short. It also waits on a concurrent `UpsertMeetingTx` of the same meeting. The `...Tx` variants need the transaction at `READ COMMITTED`, Postgres's default and what `pool.Begin` gives: under `REPEATABLE READ` the waiting transaction would not see the version committed ahead of it, and the unique constraint on `(meeting_id, version)` would reject its insert instead of silently duplicating a number. `TestAddAgendaVersionConcurrentAddsGetDistinctNumbers` runs concurrent adds, through both variants, and checks the numbers are 1 to N with none lost; without the lock it fails with unique violations.
+
+The migration's down half drops the table. `api/migrations/down_integration_test.go` applies every migration in a throwaway schema, rolls back to `00003`, checks the table is gone, and applies it again, without touching the shared tables other tests use.
 
 ## Transcription
 
