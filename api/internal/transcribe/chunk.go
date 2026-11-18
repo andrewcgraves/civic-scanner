@@ -19,17 +19,59 @@ type Splitter interface {
 	Extract(ctx context.Context, src, dst string, start, length time.Duration) error
 }
 
-type Option func(*groq)
+type uploader interface {
+	acceptsDirect(path string) bool
+	transcribeFile(ctx context.Context, path string) (Transcript, error)
+}
+
+type chunker struct {
+	upload        uploader
+	apiKey        string
+	splitter      Splitter
+	chunkLength   time.Duration
+	chunkOverlap  time.Duration
+	directBytes   int64
+	maxChunkBytes int64
+}
+
+type Option func(*chunker)
+
+func (c *chunker) Transcribe(ctx context.Context, audioPath string) (Transcript, error) {
+	if c.apiKey == "" {
+		return Transcript{}, ErrNotConfigured
+	}
+	info, err := os.Stat(audioPath)
+	if err != nil {
+		return Transcript{}, err
+	}
+	if info.Size() <= c.directBytes && c.upload.acceptsDirect(audioPath) {
+		t, err := c.upload.transcribeFile(ctx, audioPath)
+		if err != nil {
+			return Transcript{}, err
+		}
+		scopeSpeakers(t.Segments, 0)
+		return t, nil
+	}
+	return c.transcribeChunked(ctx, audioPath)
+}
+
+func scopeSpeakers(segments []Segment, chunk int) {
+	for i := range segments {
+		if segments[i].Speaker != "" {
+			segments[i].Speaker = fmt.Sprintf("c%d/%s", chunk, segments[i].Speaker)
+		}
+	}
+}
 
 func WithSplitter(s Splitter) Option {
-	return func(g *groq) { g.splitter = s }
+	return func(g *chunker) { g.splitter = s }
 }
 
 func WithChunking(length, overlap time.Duration) Option {
-	return func(g *groq) { g.chunkLength, g.chunkOverlap = length, overlap }
+	return func(g *chunker) { g.chunkLength, g.chunkOverlap = length, overlap }
 }
 
-func (g *groq) transcribeChunked(ctx context.Context, path string) (Transcript, error) {
+func (g *chunker) transcribeChunked(ctx context.Context, path string) (Transcript, error) {
 	step := g.chunkLength - g.chunkOverlap
 	if g.chunkOverlap < 0 || step <= 0 {
 		return Transcript{}, ErrInvalidChunking
@@ -50,6 +92,7 @@ func (g *groq) transcribeChunked(ctx context.Context, path string) (Transcript, 
 		if err != nil {
 			return Transcript{}, err
 		}
+		scopeSpeakers(chunk.Segments, index)
 		last := start+g.chunkLength >= total
 		lo, hi := g.ownedRange(index, step, last)
 		for _, s := range chunk.Segments {
@@ -66,7 +109,7 @@ func (g *groq) transcribeChunked(ctx context.Context, path string) (Transcript, 
 	return Transcript{Text: joinText(segments, ""), Segments: segments, Duration: total}, nil
 }
 
-func (g *groq) ownedRange(index int, step time.Duration, last bool) (lo, hi time.Duration) {
+func (g *chunker) ownedRange(index int, step time.Duration, last bool) (lo, hi time.Duration) {
 	const unbounded = time.Duration(1<<63 - 1)
 	lo, hi = 0, unbounded
 	if index > 0 {
@@ -78,7 +121,7 @@ func (g *groq) ownedRange(index int, step time.Duration, last bool) (lo, hi time
 	return lo, hi
 }
 
-func (g *groq) transcribeChunk(ctx context.Context, src, dst string, start time.Duration) (Transcript, error) {
+func (g *chunker) transcribeChunk(ctx context.Context, src, dst string, start time.Duration) (Transcript, error) {
 	if err := g.splitter.Extract(ctx, src, dst, start, g.chunkLength); err != nil {
 		return Transcript{}, splitError(ctx, "extract audio chunk", err)
 	}
@@ -87,10 +130,10 @@ func (g *groq) transcribeChunk(ctx context.Context, src, dst string, start time.
 	if err != nil {
 		return Transcript{}, err
 	}
-	if info.Size() > g.cfg.MaxUploadBytes {
-		return Transcript{}, fmt.Errorf("%w: %d bytes, limit %d", ErrChunkTooLarge, info.Size(), g.cfg.MaxUploadBytes)
+	if info.Size() > g.maxChunkBytes {
+		return Transcript{}, fmt.Errorf("%w: %d bytes, limit %d", ErrChunkTooLarge, info.Size(), g.maxChunkBytes)
 	}
-	return g.transcribeFile(ctx, dst)
+	return g.upload.transcribeFile(ctx, dst)
 }
 
 func splitError(ctx context.Context, action string, err error) error {
