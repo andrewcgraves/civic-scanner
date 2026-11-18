@@ -20,7 +20,9 @@ func insertMeetingAgency(t *testing.T, pool *pgxpool.Pool, slug string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.WithoutCancel(ctx), `DELETE FROM agencies WHERE id = $1`, id)
+		bg := context.WithoutCancel(ctx)
+		_, _ = pool.Exec(bg, `DELETE FROM meetings WHERE agency_id = $1`, id)
+		_, _ = pool.Exec(bg, `DELETE FROM agencies WHERE id = $1`, id)
 	})
 	return id
 }
