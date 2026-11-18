@@ -92,7 +92,7 @@ func Validate(meetings []Meeting) error {
 	seen := make(map[string]bool, len(meetings))
 	for i, m := range meetings {
 		if err := m.validate(); err != nil {
-			return fmt.Errorf("%w: meeting %d (%q): %s", ErrInvalidMeeting, i, m.SourceID, err)
+			return fmt.Errorf("%w: meeting %d (%q): %w", ErrInvalidMeeting, i, m.SourceID, err)
 		}
 		if seen[m.SourceID] {
 			return fmt.Errorf("%w: duplicate source id %q", ErrInvalidMeeting, m.SourceID)
