@@ -20,7 +20,7 @@ func TestFFmpegSplitsRealAudio(t *testing.T) {
 	}
 	dir := t.TempDir()
 	src := filepath.Join(dir, "tone.wav")
-	gen := exec.CommandContext(t.Context(), "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=6", src)
+	gen := exec.CommandContext(t.Context(), "ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=6", src) //nolint:gosec
 	if out, err := gen.CombinedOutput(); err != nil {
 		t.Fatalf("generate audio: %v: %s", err, out)
 	}
@@ -50,7 +50,7 @@ func TestFFmpegSplitsRealAudio(t *testing.T) {
 func fakeTool(t *testing.T, script string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "tool")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil { //nolint:gosec
 		t.Fatal(err)
 	}
 	return path
@@ -112,7 +112,7 @@ func TestFFmpegPassesChunkWindowToFFmpeg(t *testing.T) {
 		t.Fatalf("Extract: %v", err)
 	}
 
-	got, _ := os.ReadFile(args)
+	got, _ := os.ReadFile(filepath.Clean(args))
 	want := "-nostdin -v error -y -ss 90.000 -t 600.000 -i in.mp3 -vn -map 0:a:0 -ac 1 -ar 16000 -c:a libmp3lame -b:a 32k out.mp3\n"
 	if string(got) != want {
 		t.Errorf("ffmpeg args = %q, want %q", got, want)

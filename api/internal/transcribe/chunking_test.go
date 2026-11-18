@@ -36,6 +36,7 @@ func chunkServer(t *testing.T, byChunk map[string][]replySegment, hook func(chun
 	var mu sync.Mutex
 	n := 0
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Errorf("ParseMultipartForm: %v", err)
 			return

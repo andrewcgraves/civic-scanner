@@ -40,7 +40,7 @@ func seconds(v float64) time.Duration {
 }
 
 func (g *groq) transcribeFile(ctx context.Context, path string) (Transcript, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return Transcript{}, err
 	}

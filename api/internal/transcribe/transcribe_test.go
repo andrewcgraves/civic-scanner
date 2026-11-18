@@ -54,6 +54,7 @@ func TestTranscribeSendsMultipartAndParsesSegments(t *testing.T) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotLength = r.Header.Get("Content-Length")
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Errorf("ParseMultipartForm: %v", err)
 		}
