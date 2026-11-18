@@ -63,7 +63,7 @@ func chunkServer(t *testing.T, byChunk map[string][]replySegment, hook func(chun
 
 func chunkConfig(url string) config.Transcription {
 	cfg := testConfig(url)
-	cfg.MaxUploadBytes = 64
+	cfg.DirectUploadBytes, cfg.MaxChunkBytes = 64, 64
 	return cfg
 }
 
