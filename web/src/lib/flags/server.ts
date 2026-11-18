@@ -1,62 +1,73 @@
 import "server-only";
 
-import { OpenFeature, type Provider } from "@openfeature/server-sdk";
-import { PostHogServerProvider } from "@posthog/openfeature-node-provider";
 import { connection } from "next/server";
 import { PostHog } from "posthog-node";
+import { cache } from "react";
 
-import { readFlagSource, type FlagSource } from "./config";
-import { memoryServerProvider } from "./memory";
+import { isOn, readFlagSource, type FlagSource, type FlagsOn } from "./config";
 
 const ANONYMOUS_DISTINCT_ID = "anonymous";
 const POSTHOG_TIMEOUT_MS = 500;
 const POSTHOG_CACHE_TTL_MS = 30_000;
+const NONE_ON: FlagsOn = [];
+
+type PostHogSource = Extract<FlagSource, { kind: "posthog" }>;
 
 const source = readFlagSource();
 
-let ready: Promise<void> | undefined;
+let posthog: PostHog | undefined;
 
-const cache = new Map<string, { value: Promise<boolean>; expiresAt: number }>();
+let cached: { on: Promise<FlagsOn>; expiresAt: number } | undefined;
 
-function createProvider(source: FlagSource): Provider {
-  if (source.kind === "memory") {
-    return memoryServerProvider(source.on);
+function reportFailure(error: unknown) {
+  console.error("Feature flags could not be evaluated", error);
+}
+
+function createPostHog(source: PostHogSource): PostHog {
+  const client = new PostHog(source.key, {
+    host: source.host,
+    featureFlagsRequestTimeoutMs: POSTHOG_TIMEOUT_MS,
+    featureFlagsRequestMaxRetries: 0,
+  });
+  client.on("error", reportFailure);
+  return client;
+}
+
+async function askPostHog(
+  client: PostHog,
+  distinctId: string,
+): Promise<FlagsOn> {
+  try {
+    const flags = await client.evaluateFlags(distinctId);
+    return flags.keys.filter((flag) =>
+      flags.isEnabled(flag, { sendFeatureFlagEvents: false }),
+    );
+  } catch (error) {
+    reportFailure(error);
+    return NONE_ON;
   }
-  return new PostHogServerProvider(
-    new PostHog(source.key, {
-      host: source.host,
-      featureFlagsRequestTimeoutMs: POSTHOG_TIMEOUT_MS,
-      featureFlagsRequestMaxRetries: 0,
-    }),
-    { defaultDistinctId: ANONYMOUS_DISTINCT_ID, sendFeatureFlagEvents: false },
-  );
 }
 
-async function evaluate(flag: string): Promise<boolean> {
-  ready ??= OpenFeature.setProviderAndWait(createProvider(source)).catch(
-    (error: unknown) => {
-      console.error("Feature flag provider failed to start", error);
-    },
-  );
-  await ready;
-  return OpenFeature.getClient().getBooleanValue(flag, false);
-}
-
-function evaluateCached(flag: string): Promise<boolean> {
+function askPostHogCached(source: PostHogSource): Promise<FlagsOn> {
   const now = Date.now();
-  const hit = cache.get(flag);
-  if (hit !== undefined && hit.expiresAt > now) {
-    return hit.value;
+  if (cached === undefined || cached.expiresAt <= now) {
+    posthog ??= createPostHog(source);
+    cached = {
+      on: askPostHog(posthog, ANONYMOUS_DISTINCT_ID),
+      expiresAt: now + POSTHOG_CACHE_TTL_MS,
+    };
   }
-  const value = evaluate(flag);
-  cache.set(flag, { value, expiresAt: now + POSTHOG_CACHE_TTL_MS });
-  return value;
+  return cached.on;
 }
 
-export async function isFlagEnabled(flag: string): Promise<boolean> {
+export const getFlagsOn = cache(async (): Promise<FlagsOn> => {
   if (source.kind === "memory") {
-    return evaluate(flag);
+    return source.on;
   }
   await connection();
-  return evaluateCached(flag);
+  return askPostHogCached(source);
+});
+
+export async function isFlagEnabled(flag: string): Promise<boolean> {
+  return isOn(await getFlagsOn(), flag);
 }

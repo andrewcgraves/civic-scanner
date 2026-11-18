@@ -1,16 +1,36 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import RootLayout, { metadata } from "./layout";
+vi.mock("next/server", () => ({ connection: () => Promise.resolve() }));
+
+async function renderLayoutWithFlags(env: Record<string, string | undefined>) {
+  for (const [name, value] of Object.entries(env)) {
+    vi.stubEnv(name, value);
+  }
+  vi.resetModules();
+  const { default: Layout } = await import("./layout");
+  const { useFlag } = await import("@/lib/flags/client");
+
+  function Gated() {
+    return <p>{useFlag("new-search") ? "on" : "off"}</p>;
+  }
+
+  return new DOMParser().parseFromString(
+    renderToStaticMarkup(await Layout({ children: <Gated /> })),
+    "text/html",
+  );
+}
 
 describe("RootLayout", () => {
-  it("wraps the page in an English document", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("wraps the page in an English document", async () => {
+    const { default: RootLayout } = await import("./layout");
     const doc = new DOMParser().parseFromString(
-      renderToStaticMarkup(
-        <RootLayout>
-          <p>page content</p>
-        </RootLayout>,
-      ),
+      renderToStaticMarkup(await RootLayout({ children: <p>page content</p> })),
       "text/html",
     );
 
@@ -18,30 +38,45 @@ describe("RootLayout", () => {
     expect(doc.body.innerHTML).toBe("<p>page content</p>");
   });
 
-  it("sets the site title", () => {
+  it("sets the site title", async () => {
+    const { metadata } = await import("./layout");
+
     expect(metadata.title).toBe("Civic Scanner");
   });
 
-  it("gives client components access to feature flags", async () => {
-    vi.stubEnv("NEXT_PUBLIC_POSTHOG_KEY", undefined);
-    vi.stubEnv("NEXT_PUBLIC_FEATURE_FLAGS", "new-search");
-    vi.resetModules();
-    const { default: Layout } = await import("./layout");
-    const { useFlag } = await import("@/lib/flags/client");
+  it("gives client components the in-memory flags", async () => {
+    const doc = await renderLayoutWithFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
+    });
 
-    function Gated() {
-      return <p>{useFlag("new-search") ? "on" : "off"}</p>;
-    }
+    expect(doc.body.innerHTML).toBe("<p>on</p>");
+  });
 
-    const doc = new DOMParser().parseFromString(
-      renderToStaticMarkup(
-        <Layout>
-          <Gated />
-        </Layout>,
+  it("gives client components the flags the server got from PostHog", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json({
+            flags: {
+              "new-search": {
+                key: "new-search",
+                enabled: true,
+                variant: null,
+                reason: { code: "condition_match" },
+                metadata: { id: 1, version: 1 },
+              },
+            },
+          }),
+        ),
       ),
-      "text/html",
     );
-    vi.unstubAllEnvs();
+
+    const doc = await renderLayoutWithFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
+      NEXT_PUBLIC_FEATURE_FLAGS: undefined,
+    });
 
     expect(doc.body.innerHTML).toBe("<p>on</p>");
   });

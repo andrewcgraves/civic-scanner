@@ -1,233 +1,77 @@
-import { render, screen } from "@testing-library/react";
-import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act } from "@testing-library/react";
+import { hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
 
-const posthog = vi.hoisted(() => {
-  let flagsLoaded: (() => void) | undefined;
-  return {
-    init: vi.fn(),
-    getFeatureFlagResult: vi.fn<() => unknown>(),
-    onFeatureFlags: vi.fn((callback: () => void) => {
-      flagsLoaded = callback;
-      return () => {
-        flagsLoaded = undefined;
-      };
-    }),
-    reloadFeatureFlags: vi.fn(() => {
-      flagsLoaded?.();
-    }),
-  };
-});
+import type { FlagsOn } from "./config";
+import { FlagsProvider, useFlag } from "./client";
 
-const loaded = vi.hoisted(() => ({
-  posthogJs: vi.fn(),
-  webProvider: vi.fn(),
-}));
+function Gated({ flag }: { flag: string }) {
+  return <p>{useFlag(flag) ? "on" : "off"}</p>;
+}
 
-vi.mock("posthog-js", () => {
-  loaded.posthogJs();
-  return { default: posthog };
-});
-
-vi.mock("@posthog/openfeature-web-provider", async (importOriginal) => {
-  loaded.webProvider();
-  return importOriginal();
-});
-
-async function renderFlag(
-  flag: string,
-  env: Record<string, string | undefined>,
-) {
-  for (const [name, value] of Object.entries(env)) {
-    vi.stubEnv(name, value);
-  }
-  vi.resetModules();
-  const { FlagsProvider, useFlag } = await import("./client");
-
-  function Gated() {
-    return <p>{useFlag(flag) ? "on" : "off"}</p>;
-  }
-
-  render(
-    <FlagsProvider>
-      <Gated />
-    </FlagsProvider>,
+function page(on: FlagsOn, flag: string) {
+  return (
+    <FlagsProvider on={on}>
+      <Gated flag={flag} />
+    </FlagsProvider>
   );
 }
 
-describe("useFlag with in-memory flags", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
+async function serverRenderThenHydrate(on: FlagsOn, flag: string) {
+  const container = document.createElement("div");
+  container.innerHTML = renderToString(page(on, flag));
+  const serverHtml = container.innerHTML;
+  const recoverableErrors: unknown[] = [];
+  const consoleError = vi
+    .spyOn(console, "error")
+    .mockImplementation(() => undefined);
+  await act(async () => {
+    hydrateRoot(container, page(on, flag), {
+      onRecoverableError: (error) => recoverableErrors.push(error),
+    });
+    await Promise.resolve();
   });
+  const consoleErrors = consoleError.mock.calls;
+  consoleError.mockRestore();
+  return {
+    serverHtml,
+    hydratedHtml: container.innerHTML,
+    recoverableErrors,
+    consoleErrors,
+  };
+}
 
-  it("does not load PostHog code", async () => {
-    loaded.posthogJs.mockClear();
-    loaded.webProvider.mockClear();
-
-    await renderFlag("new-search", {
-      NEXT_PUBLIC_POSTHOG_KEY: undefined,
-      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
-    });
-
-    expect(screen.getByText("on")).toBeInTheDocument();
-    expect(loaded.posthogJs).not.toHaveBeenCalled();
-    expect(loaded.webProvider).not.toHaveBeenCalled();
-  });
-
-  it("is on for a listed flag", async () => {
-    await renderFlag("new-search", {
-      NEXT_PUBLIC_POSTHOG_KEY: undefined,
-      NEXT_PUBLIC_FEATURE_FLAGS: "meeting-alerts,new-search",
-    });
-
-    expect(screen.getByText("on")).toBeInTheDocument();
-  });
-
-  it("is off for a flag that is not listed", async () => {
-    await renderFlag("new-search-v2", {
-      NEXT_PUBLIC_POSTHOG_KEY: undefined,
-      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
-    });
-
-    expect(screen.getByText("off")).toBeInTheDocument();
-  });
-
-  it("is on for any flag when every flag is on", async () => {
-    await renderFlag("anything-at-all", {
-      NEXT_PUBLIC_POSTHOG_KEY: undefined,
-      NEXT_PUBLIC_FEATURE_FLAGS: "*",
-    });
-
-    expect(screen.getByText("on")).toBeInTheDocument();
-  });
-});
-
-describe("useFlag with PostHog", () => {
-  beforeEach(() => {
-    posthog.init.mockClear();
-    posthog.getFeatureFlagResult.mockReset();
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("follows PostHog once its flags load", async () => {
-    posthog.getFeatureFlagResult.mockReturnValue({
-      key: "new-search",
-      enabled: true,
-    });
-
-    await renderFlag("new-search", {
-      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
-      NEXT_PUBLIC_POSTHOG_HOST: "https://eu.i.posthog.com",
-      NEXT_PUBLIC_FEATURE_FLAGS: undefined,
-    });
-
-    expect(await screen.findByText("on")).toBeInTheDocument();
-    expect(posthog.getFeatureFlagResult).toHaveBeenCalledWith("new-search", {
-      send_event: false,
-    });
-  });
-
-  it("starts PostHog for flags only, without analytics", async () => {
-    await renderFlag("new-search", { NEXT_PUBLIC_POSTHOG_KEY: "phc_test" });
-
-    await vi.waitFor(() => {
-      expect(posthog.init).toHaveBeenCalledOnce();
-    });
-    expect(posthog.init.mock.calls[0]).toStrictEqual([
-      "phc_test",
-      {
-        api_host: "https://us.i.posthog.com",
-        persistence: "memory",
-        disable_external_dependency_loading: true,
-        advanced_disable_feature_flags_on_first_load: true,
-        autocapture: false,
-        capture_pageview: false,
-        capture_pageleave: false,
-        capture_performance: false,
-        capture_heatmaps: false,
-        capture_dead_clicks: false,
-        capture_exceptions: false,
-        rageclick: false,
-        disable_session_recording: true,
-        disable_surveys: true,
-        disable_product_tours: true,
-        disable_conversations: true,
-        disable_web_experiments: true,
-      },
-    ]);
-  });
-
-  it("is off for a flag PostHog does not know", async () => {
-    posthog.getFeatureFlagResult.mockReturnValue(undefined);
-
-    await renderFlag("new-search", { NEXT_PUBLIC_POSTHOG_KEY: "phc_test" });
-
-    await vi.waitFor(() => {
-      expect(posthog.getFeatureFlagResult).toHaveBeenCalled();
-    });
-    expect(screen.getByText("off")).toBeInTheDocument();
-  });
-
-  it("is off when PostHog fails", async () => {
-    posthog.getFeatureFlagResult.mockImplementation(() => {
-      throw new Error("flags unavailable");
-    });
-
-    await renderFlag("new-search", { NEXT_PUBLIC_POSTHOG_KEY: "phc_test" });
-
-    await vi.waitFor(() => {
-      expect(posthog.getFeatureFlagResult).toHaveBeenCalled();
-    });
-    expect(screen.getByText("off")).toBeInTheDocument();
-  });
-
-  it("stays off and reports it when PostHog cannot load", async () => {
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
-    const failure = new Error("chunk failed to load");
-    vi.doMock("posthog-js", () => {
-      throw failure;
-    });
-
-    await renderFlag("new-search", { NEXT_PUBLIC_POSTHOG_KEY: "phc_test" });
-
-    await vi.waitFor(() => {
-      expect(consoleError).toHaveBeenCalledWith(
-        "Feature flags could not start PostHog",
-        expect.objectContaining({ cause: failure }),
-      );
-    });
-    expect(screen.getByText("off")).toBeInTheDocument();
-    vi.doMock("posthog-js", () => ({ default: posthog }));
-    consoleError.mockRestore();
-  });
-
-  it("renders flags off on the server without starting PostHog", async () => {
-    posthog.getFeatureFlagResult.mockReturnValue({
-      key: "new-search",
-      enabled: true,
-    });
-    vi.stubGlobal("window", undefined);
-    vi.stubEnv("NEXT_PUBLIC_POSTHOG_KEY", "phc_test");
-    vi.resetModules();
-    const { FlagsProvider, useFlag } = await import("./client");
-
-    function Gated() {
-      return <p>{useFlag("new-search") ? "on" : "off"}</p>;
-    }
-
-    const html = renderToStaticMarkup(
-      <FlagsProvider>
-        <Gated />
-      </FlagsProvider>,
+describe("useFlag", () => {
+  it("is on in the server HTML and after hydration for a flag the server turned on", async () => {
+    const result = await serverRenderThenHydrate(
+      ["meeting-alerts", "new-search"],
+      "new-search",
     );
-    vi.unstubAllGlobals();
 
-    expect(html).toBe("<p>off</p>");
-    expect(posthog.init).not.toHaveBeenCalled();
+    expect(result.serverHtml).toBe("<p>on</p>");
+    expect(result.hydratedHtml).toBe("<p>on</p>");
+    expect(result.recoverableErrors).toEqual([]);
+    expect(result.consoleErrors).toEqual([]);
+  });
+
+  it("is off for a flag the server did not turn on", async () => {
+    const result = await serverRenderThenHydrate(
+      ["new-search"],
+      "new-search-v2",
+    );
+
+    expect(result.serverHtml).toBe("<p>off</p>");
+    expect(result.hydratedHtml).toBe("<p>off</p>");
+  });
+
+  it("is on for any flag when the server turned every flag on", async () => {
+    const result = await serverRenderThenHydrate("all", "anything-at-all");
+
+    expect(result.serverHtml).toBe("<p>on</p>");
+  });
+
+  it("is off outside a FlagsProvider", () => {
+    expect(renderToString(<Gated flag="new-search" />)).toBe("<p>off</p>");
   });
 });
