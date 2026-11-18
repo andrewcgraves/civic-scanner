@@ -12,9 +12,10 @@ const (
 func (t Tier) Valid() bool { return t == TierRoutine || t == TierStrong }
 
 type Request struct {
-	Tier   Tier
-	System string
-	User   string
+	Tier            Tier
+	System          string
+	User            string
+	MaxOutputTokens int
 }
 
 type Usage struct {
@@ -23,9 +24,10 @@ type Usage struct {
 }
 
 type Response struct {
-	Text  string
-	Model string
-	Usage Usage
+	Text         string
+	Model        string
+	FinishReason string
+	Usage        Usage
 }
 
 type Client interface {

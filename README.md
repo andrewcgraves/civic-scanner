@@ -31,7 +31,7 @@ make ci               # everything CI runs
 
 `make help` lists every target. The Makefile defaults `DATABASE_URL` to the compose database; override it to point at another database.
 
-The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`; the `AI_GATEWAY_*` and `LLM_*` variables are described under "LLM"); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix. The flag variables are described under [Feature flags](#feature-flags).
+The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`; the `AI_GATEWAY_*` and `LLM_*` variables are described under "LLM"); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix. The flag variables for both sides are described under [Feature flags](#feature-flags).
 
 ## OpenAPI-first workflow
 
@@ -42,6 +42,10 @@ The binaries read configuration from the environment only and do not load `.env`
 Generated files are committed and never edited by hand. CI regenerates them and fails on any diff.
 
 ## Feature flags
+
+Unfinished work ships dark behind a flag. Both sides evaluate flags through [OpenFeature](https://openfeature.dev), with PostHog as the provider when a key is set and an in-memory list otherwise. Each side has its own variables.
+
+### Web
 
 The web app evaluates flags through OpenFeature: `@openfeature/server-sdk` on the server and `@openfeature/react-sdk` in the browser. `web/src/lib/flags/` wraps both. Callers import only from there, never from OpenFeature or PostHog, so the provider can change without touching them.
 
@@ -70,6 +74,25 @@ Notes:
 - In the browser, PostHog flags arrive after the page loads. The server-rendered HTML and the first client render show PostHog flags as off, and they switch on when PostHog answers. If PostHog fails to load, flags stay off and the error is logged. In-memory flags are the same on both renders.
 - To swap providers, change `createProvider` in `web/src/lib/flags/server.ts` and `startPostHog` in `web/src/lib/flags/client.tsx`.
 - The flags module picks its provider once, when it loads. A test sets `NEXT_PUBLIC_FEATURE_FLAGS` with `vi.stubEnv`, calls `vi.resetModules()`, and imports the module again; see `web/src/lib/flags/*.test.*`. Tests never call PostHog: the PostHog cases mock `posthog-node` and `posthog-js`, or stub `fetch` for `posthog-node`.
+
+### API
+
+The API and the worker evaluate flags through OpenFeature's Go SDK. Handlers and jobs call `featureflags.Enabled(ctx, "new-search")` from `internal/featureflags` and never import a vendor SDK.
+
+Both binaries call `featureflags.Init` at startup, which picks the provider from these variables:
+
+| Variable | Meaning |
+| --- | --- |
+| `POSTHOG_API_KEY` | PostHog project API key. When set, PostHog decides every flag and `FEATURE_FLAGS` is ignored. |
+| `POSTHOG_HOST` | PostHog host. Empty means `https://us.i.posthog.com`; EU projects use `https://eu.i.posthog.com`. With a PostHog key set, anything other than an `http` or `https` URL with a host (for example `us.i.posthog.com` without a scheme) stops the binary at startup. |
+| `POSTHOG_FLAG_TIMEOUT` | How long one PostHog flag check may take, as a Go duration such as `500ms`. Default `1s`. A value that does not parse, or is not positive, stops the binary at startup. |
+| `FEATURE_FLAGS` | Used only without a PostHog key. A comma-separated list of the flags that are on, such as `new-search,digest-emails`. `*` turns every flag on, for staging-like runs. Empty means every flag is off. |
+
+- A flag is off unless the provider says it is on. These all evaluate to off: an unknown flag, a PostHog error, an unreachable or slow PostHog, a flag PostHog failed to evaluate, a quota-limited project, and a multivariate flag (whatever its variant, since `Enabled` answers only boolean flags).
+- What gets logged at `warn`: request errors, timeouts, context deadlines and multivariate flags, all by the provider. posthog-go logs quota limits and responses that report `errorsWhileComputingFlags` itself, through the service logger. posthog-go returns the same `ErrFlagNotFound` for an unknown flag, a flag that failed to evaluate and a quota-limited project, and does not expose which one happened. So the provider logs none of those three itself, and a failed flag is logged only when PostHog also reports `errorsWhileComputingFlags`.
+- PostHog evaluates each call remotely, through its `/flags` endpoint. A check makes one attempt, without retries, limited by `POSTHOG_FLAG_TIMEOUT`, and returns off as soon as the caller's context ends, whichever comes first. posthog-go does not take a context, so a request abandoned at the caller's deadline keeps running in the background until `POSTHOG_FLAG_TIMEOUT`. The distinct ID is `civic-scanner-server`, or the OpenFeature targeting key when a caller passes one, so a percentage rollout gives the same answer to every call that has no targeting key. No `$feature_flag_called` events are sent.
+- The PostHog provider (`internal/featureflags/posthog.go`) is a thin layer over the official `posthog-go` client, because no maintained OpenFeature Go provider for PostHog exists. Another vendor means another provider in that package; callers do not change.
+- OpenFeature's provider is process-wide. A test that calls `featureflags.Init` with `config.FeatureFlags{On: ...}` must not run in parallel with other flag tests. Parallel tests can register OpenFeature's `openfeature/testing` provider instead, which keys flags by test.
 
 ## CI
 
@@ -119,14 +142,14 @@ The binaries' `run` functions take a context, so tests also call them in process
 
 ## LLM
 
-`internal/llm` calls [Vercel AI Gateway](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions) through its OpenAI-compatible `POST /chat/completions` endpoint, using only the standard library. `llm.New(cfg.LLM)` returns an `llm.Client`, whose one method, `Complete`, takes a tier, a system prompt and a user prompt, and returns the text, the model that answered, and the input and output token counts. An empty system prompt is left out of the request.
+`internal/llm` calls [Vercel AI Gateway](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions) through its OpenAI-compatible `POST /chat/completions` endpoint, using only the standard library. `llm.New(cfg.LLM)` returns an `llm.Client`, whose one method, `Complete`, takes a tier, a system prompt, a user prompt and an optional `MaxOutputTokens`, and returns the text, the model that answered, the finish reason, and the input and output token counts. An empty system prompt is left out of the request, and `MaxOutputTokens` is sent as `max_tokens` only when it is set.
 
 Callers pick a tier, never a model. Config maps each tier to a gateway model ID (`provider/model`), so a model is swapped by changing an environment variable:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AI_GATEWAY_API_KEY` | none | AI Gateway API key, sent as `Authorization: Bearer`. A secret: set it in Railway, never in `.railway/railway.ts`. |
-| `AI_GATEWAY_BASE_URL` | `https://ai-gateway.vercel.sh/v1` | Gateway base URL. |
+| `AI_GATEWAY_BASE_URL` | `https://ai-gateway.vercel.sh/v1` | Gateway base URL. Must be an `http` or `https` URL with a host, or the binaries fail at startup. |
 | `LLM_ROUTINE_MODEL` | `anthropic/claude-haiku-5.5` | Model for the `routine` tier: cheap, fast work such as agenda and transcript summaries. |
 | `LLM_STRONG_MODEL` | `anthropic/claude-sonnet-5.5` | Model for the `strong` tier: paid directed prompts and other work that needs a stronger model. |
 | `LLM_TIMEOUT` | `2m` | Limit on one gateway call, as a Go duration. Must be positive. |
@@ -137,12 +160,26 @@ Without `AI_GATEWAY_API_KEY` the binaries start normally, and every `Complete` c
 
 `Complete` does not retry; River retries the job. Errors tell a worker whether a retry can help:
 
-- `llm.IsRetryable(err)` is true for network failures, the `LLM_TIMEOUT` limit, a canceled context, 408, 429, 5xx, and a 200 response that cannot be decoded or has no choices. These are `*llm.Error` values; on a 429 with a `Retry-After` header in seconds, `RetryAfter` holds the delay, which a worker can pass to `river.JobSnooze`.
-- Every other error is permanent: other 4xx statuses (`StatusCode` on `*llm.Error`, with the gateway's message in the text), `llm.ErrNotConfigured`, `llm.ErrUnknownTier`, and an invalid base URL. A worker should wrap these in `river.JobCancel` rather than retry them.
+- `llm.IsRetryable(err)` is true for:
+  - network failures, the `LLM_TIMEOUT` limit, and a canceled context;
+  - 402 (no credit balance, or a budget limit reached), 408, 429, and 5xx;
+  - a 200 response that cannot be decoded, has no choices, or has empty text.
+
+  These are `*llm.Error` values. On a 429 with a `Retry-After` header in seconds, `RetryAfter` holds the delay, which a worker can pass to `river.JobSnooze`.
+- Every other error is permanent:
+  - other 4xx statuses (`StatusCode` on `*llm.Error`, with the gateway's message in the text);
+  - `llm.ErrTruncated`: finish reason `length`, so retrying the same input truncates again. Shorten or split the input, or raise `MaxOutputTokens`;
+  - `llm.ErrContentFiltered`: finish reason `content_filter`;
+  - `llm.ErrResponseTooLarge`: a 200 response over 8 MiB;
+  - `llm.ErrNotConfigured`, `llm.ErrUnknownTier`, and an invalid base URL.
+
+  Check for these with `errors.Is`. A worker should wrap them in `river.JobCancel` rather than retry them.
+
+When a reply is truncated, filtered or empty, `Complete` returns the error together with the response, so the model, finish reason and token usage can still be recorded. `llm.CheckReply` applies these reply rules, and the fake uses it too.
 
 A River job's own timeout (one minute unless the worker overrides `Timeout`) also cancels the call, so a worker that calls the gateway should set a `Timeout` longer than `LLM_TIMEOUT`.
 
-Tests never call the gateway. `internal/llm/llmtest` provides `llmtest.Fake`, an `llm.Client` for other packages' tests: `llmtest.Returning(text)` answers every call with `text`, `llmtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. `Calls()` returns the requests received. Like the real client, the fake rejects an unknown tier and a canceled context. The client's own tests run against an `httptest` server.
+Tests never call the gateway. `internal/llm/llmtest` provides `llmtest.Fake`, an `llm.Client` for other packages' tests: `llmtest.Returning(text)` answers every call with `text` and finish reason `stop`, `llmtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. A zero `Fake` replies `fake reply`. `Calls()` returns the requests received. Like the real client, the fake rejects an unknown tier, returns a retryable `*llm.Error` for a canceled context, and runs `llm.CheckReply` on the responses `Respond` builds. The client's own tests run against an `httptest` server.
 
 ## Migrations
 

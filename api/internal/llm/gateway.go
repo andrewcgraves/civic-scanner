@@ -32,14 +32,16 @@ type chatMessage struct {
 }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+	Model     string        `json:"model"`
+	Messages  []chatMessage `json:"messages"`
+	MaxTokens int           `json:"max_tokens,omitempty"`
 }
 
 type chatResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
-		Message chatMessage `json:"message"`
+		Message      chatMessage `json:"message"`
+		FinishReason string      `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -71,7 +73,11 @@ func statusError(resp *http.Response, raw []byte) *Error {
 }
 
 func retryableStatus(code int) bool {
-	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
+	switch code {
+	case http.StatusPaymentRequired, http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
+	}
+	return code >= http.StatusInternalServerError
 }
 
 func (g *gateway) model(tier Tier) (string, error) {
@@ -98,7 +104,7 @@ func (g *gateway) Complete(ctx context.Context, req Request) (Response, error) {
 		messages = append(messages, chatMessage{Role: "system", Content: req.System})
 	}
 	messages = append(messages, chatMessage{Role: "user", Content: req.User})
-	body, err := json.Marshal(chatRequest{Model: model, Messages: messages})
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, MaxTokens: req.MaxOutputTokens})
 	if err != nil {
 		return Response{}, err
 	}
@@ -115,12 +121,15 @@ func (g *gateway) Complete(ctx context.Context, req Request) (Response, error) {
 	}
 	defer func() { _ = httpResp.Body.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBytes))
+	raw, err := io.ReadAll(io.LimitReader(httpResp.Body, maxResponseBytes+1))
 	if err != nil {
 		return Response{}, &Error{StatusCode: httpResp.StatusCode, Retryable: true, Err: err}
 	}
 	if httpResp.StatusCode != http.StatusOK {
 		return Response{}, statusError(httpResp, raw)
+	}
+	if len(raw) > maxResponseBytes {
+		return Response{}, fmt.Errorf("%w: over %d bytes", ErrResponseTooLarge, maxResponseBytes)
 	}
 
 	var parsed chatResponse
@@ -130,9 +139,11 @@ func (g *gateway) Complete(ctx context.Context, req Request) (Response, error) {
 	if len(parsed.Choices) == 0 {
 		return Response{}, &Error{StatusCode: httpResp.StatusCode, Retryable: true, Err: errors.New("gateway response has no choices")}
 	}
-	return Response{
-		Text:  parsed.Choices[0].Message.Content,
-		Model: parsed.Model,
-		Usage: Usage{InputTokens: parsed.Usage.PromptTokens, OutputTokens: parsed.Usage.CompletionTokens},
-	}, nil
+	resp := Response{
+		Text:         parsed.Choices[0].Message.Content,
+		Model:        parsed.Model,
+		FinishReason: parsed.Choices[0].FinishReason,
+		Usage:        Usage{InputTokens: parsed.Usage.PromptTokens, OutputTokens: parsed.Usage.CompletionTokens},
+	}
+	return resp, CheckReply(resp)
 }
