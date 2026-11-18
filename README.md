@@ -15,7 +15,7 @@ A Go API and a Next.js front end in one repo, both generated from a shared OpenA
 
 ## Prerequisites
 
-- Go (version in `api/go.mod`) and [golangci-lint v2](https://golangci-lint.run)
+- Go (version in `api/go.mod`). `make lint-api` builds the pinned [golangci-lint](https://golangci-lint.run) into `api/bin/` with that Go version on first use
 - Node (version in `web/.nvmrc`) and pnpm (version in `web/package.json`). Node 25 and later no longer bundle Corepack; install pnpm with `npm install --global corepack && corepack enable`, Homebrew, or the standalone installer. pnpm switches itself to the pinned version.
 - Docker, for local Postgres
 
@@ -26,6 +26,7 @@ make install          # web dependencies
 make dev-db           # Postgres 17 on localhost:5432 (db, user, password: civic) and an S3-compatible store on localhost:9090
 make migrate          # apply migrations
 make test             # unit tests
+make prepush          # before every push: linters, unit tests, codegen drift, build (no Docker)
 make ci               # everything CI runs
 ```
 
