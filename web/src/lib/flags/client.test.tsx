@@ -106,17 +106,31 @@ describe("useFlag with PostHog", () => {
   it("starts PostHog for flags only, without analytics", async () => {
     await renderFlag("new-search", { NEXT_PUBLIC_POSTHOG_KEY: "phc_test" });
 
-    expect(posthog.init).toHaveBeenCalledWith(
+    await vi.waitFor(() => {
+      expect(posthog.init).toHaveBeenCalledOnce();
+    });
+    expect(posthog.init.mock.calls[0]).toStrictEqual([
       "phc_test",
-      expect.objectContaining({
+      {
         api_host: "https://us.i.posthog.com",
+        persistence: "memory",
+        disable_external_dependency_loading: true,
+        advanced_disable_feature_flags_on_first_load: true,
         autocapture: false,
         capture_pageview: false,
         capture_pageleave: false,
         capture_performance: false,
+        capture_heatmaps: false,
+        capture_dead_clicks: false,
+        capture_exceptions: false,
+        rageclick: false,
         disable_session_recording: true,
-      }),
-    );
+        disable_surveys: true,
+        disable_product_tours: true,
+        disable_conversations: true,
+        disable_web_experiments: true,
+      },
+    ]);
   });
 
   it("is off for a flag PostHog does not know", async () => {

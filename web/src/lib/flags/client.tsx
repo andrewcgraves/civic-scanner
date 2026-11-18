@@ -14,6 +14,9 @@ import { readFlagSource, type FlagSource } from "./config";
 import { memoryWebProvider } from "./memory";
 
 const FLAGS_ONLY = {
+  persistence: "memory",
+  disable_external_dependency_loading: true,
+  advanced_disable_feature_flags_on_first_load: true,
   autocapture: false,
   capture_pageview: false,
   capture_pageleave: false,
