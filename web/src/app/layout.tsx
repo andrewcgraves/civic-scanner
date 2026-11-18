@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
+import { FlagsProvider } from "@/lib/flags/client";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -11,7 +13,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="mx-auto max-w-3xl p-6 antialiased">{children}</body>
+      <body className="mx-auto max-w-3xl p-6 antialiased">
+        <FlagsProvider>{children}</FlagsProvider>
+      </body>
     </html>
   );
 }

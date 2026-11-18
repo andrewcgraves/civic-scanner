@@ -27,10 +27,19 @@
     ]
   },
   "dependencies": {
+    "@openfeature/core": "^1.12.0",
+    "@openfeature/react-sdk": "^1.4.1",
+    "@openfeature/server-sdk": "^1.23.0",
+    "@openfeature/web-sdk": "^1.10.0",
+    "@posthog/openfeature-node-provider": "^0.1.3",
+    "@posthog/openfeature-web-provider": "^0.1.2",
     "next": "^16.4.6",
     "openapi-fetch": "^0.17.0",
+    "posthog-js": "^1.450.1",
+    "posthog-node": "^6.0.2",
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.5",
