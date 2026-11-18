@@ -47,10 +47,10 @@ Generated files are committed and never edited by hand. CI regenerates them and 
 | Job | Checks |
 | --- | --- |
 | `openapi-lint` | Redocly lint of `openapi/*.yaml` |
-| `api` | build, vet, golangci-lint, unit tests with `-race`, codegen drift |
-| `api-integration` | migrations, then integration tests, against a Postgres 17 container |
+| `api` | build, vet, golangci-lint, unit tests with `-race` and coverage, codegen drift |
+| `api-integration` | unit and integration tests with `-race` and coverage, against a Postgres 17 container; fails below the coverage minimum |
 | `migrations-lint` | Squawk on changed migrations |
-| `web` | lint, format, typecheck, tests, codegen drift, build |
+| `web` | lint, format, typecheck, tests with coverage, codegen drift, build |
 | `ci-ok` | passes when none of the above failed; the one required check on `main` |
 
 Branch rules for `main` are in `.github/rulesets/` (import instructions there).
@@ -60,8 +60,24 @@ Notes on the workflow:
 - Path filtering lives in the `changes` job, not in `on.paths`, so the workflow always starts and `ci-ok` always reports. Skipped jobs count as passing; failed or cancelled jobs fail it.
 - A new push to a pull request cancels the run for the previous push. Runs on `main` are keyed by commit and never cancelled.
 - `migrations-lint` lints the migrations added or modified by the change. If none were (only the linter config or the workflow changed), it lints all of them.
-- Tool versions (Redocly CLI, Squawk, golangci-lint) are pinned in the workflow `env` and mirrored in the `Makefile` and `.github/scripts/lint-migrations.sh`. Bump them together.
+- Tool versions (Redocly CLI, Squawk, golangci-lint) and `GO_COVERAGE_MIN` are pinned in the workflow `env` and mirrored in the `Makefile` and `.github/scripts/lint-migrations.sh`. Bump them together.
 - **Planned: compatibility test.** Once there is a production version, add a job that applies the pull request's migrations, checks out the deployed commit (for example a `production` tag moved on deploy) into a second directory, and runs its `go test -tags=integration ./...` against that database. This proves each migration is backward compatible with the code in production. Add the job to the `needs` list of `ci-ok`.
+
+## Coverage
+
+`make coverage` (after `make dev-db`) measures both sides the way CI does.
+
+- **Go:** `.github/scripts/go-coverage.sh` runs `go test -race` with `-coverpkg` over every package, so a test counts toward all the code it reaches, not only its own package. It excludes generated code (`internal/httpapi/v1`) and the test helpers `internal/testbin` and `internal/testdb`. The `api` job reports unit coverage only; `api-integration` runs with `-tags=integration`, which includes the unit tests, and reports the combined number. That combined number must stay at or above `GO_COVERAGE_MIN` (90%).
+- **Web:** `pnpm test:coverage` runs Vitest with V8 coverage over `src/`, excluding tests and `.d.ts` files. `web/vitest.config.ts` sets a 90% minimum for statements, branches, functions, and lines.
+
+Each job writes its totals to the run summary and uploads the reports as artifacts: `go-coverage-unit`, `go-coverage` (profile and `coverage.html`), and `web-coverage` (HTML and lcov). Locally, open `api/coverage.html` and `web/coverage/index.html`.
+
+Test helpers:
+
+- `internal/testdb`: `testdb.Pool(t)` opens `DATABASE_URL` and applies migrations; `testdb.WaitForJobState` polls a River job until it reaches a state.
+- `internal/testbin`: builds the package under test into a real binary and runs it. Each binary is tested this way for its exit code on bad input and, in the integration tests, for a clean exit on SIGTERM. When the coverage script sets `TESTBIN_COVERPKG` and `TESTBIN_COVERDIR`, the binary is built with `-cover` and writes to that directory; the script converts it with `go tool covdata` and merges it into the profile. Without them, the binary is built plainly.
+
+The binaries' `run` functions take a context, so tests also call them in process. Uncovered by design: error branches with no way to trigger them, such as goose or River failing after the connection is up, or the HTTP server failing to shut down.
 
 ## Migrations
 

@@ -34,8 +34,9 @@ Run from the repo root. `make help` lists every target.
 - `make generate` / `make generate-check`: regenerate code; fail if it differs from what is committed.
 - `make lint`: `openapi-lint`, `lint-migrations`, `lint-api`, `lint-web`. `lint-api` needs golangci-lint v2 installed.
 - `make test`: unit tests. `make test-integration`: migrates, then runs the API integration tests (needs `make dev-db`).
+- `make coverage`: unit and integration coverage for both sides, failing below the minimums (needs `make dev-db`). See "Coverage" in `README.md`.
 - `make build`: build both sides.
-- In `web/`: `pnpm dev`, `pnpm lint`, `pnpm format`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`, `pnpm generate`, `pnpm build`.
+- In `web/`: `pnpm dev`, `pnpm lint`, `pnpm format`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`, `pnpm test:coverage`, `pnpm generate`, `pnpm build`.
 
 Run `make ci` before pushing. It runs everything CI runs and needs Docker.
 

@@ -1,4 +1,5 @@
 REDOCLY_CLI_VERSION ?= 2.78.0
+GO_COVERAGE_MIN ?= 90
 
 DATABASE_URL ?= postgres://civic:civic@localhost:5432/civic?sslmode=disable
 export DATABASE_URL
@@ -71,5 +72,10 @@ test: ## Unit tests (api with -race, web)
 test-integration: migrate ## Migrate, then run api integration tests (needs Postgres: make dev-db)
 	cd api && go test -tags=integration ./...
 
+.PHONY: coverage
+coverage: ## Unit + integration coverage for api (needs make dev-db) and web; fails below the minimums
+	GO_COVERAGE_MIN=$(GO_COVERAGE_MIN) .github/scripts/go-coverage.sh "Go unit + integration" coverage.out integration
+	cd web && pnpm test:coverage
+
 .PHONY: ci
-ci: install lint test generate-check build dev-db test-integration ## Everything CI runs
+ci: install lint test generate-check build dev-db coverage ## Everything CI runs

@@ -16,6 +16,7 @@ env:
   REDOCLY_CLI_VERSION: "2.78.0"
   SQUAWK_VERSION: "2.72.0"
   GOLANGCI_LINT_VERSION: "v2.15.0"
+  GO_COVERAGE_MIN: "90"
   REDOCLY_TELEMETRY: "off"
   NEXT_TELEMETRY_DISABLED: "1"
 
@@ -47,6 +48,7 @@ jobs:
               - *ci
               - 'api/**'
               - 'openapi/**'
+              - '.github/scripts/go-coverage.sh'
             web:
               - *ci
               - 'web/**'
@@ -103,8 +105,18 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           working-directory: api
-      - name: Unit tests
-        run: go test -race ./...
+      - name: Unit tests with coverage
+        env:
+          GO_COVERAGE_MIN: "0"
+        run: ../.github/scripts/go-coverage.sh "Go unit" coverage.unit.out
+      - name: Upload unit coverage
+        if: ${{ !cancelled() && hashFiles('api/coverage.unit.out') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: go-coverage-unit
+          path: |
+            api/coverage.unit.out
+            api/coverage.unit.html
       - name: Generated code is up to date (oapi-codegen)
         run: |
           go generate ./...
@@ -147,10 +159,16 @@ jobs:
         with:
           go-version-file: api/go.mod
           cache-dependency-path: api/go.sum
-      - name: Apply migrations (goose + River)
-        run: go run ./cmd/migrate up
-      - name: Integration tests
-        run: go test -tags=integration ./...
+      - name: Unit and integration tests with coverage
+        run: ../.github/scripts/go-coverage.sh "Go unit + integration" coverage.out integration
+      - name: Upload coverage
+        if: ${{ !cancelled() && hashFiles('api/coverage.out') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: go-coverage
+          path: |
+            api/coverage.out
+            api/coverage.html
 
   migrations-lint:
     needs: changes
@@ -204,8 +222,24 @@ jobs:
         run: pnpm format:check
       - name: Typecheck
         run: pnpm typecheck
-      - name: Test
-        run: pnpm test
+      - name: Test with coverage
+        run: pnpm test:coverage
+      - name: Coverage summary
+        if: ${{ !cancelled() && hashFiles('web/coverage/coverage-summary.json') != '' }}
+        run: |
+          jq -r '.total
+            | "### Web coverage: \(.lines.pct)% of lines",
+              "",
+              "| Metric | Covered | Total | % |",
+              "| --- | --- | --- | --- |",
+              (to_entries[] | select(.key != "branchesTrue") | "| \(.key) | \(.value.covered) | \(.value.total) | \(.value.pct) |")
+          ' coverage/coverage-summary.json >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage
+        if: ${{ !cancelled() && hashFiles('web/coverage/coverage-summary.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-coverage
+          path: web/coverage/
       - name: Generated types are up to date (openapi-typescript)
         run: |
           pnpm generate
