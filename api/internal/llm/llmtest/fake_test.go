@@ -64,8 +64,12 @@ func TestFakeBehavesLikeTheGatewayOnBadInput(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := fake.Complete(ctx, llm.Request{Tier: llm.TierRoutine}); !errors.Is(err, context.Canceled) {
+	_, err := fake.Complete(ctx, llm.Request{Tier: llm.TierRoutine})
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("canceled: err = %v, want context.Canceled", err)
+	}
+	if !llm.IsRetryable(err) {
+		t.Error("canceled: reported as permanent, the gateway client reports it as retryable")
 	}
 
 	if len(fake.Calls()) != 2 {
@@ -73,13 +77,43 @@ func TestFakeBehavesLikeTheGatewayOnBadInput(t *testing.T) {
 	}
 }
 
-func TestZeroFakeReturnsEmptyResponse(t *testing.T) {
+func TestZeroFakeReturnsAUsableReply(t *testing.T) {
 	var fake llmtest.Fake
 
 	resp, err := fake.Complete(t.Context(), llm.Request{Tier: llm.TierRoutine})
 
-	if err != nil || resp != (llm.Response{}) {
-		t.Errorf("Complete = %+v, %v; want zero response, nil", resp, err)
+	if err != nil || resp.Text == "" || resp.FinishReason != "stop" {
+		t.Errorf("Complete = %+v, %v; want a non-empty stopped reply", resp, err)
+	}
+}
+
+func TestReturningRepliesWithStopFinishReason(t *testing.T) {
+	resp, err := llmtest.Returning("summary").Complete(t.Context(), llm.Request{Tier: llm.TierRoutine})
+
+	if err != nil || resp.FinishReason != "stop" {
+		t.Errorf("Complete = %+v, %v; want finish reason stop", resp, err)
+	}
+}
+
+func TestFakeChecksRepliesLikeTheGateway(t *testing.T) {
+	reply := func(resp llm.Response) *llmtest.Fake {
+		return &llmtest.Fake{Respond: func(llm.Request) (llm.Response, error) { return resp, nil }}
+	}
+
+	resp, err := reply(llm.Response{Text: "partial", FinishReason: "length", Usage: llm.Usage{OutputTokens: 500}}).
+		Complete(t.Context(), llm.Request{Tier: llm.TierRoutine})
+	if !errors.Is(err, llm.ErrTruncated) || llm.IsRetryable(err) || resp.Usage.OutputTokens != 500 {
+		t.Errorf("length: %+v, %v; want permanent ErrTruncated with usage kept", resp, err)
+	}
+
+	_, err = reply(llm.Response{FinishReason: "content_filter"}).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine})
+	if !errors.Is(err, llm.ErrContentFiltered) || llm.IsRetryable(err) {
+		t.Errorf("content_filter: err = %v, want permanent ErrContentFiltered", err)
+	}
+
+	_, err = reply(llm.Response{FinishReason: "stop"}).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine})
+	if err == nil || !llm.IsRetryable(err) {
+		t.Errorf("empty: err = %v, want a retryable error", err)
 	}
 }
 
