@@ -45,8 +45,34 @@ export default defineRailway(() => {
     },
   });
 
+  const worker = service("civic-scanner-worker", {
+    source: github("andrewcgraves/civic-scanner", {
+      branch: "main",
+      rootDirectory: "/api",
+      checkSuites: true,
+    }),
+    build: {
+      buildEnvironment: "V3",
+      watchPatterns: ["/api/**"],
+    },
+    start: "/app/worker",
+    preDeploy: "/app/migrate up",
+    deploy: {
+      preDeployTimeoutSeconds: 300,
+      drainingSeconds: 30,
+      restartPolicyType: "ON_FAILURE",
+      restartPolicyMaxRetries: 5,
+    },
+    replicas: { sfo: 1 },
+    env: {
+      DATABASE_URL: db.env.DATABASE_URL,
+      APP_ENV: "production",
+      LOG_LEVEL: "info",
+    },
+  });
+
   return project("reliable-flow", {
     variables: { managed: true },
-    resources: [api, db, dbVolume, audio],
+    resources: [api, worker, db, dbVolume, audio],
   });
 });
