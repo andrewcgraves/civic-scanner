@@ -81,3 +81,12 @@ func TestSaveTranscriptRejectsBadSegmentsBeforeTouchingTheDatabase(t *testing.T)
 		t.Errorf("SaveTranscriptTx err = %v, want ErrInvalidSegment", err)
 	}
 }
+
+func TestSetTranscriptSummaryRejectsZeroHashBeforeTouchingTheDatabase(t *testing.T) {
+	if _, err := New(nil).SetTranscriptSummary(t.Context(), uuid.New(), ContentHash{}, "s"); !errors.Is(err, ErrZeroContentHash) {
+		t.Errorf("SetTranscriptSummary err = %v, want ErrZeroContentHash", err)
+	}
+	if _, err := New(nil).SetTranscriptSummaryTx(t.Context(), nil, uuid.New(), ContentHash{}, "s"); !errors.Is(err, ErrZeroContentHash) {
+		t.Errorf("SetTranscriptSummaryTx err = %v, want ErrZeroContentHash", err)
+	}
+}

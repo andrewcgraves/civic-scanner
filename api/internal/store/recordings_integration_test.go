@@ -5,11 +5,13 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
@@ -33,6 +35,15 @@ func seedRecording(t *testing.T, pool *pgxpool.Pool, slug string) store.Recordin
 	return r
 }
 
+func recordingTupleID(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) string {
+	t.Helper()
+	var ctid string
+	if err := pool.QueryRow(t.Context(), `SELECT ctid::text || '/' || xmin::text FROM recordings WHERE id = $1`, id).Scan(&ctid); err != nil {
+		t.Fatal(err)
+	}
+	return ctid
+}
+
 func TestUpsertRecordingCreatesOnceAndKeepsAudio(t *testing.T) {
 	ctx := t.Context()
 	pool := testdb.Pool(t)
@@ -44,7 +55,7 @@ func TestUpsertRecordingCreatesOnceAndKeepsAudio(t *testing.T) {
 		t.Fatalf("first upsert = (created %v, err %v), want created", created, err)
 	}
 	if first.ID == uuid.Nil || first.MeetingID != meetingID || first.SourceURL != recordingInput(meetingID, "full").SourceURL ||
-		first.Audio != nil || first.CreatedAt.IsZero() || first.UpdatedAt.IsZero() {
+		first.Audio != nil || first.AudioDeletedAt != nil || first.CreatedAt.IsZero() || first.UpdatedAt.IsZero() {
 		t.Errorf("first recording = %+v", first)
 	}
 
@@ -52,6 +63,7 @@ func TestUpsertRecordingCreatesOnceAndKeepsAudio(t *testing.T) {
 	if _, err := s.SetRecordingAudio(ctx, first.ID, audio); err != nil {
 		t.Fatal(err)
 	}
+	tuple := recordingTupleID(t, pool, first.ID)
 
 	again, created, err := s.UpsertRecording(ctx, recordingInput(meetingID, "full"))
 	if err != nil || created {
@@ -59,6 +71,9 @@ func TestUpsertRecordingCreatesOnceAndKeepsAudio(t *testing.T) {
 	}
 	if again.ID != first.ID || again.Audio == nil || again.Audio.Key != audio.Key || !again.Audio.ExpiresAt.Equal(audio.ExpiresAt) {
 		t.Errorf("second upsert = %+v, want the same recording with its audio", again)
+	}
+	if got := recordingTupleID(t, pool, first.ID); got != tuple {
+		t.Errorf("repeat upsert wrote a new tuple: %s -> %s", tuple, got)
 	}
 
 	other, created, err := s.UpsertRecording(ctx, recordingInput(meetingID, "part-2"))
@@ -72,6 +87,31 @@ func TestUpsertRecordingForMissingMeetingIsNotFound(t *testing.T) {
 
 	if _, _, err := s.UpsertRecording(t.Context(), recordingInput(uuid.New(), "orphan")); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpsertRecordingTxForMissingMeetingLeavesTheTransactionUsable(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	meetingID := seedMeeting(t, pool, "store-test-recording-tx-missing")
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.WithoutCancel(ctx)) })
+	if _, _, err := s.UpsertRecordingTx(ctx, tx, recordingInput(uuid.New(), "orphan")); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if _, created, err := s.UpsertRecordingTx(ctx, tx, recordingInput(meetingID, "full")); err != nil || !created {
+		t.Fatalf("upsert after ErrNotFound = (created %v, err %v), want created", created, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if recordings, err := s.ListRecordings(ctx, meetingID); err != nil || len(recordings) != 1 {
+		t.Errorf("after commit = (%v, %v), want one recording", recordings, err)
 	}
 }
 
@@ -157,7 +197,41 @@ func TestGetAndListRecordings(t *testing.T) {
 	}
 }
 
-func TestSetAndClearRecordingAudio(t *testing.T) {
+func TestListRecordingsKeepsInsertOrderWithinOneTransaction(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	meetingID := seedMeeting(t, pool, "store-test-recording-list-tx")
+
+	var want []uuid.UUID
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		for i := range 20 {
+			r, _, err := s.UpsertRecordingTx(ctx, tx, recordingInput(meetingID, fmt.Sprintf("part-%02d", i)))
+			if err != nil {
+				return err
+			}
+			want = append(want, r.ID)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recordings, err := s.ListRecordings(ctx, meetingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []uuid.UUID
+	for _, r := range recordings {
+		got = append(got, r.ID)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("recordings = %v, want %v in insert order", got, want)
+	}
+}
+
+func TestSetAudioThenMarkItDeleted(t *testing.T) {
 	ctx := t.Context()
 	pool := testdb.Pool(t)
 	s := store.New(pool)
@@ -168,8 +242,8 @@ func TestSetAndClearRecordingAudio(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetRecordingAudio: %v", err)
 	}
-	if set.Audio == nil || set.Audio.Key != audio.Key || !set.Audio.ExpiresAt.Equal(audio.ExpiresAt) {
-		t.Errorf("after set: audio = %+v, want %+v", set.Audio, audio)
+	if set.Audio == nil || set.Audio.Key != audio.Key || !set.Audio.ExpiresAt.Equal(audio.ExpiresAt) || set.AudioDeletedAt != nil {
+		t.Errorf("after set: audio = %+v, deleted at %v, want %+v and not deleted", set.Audio, set.AudioDeletedAt, audio)
 	}
 	if !set.UpdatedAt.After(r.UpdatedAt) || !set.CreatedAt.Equal(r.CreatedAt) || set.SourceURL != r.SourceURL {
 		t.Errorf("after set: %+v, from %+v", set, r)
@@ -180,12 +254,44 @@ func TestSetAndClearRecordingAudio(t *testing.T) {
 		t.Errorf("GetRecording after set = (%+v, %v)", got, err)
 	}
 
-	cleared, err := s.ClearRecordingAudio(ctx, r.ID)
+	deleted, err := s.MarkRecordingAudioDeleted(ctx, r.ID, audio.Key)
 	if err != nil {
-		t.Fatalf("ClearRecordingAudio: %v", err)
+		t.Fatalf("MarkRecordingAudioDeleted: %v", err)
 	}
-	if cleared.Audio != nil || !cleared.UpdatedAt.After(set.UpdatedAt) {
-		t.Errorf("after clear: %+v", cleared)
+	if deleted.Audio != nil || deleted.AudioDeletedAt == nil || !deleted.UpdatedAt.After(set.UpdatedAt) {
+		t.Errorf("after delete: %+v", deleted)
+	}
+
+	if _, err := s.MarkRecordingAudioDeleted(ctx, r.ID, audio.Key); !errors.Is(err, store.ErrAudioChanged) {
+		t.Errorf("second delete: err = %v, want ErrAudioChanged", err)
+	}
+
+	again, err := s.SetRecordingAudio(ctx, r.ID, store.RecordingAudio{Key: "audio/again.mp3", ExpiresAt: audio.ExpiresAt})
+	if err != nil || again.Audio == nil || again.AudioDeletedAt != nil {
+		t.Errorf("audio stored again = (%+v, %v), want audio and no deletion time", again, err)
+	}
+}
+
+func TestMarkRecordingAudioDeletedKeepsAudioStoredInBetween(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	r := seedRecording(t, pool, "store-test-recording-audio-race")
+	expires := time.Date(2027, 5, 1, 0, 0, 0, 0, time.UTC)
+
+	if _, err := s.SetRecordingAudio(ctx, r.ID, store.RecordingAudio{Key: "audio/old.mp3", ExpiresAt: expires}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetRecordingAudio(ctx, r.ID, store.RecordingAudio{Key: "audio/new.mp3", ExpiresAt: expires}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.MarkRecordingAudioDeleted(ctx, r.ID, "audio/old.mp3"); !errors.Is(err, store.ErrAudioChanged) {
+		t.Errorf("stale key: err = %v, want ErrAudioChanged", err)
+	}
+	got, err := s.GetRecording(ctx, r.ID)
+	if err != nil || got.Audio == nil || got.Audio.Key != "audio/new.mp3" || got.AudioDeletedAt != nil {
+		t.Errorf("after stale delete = (%+v, %v), want the new audio kept", got, err)
 	}
 }
 
@@ -197,8 +303,8 @@ func TestRecordingAudioOnMissingRecordingIsNotFound(t *testing.T) {
 	if _, err := s.SetRecordingAudio(ctx, uuid.New(), audio); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("SetRecordingAudio err = %v, want ErrNotFound", err)
 	}
-	if _, err := s.ClearRecordingAudio(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("ClearRecordingAudio err = %v, want ErrNotFound", err)
+	if _, err := s.MarkRecordingAudioDeleted(ctx, uuid.New(), "k"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("MarkRecordingAudioDeleted err = %v, want ErrNotFound", err)
 	}
 }
 
@@ -207,7 +313,7 @@ func TestListRecordingsWithExpiredAudio(t *testing.T) {
 	pool := testdb.Pool(t)
 	s := store.New(pool)
 	meetingID := seedMeeting(t, pool, "store-test-recording-expired")
-	now := time.Date(2091, 6, 1, 0, 0, 0, 0, time.UTC)
+	now := time.Date(1850, 6, 1, 0, 0, 0, 0, time.UTC)
 
 	add := func(name string, expiresAt *time.Time) uuid.UUID {
 		t.Helper()
@@ -230,22 +336,20 @@ func TestListRecordingsWithExpiredAudio(t *testing.T) {
 	exact := add("exact", at(0))
 	add("future", at(time.Hour))
 	add("no-audio", nil)
-	cleared := add("cleared", at(-72*time.Hour))
-	if _, err := s.ClearRecordingAudio(ctx, cleared); err != nil {
+	deleted := add("deleted", at(-72*time.Hour))
+	if _, err := s.MarkRecordingAudioDeleted(ctx, deleted, "audio/deleted"); err != nil {
 		t.Fatal(err)
 	}
 
 	ids := func(recordings []store.Recording) []uuid.UUID {
 		var out []uuid.UUID
 		for _, r := range recordings {
-			if r.MeetingID == meetingID {
-				out = append(out, r.ID)
-			}
+			out = append(out, r.ID)
 		}
 		return out
 	}
 
-	expired, err := s.ListRecordingsWithExpiredAudio(ctx, now, 1000)
+	expired, err := s.ListRecordingsWithExpiredAudio(ctx, now, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,15 +357,12 @@ func TestListRecordingsWithExpiredAudio(t *testing.T) {
 		t.Errorf("expired = %v, want %v", got, want)
 	}
 
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET audio_expires_at = audio_expires_at - interval '100 years' WHERE meeting_id = $1 AND audio_key IS NOT NULL`, meetingID); err != nil {
-		t.Fatal(err)
-	}
-	first, err := s.ListRecordingsWithExpiredAudio(ctx, time.Date(1991, 6, 1, 0, 0, 0, 0, time.UTC), 1)
+	first, err := s.ListRecordingsWithExpiredAudio(ctx, now, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ids(first); len(first) != 1 || !slices.Equal(got, []uuid.UUID{older}) {
-		t.Errorf("limit 1 = %v, want only %v", got, older)
+	if got, want := ids(first), []uuid.UUID{older}; !slices.Equal(got, want) {
+		t.Errorf("limit 1 = %v, want %v", got, want)
 	}
 }
 
@@ -281,9 +382,9 @@ func TestRecordingReadsAndWritesFailOnClosedPool(t *testing.T) {
 	_, failures["list"] = s.ListRecordings(ctx, uuid.New())
 	_, failures["expired"] = s.ListRecordingsWithExpiredAudio(ctx, time.Now(), 10)
 	_, failures["set audio"] = s.SetRecordingAudio(ctx, uuid.New(), audio)
-	_, failures["clear audio"] = s.ClearRecordingAudio(ctx, uuid.New())
+	_, failures["mark deleted"] = s.MarkRecordingAudioDeleted(ctx, uuid.New(), "k")
 	for name, err := range failures {
-		if err == nil || errors.Is(err, store.ErrNotFound) {
+		if err == nil || errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrAudioChanged) {
 			t.Errorf("%s: err = %v, want a connection error", name, err)
 		}
 	}

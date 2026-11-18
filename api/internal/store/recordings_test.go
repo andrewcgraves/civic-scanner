@@ -2,12 +2,10 @@ package store
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestSetRecordingAudioRejectsInvalidAudioBeforeTouchingTheDatabase(t *testing.T) {
@@ -26,19 +24,10 @@ func TestSetRecordingAudioRejectsInvalidAudioBeforeTouchingTheDatabase(t *testin
 	}
 }
 
-func TestIsForeignKeyViolation(t *testing.T) {
-	for _, tc := range []struct {
-		err  error
-		want bool
-	}{
-		{&pgconn.PgError{Code: "23503"}, true},
-		{fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23503"}), true},
-		{&pgconn.PgError{Code: "23505"}, false},
-		{errors.New("other"), false},
-		{nil, false},
-	} {
-		if got := isForeignKeyViolation(tc.err); got != tc.want {
-			t.Errorf("isForeignKeyViolation(%v) = %v, want %v", tc.err, got, tc.want)
+func TestListRecordingsWithExpiredAudioRejectsNonPositiveLimitBeforeTouchingTheDatabase(t *testing.T) {
+	for _, limit := range []int{0, -1} {
+		if _, err := New(nil).ListRecordingsWithExpiredAudio(t.Context(), time.Now(), limit); !errors.Is(err, ErrInvalidLimit) {
+			t.Errorf("limit %d: err = %v, want ErrInvalidLimit", limit, err)
 		}
 	}
 }

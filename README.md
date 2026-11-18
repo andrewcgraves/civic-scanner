@@ -431,7 +431,7 @@ The migration's down half drops the table. `api/migrations/down_integration_test
 
 Migration `00005` adds two tables.
 
-- `recordings`: one row per recording of a meeting, unique on `(meeting_id, source_url)`, so a meeting split into several videos has several rows. `source_url` is the original recording URL and cannot be empty. `audio_key` is the [object storage](#object-storage) key of the downloaded audio and `audio_expires_at` is when that audio is due for deletion; both are null until the audio is stored, and a check constraint keeps them null or set together. A partial index on `audio_expires_at` covers only rows with audio, for the retention job.
+- `recordings`: one row per recording of a meeting, unique on `(meeting_id, source_url)`, so a meeting split into several videos has several rows. `source_url` is the original recording URL and cannot be empty. `audio_key` is the [object storage](#object-storage) key of the downloaded audio and `audio_expires_at` is when that audio is due for deletion; both are null until the audio is stored, and a check constraint keeps them null or set together. `audio_deleted_at` is set when the retention job deletes the audio, so deleted audio is told apart from audio never downloaded; a check constraint allows it only while there is no audio. `seq` is an identity column that gives the order recordings were added, even within one transaction, where `created_at` is the same for every row. A partial index on `audio_expires_at` covers only rows with audio, for the retention job.
 - `transcripts`: at most one per recording (unique `recording_id`). `full_text` is the whole transcript, `segments` a JSON array of `{"start_ms", "end_ms", "text", "speaker"}` objects (`speaker` left out when empty; a check constraint requires an array), and `summary` the nullable AI summary.
 
 Both have `created_at`/`updated_at`. Neither cascades: rows are never deleted by the store.
@@ -440,17 +440,21 @@ Both have `created_at`/`updated_at`. Neither cascades: rows are never deleted by
 
 | Function | Does |
 | --- | --- |
-| `UpsertRecording(ctx, in)`, `UpsertRecordingTx` | Adds a recording from `RecordingInput{MeetingID, SourceURL}`, or returns the existing one for that meeting and URL unchanged, with `created` saying which. A missing meeting is `ErrNotFound`. |
+| `UpsertRecording(ctx, in)`, `UpsertRecordingTx` | Adds a recording from `RecordingInput{MeetingID, SourceURL}`, or returns the existing one for that meeting and URL without writing to it, with `created` saying which. A missing meeting is `ErrNotFound`. |
 | `GetRecording(ctx, id)` | One recording, or `ErrNotFound`. |
-| `ListRecordings(ctx, meetingID)` | A meeting's recordings in the order they were added. Empty for a meeting with none. |
-| `SetRecordingAudio(ctx, id, RecordingAudio{Key, ExpiresAt})`, `SetRecordingAudioTx` | Records the stored audio. An empty key or zero expiry is `ErrInvalidAudio`, returned before the database is touched. A missing recording is `ErrNotFound`. |
-| `ClearRecordingAudio(ctx, id)` | Sets the key and expiry back to null after the audio is deleted. A missing recording is `ErrNotFound`. |
-| `ListRecordingsWithExpiredAudio(ctx, now, limit)` | Up to `limit` recordings that still have audio expiring at or before `now`, soonest expiry first. |
-| `SaveTranscript(ctx, in)`, `SaveTranscriptTx` | Stores `TranscriptInput{RecordingID, Text, Segments}` as the recording's transcript, replacing any earlier one, and says whether it was created. The summary is kept when the text is unchanged and cleared otherwise. A missing recording is `ErrNotFound`. |
+| `ListRecordings(ctx, meetingID)` | A meeting's recordings in the order they were added (by `seq`). Empty for a meeting with none. |
+| `SetRecordingAudio(ctx, id, RecordingAudio{Key, ExpiresAt})`, `SetRecordingAudioTx` | Records the stored audio and clears `AudioDeletedAt`. An empty key or zero expiry is `ErrInvalidAudio`, returned before the database is touched. A missing recording is `ErrNotFound`. |
+| `MarkRecordingAudioDeleted(ctx, id, key)` | After the audio object is deleted, sets the key and expiry to null and `AudioDeletedAt` to now, only if the recording's key is still `key`. If audio was stored again in between (or already marked deleted), nothing changes and the error is `ErrAudioChanged`. A missing recording is `ErrNotFound`. |
+| `ListRecordingsWithExpiredAudio(ctx, now, limit)` | Up to `limit` recordings that still have audio expiring at or before `now`, soonest expiry first. A `limit` below 1 is `ErrInvalidLimit`. |
+| `SaveTranscript(ctx, in)`, `SaveTranscriptTx` | Stores `TranscriptInput{RecordingID, Text, Segments}` as the recording's transcript, replacing any earlier one in place (same id), and says whether it was created. The summary is kept when the text is unchanged and cleared otherwise. Saving the same text and segments again writes nothing and leaves `UpdatedAt` alone. A missing recording is `ErrNotFound`. |
 | `GetTranscript(ctx, recordingID)` | The recording's transcript, or `ErrNotFound`. |
-| `SetTranscriptSummary(ctx, transcriptID, summary)`, `SetTranscriptSummaryTx` | Sets the AI summary and returns the updated transcript. A missing transcript is `ErrNotFound`. |
+| `SetTranscriptSummary(ctx, transcriptID, textHash, summary)`, `SetTranscriptSummaryTx` | Sets the AI summary and returns the updated transcript, only if `textHash` (`store.HashContent` of the text that was summarised) still matches the transcript's text. If the transcript was saved with other text meanwhile, nothing changes and the error is `ErrTranscriptChanged`. A zero hash is `ErrZeroContentHash`. A missing transcript is `ErrNotFound`. |
 
-A `Recording` without stored audio has a nil `Audio`. `store.TranscriptSegment` has the same fields as `transcribe.Segment` (`Start`, `End`, `Text`, `Speaker`), so the store does not import the transcription client. Times are stored to the millisecond, rounded. A segment with a negative start or an end before its start is `ErrInvalidSegment`, returned before the database is touched. Saving no segments stores an empty array, which reads back as an empty, non-nil slice.
+Like `AddAgendaVersion`, the upsert and save check the parent row first (`SELECT ... FOR KEY SHARE`, which also keeps it from being deleted until the transaction ends) instead of relying on the foreign key. So `ErrNotFound` from `UpsertRecordingTx` or `SaveTranscriptTx` leaves the caller's transaction usable.
+
+The summary check hashes the stored text in Postgres (`sha256` of its UTF-8 bytes) and compares it with the caller's `store.HashContent`, so the caller never sends the text back. A transcript's `UpdatedAt` would not do: setting the summary changes it too.
+
+A `Recording` without stored audio has a nil `Audio`; `AudioDeletedAt` is set when its audio was stored and later deleted. `store.TranscriptSegment` has the same fields as `transcribe.Segment` (`Start`, `End`, `Text`, `Speaker`), so the store does not import the transcription client. Times are stored to the millisecond, rounded. A segment with a negative start or an end before its start is `ErrInvalidSegment`, returned before the database is touched. Saving no segments stores an empty array, which reads back as an empty, non-nil slice.
 
 `api/migrations/down_integration_test.go` also rolls back to `00004`, checks both tables are gone and `agenda_versions` is not, and applies `00005` again.
 
