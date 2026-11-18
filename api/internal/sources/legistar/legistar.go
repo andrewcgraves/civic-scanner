@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,12 +28,13 @@ var (
 )
 
 type Config struct {
-	Client   string
-	BodyIDs  []int
-	TimeZone string
-	Granicus Granicus
-	BaseURL  string
-	PageSize int
+	Client               string
+	BodyIDs              []int
+	TimeZone             string
+	Granicus             Granicus
+	FinalMinutesMeanHeld bool
+	BaseURL              string
+	PageSize             int
 }
 
 type Granicus struct {
@@ -44,6 +47,7 @@ type Adapter struct {
 	loc     *time.Location
 	fetcher fetch.Fetcher
 	clock   sources.Clock
+	logger  *slog.Logger
 }
 
 func New(cfg Config, deps sources.Deps) (*Adapter, error) {
@@ -51,7 +55,7 @@ func New(cfg Config, deps sources.Deps) (*Adapter, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{cfg: cfg, loc: loc, fetcher: deps.Fetcher, clock: deps.Clock}, nil
+	return newAdapter(cfg, loc, deps), nil
 }
 
 func Constructor(cfg Config) sources.Constructor {
@@ -60,8 +64,12 @@ func Constructor(cfg Config) sources.Constructor {
 		panic(err)
 	}
 	return func(deps sources.Deps) sources.Adapter {
-		return &Adapter{cfg: cfg, loc: loc, fetcher: deps.Fetcher, clock: deps.Clock}
+		return newAdapter(cfg, loc, deps)
 	}
+}
+
+func newAdapter(cfg Config, loc *time.Location, deps sources.Deps) *Adapter {
+	return &Adapter{cfg: cfg, loc: loc, fetcher: deps.Fetcher, clock: deps.Clock, logger: deps.Log()}
 }
 
 func (c Config) resolve() (Config, *time.Location, error) {
@@ -109,30 +117,59 @@ type event struct {
 	EventInSiteURL         *string `json:"EventInSiteURL"`
 	EventMedia             *string `json:"EventMedia"`
 	EventVideoPath         *string `json:"EventVideoPath"`
+	EventComment           *string `json:"EventComment"`
+}
+
+type item struct {
+	event
+	err error
 }
 
 func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]sources.Meeting, error) {
-	events, err := a.events(ctx, window)
+	items, err := a.items(ctx, window)
 	if err != nil {
 		return nil, err
 	}
 	now := a.clock.Now()
-	meetings := make([]sources.Meeting, 0, len(events))
-	for _, e := range events {
-		if !slices.Contains(a.cfg.BodyIDs, e.EventBodyID) {
+	meetings := make([]sources.Meeting, 0, len(items))
+	unreadable := 0
+	for _, it := range items {
+		if it.err == nil && !a.board(ctx, it.event) {
 			continue
 		}
-		m, err := a.meeting(e, now)
+		m, err := sources.Meeting{}, it.err
+		if err == nil {
+			m, err = a.meeting(ctx, it.event, now)
+		}
 		if err != nil {
-			return nil, fmt.Errorf("%w: event %d: %w", ErrMalformed, e.EventID, err)
+			unreadable++
+			a.logger.WarnContext(ctx, "legistar: skipped an unreadable board event", "client", a.cfg.Client, "event_id", it.EventID, "error", err)
+			continue
 		}
 		meetings = append(meetings, m)
+	}
+	if unreadable > 0 && len(meetings) == 0 {
+		return nil, fmt.Errorf("%w: %s: all %d board events in the window are unreadable", ErrMalformed, a.cfg.Client, unreadable)
 	}
 	return meetings, nil
 }
 
-func (a *Adapter) events(ctx context.Context, window sources.Window) ([]event, error) {
-	var all []event
+func (a *Adapter) board(ctx context.Context, e event) bool {
+	if !slices.Contains(a.cfg.BodyIDs, e.EventBodyID) {
+		if strings.Contains(strings.ToLower(e.EventBodyName), "board") {
+			a.logger.InfoContext(ctx, "legistar: dropped an event of a body that is not a configured board", "client", a.cfg.Client, "event_id", e.EventID, "body_id", e.EventBodyID, "body", e.EventBodyName)
+		}
+		return false
+	}
+	if strings.EqualFold(text(e.EventAgendaStatusName), "hidden") {
+		a.logger.InfoContext(ctx, "legistar: dropped a hidden board event", "client", a.cfg.Client, "event_id", e.EventID, "comment", text(e.EventComment))
+		return false
+	}
+	return true
+}
+
+func (a *Adapter) items(ctx context.Context, window sources.Window) ([]item, error) {
+	var all []item
 	seen := map[int]bool{}
 	for skip := 0; ; skip += a.cfg.PageSize {
 		page, err := a.page(ctx, window, skip)
@@ -140,15 +177,16 @@ func (a *Adapter) events(ctx context.Context, window sources.Window) ([]event, e
 			return nil, err
 		}
 		added := 0
-		for _, e := range page {
-			if e.EventID <= 0 {
-				return nil, fmt.Errorf("%w: event without an id", ErrMalformed)
-			}
-			if seen[e.EventID] {
+		for _, it := range page {
+			if it.err != nil {
+				all = append(all, it)
 				continue
 			}
-			seen[e.EventID] = true
-			all = append(all, e)
+			if seen[it.EventID] {
+				continue
+			}
+			seen[it.EventID] = true
+			all = append(all, it)
 			added++
 		}
 		if len(page) < a.cfg.PageSize {
@@ -160,15 +198,25 @@ func (a *Adapter) events(ctx context.Context, window sources.Window) ([]event, e
 	}
 }
 
-func (a *Adapter) page(ctx context.Context, window sources.Window, skip int) ([]event, error) {
+func (a *Adapter) page(ctx context.Context, window sources.Window, skip int) ([]item, error) {
 	target := a.eventsURL(window, skip)
 	resp, err := a.fetcher.Fetch(ctx, fetch.Request{URL: target})
 	if err != nil {
 		return nil, fmt.Errorf("legistar %s events: %w", a.cfg.Client, err)
 	}
-	var page []event
-	if err := json.Unmarshal(resp.Body, &page); err != nil {
+	var raws []json.RawMessage
+	if err := json.Unmarshal(resp.Body, &raws); err != nil {
 		return nil, fmt.Errorf("%w: %s events: %w", ErrMalformed, a.cfg.Client, err)
+	}
+	page := make([]item, len(raws))
+	for i, raw := range raws {
+		var it item
+		if err := json.Unmarshal(raw, &it.event); err != nil {
+			it.err = err
+		} else if it.EventID <= 0 {
+			it.err = errors.New("event without an id")
+		}
+		page[i] = it
 	}
 	return page, nil
 }
@@ -190,12 +238,12 @@ func (a *Adapter) eventsURL(window sources.Window, skip int) string {
 	return strings.TrimRight(a.cfg.BaseURL, "/") + "/v1/" + a.cfg.Client + "/events?" + q.Encode()
 }
 
-func (a *Adapter) meeting(e event, now time.Time) (sources.Meeting, error) {
+func (a *Adapter) meeting(ctx context.Context, e event, now time.Time) (sources.Meeting, error) {
 	title := strings.TrimSpace(e.EventBodyName)
 	if title == "" {
 		return sources.Meeting{}, errors.New("no body name")
 	}
-	startsAt, err := a.startsAt(e)
+	startsAt, err := a.startsAt(ctx, e)
 	if err != nil {
 		return sources.Meeting{}, err
 	}
@@ -211,33 +259,57 @@ func (a *Adapter) meeting(e event, now time.Time) (sources.Meeting, error) {
 	if err != nil {
 		return sources.Meeting{}, err
 	}
+	cancelled := cancelled(e)
+	if cancelled || startsAt.After(now) {
+		recordingURL = ""
+	}
 	return sources.Meeting{
 		SourceID:     strconv.Itoa(e.EventID),
 		Title:        title,
 		StartsAt:     startsAt,
-		Status:       status(e, startsAt, now),
+		Status:       a.status(e, cancelled, startsAt, now),
 		PageURL:      pageURL,
 		AgendaURL:    agendaURL,
 		RecordingURL: recordingURL,
 	}, nil
 }
 
-var timeLayouts = []string{"3:04 PM", "3:04PM", "15:04"}
+var (
+	timeLayouts    = []string{"3:04 PM", "3:04PM", "15:04"}
+	agendaFileDate = regexp.MustCompile(`_(\d{2}-\d{2}-\d{2})_Agenda\.pdf$`)
+)
 
-func (a *Adapter) startsAt(e event) (time.Time, error) {
+func (a *Adapter) startsAt(ctx context.Context, e event) (time.Time, error) {
 	date, err := time.Parse("2006-01-02T15:04:05", e.EventDate)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("event date %q", e.EventDate)
 	}
+	a.crossCheckAgendaDate(ctx, e, date)
 	hour, minute := 0, 0
-	clock := strings.ToUpper(strings.TrimSpace(text(e.EventTime)))
+	clock := strings.Join(strings.Fields(strings.ToUpper(text(e.EventTime))), " ")
+	parsed := clock == ""
 	for _, layout := range timeLayouts {
 		if t, err := time.Parse(layout, clock); err == nil {
-			hour, minute = t.Hour(), t.Minute()
+			hour, minute, parsed = t.Hour(), t.Minute(), true
 			break
 		}
 	}
+	if !parsed {
+		a.logger.WarnContext(ctx, "legistar: unreadable event time, using local midnight", "client", a.cfg.Client, "event_id", e.EventID, "time", text(e.EventTime))
+	}
 	return time.Date(date.Year(), date.Month(), date.Day(), hour, minute, 0, 0, a.loc).UTC(), nil
+}
+
+func (a *Adapter) crossCheckAgendaDate(ctx context.Context, e event, date time.Time) {
+	m := agendaFileDate.FindStringSubmatch(text(e.EventAgendaFile))
+	if m == nil {
+		return
+	}
+	named, err := time.Parse("06-01-02", m[1])
+	if err != nil || named.Equal(date) {
+		return
+	}
+	a.logger.WarnContext(ctx, "legistar: agenda file name has a different date than the event, using the event date", "client", a.cfg.Client, "event_id", e.EventID, "event_date", date.Format(time.DateOnly), "agenda_file", text(e.EventAgendaFile))
 }
 
 func (a *Adapter) recordingURL(e event) (string, error) {
@@ -254,22 +326,27 @@ func (a *Adapter) recordingURL(e event) (string, error) {
 	return fmt.Sprintf("https://%s/MediaPlayer.php?view_id=%d&clip_id=%s", a.cfg.Granicus.Host, a.cfg.Granicus.ViewID, url.QueryEscape(clip)), nil
 }
 
-func status(e event, startsAt, now time.Time) sources.Status {
+func cancelled(e event) bool {
+	return strings.Contains(strings.ToLower(text(e.EventAgendaStatusName)), "cancel") ||
+		strings.Contains(strings.ToLower(text(e.EventComment)), "cancel")
+}
+
+func (a *Adapter) status(e event, cancelled bool, startsAt, now time.Time) sources.Status {
 	switch {
-	case strings.Contains(strings.ToLower(text(e.EventAgendaStatusName)), "cancel"):
+	case cancelled:
 		return sources.StatusCancelled
-	case !startsAt.After(now) && heldEvidence(e):
+	case !startsAt.After(now) && a.heldEvidence(e):
 		return sources.StatusHeld
 	default:
 		return sources.StatusScheduled
 	}
 }
 
-func heldEvidence(e event) bool {
+func (a *Adapter) heldEvidence(e event) bool {
 	return text(e.EventMedia) != "" ||
 		text(e.EventVideoPath) != "" ||
 		text(e.EventMinutesFile) != "" ||
-		strings.EqualFold(text(e.EventMinutesStatusName), "final")
+		(a.cfg.FinalMinutesMeanHeld && strings.EqualFold(text(e.EventMinutesStatusName), "final"))
 }
 
 func text(s *string) string {

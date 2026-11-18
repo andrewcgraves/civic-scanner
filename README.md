@@ -324,7 +324,7 @@ type Meeting struct {
 
 `Status` is `sources.StatusScheduled`, `StatusHeld` or `StatusCancelled`, the values the `meetings` table accepts.
 
-Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock, Logger}`: `fetch.New(cfg.Fetch)`, `sources.SystemClock{}` and the worker's logger. `Deps.Log()` returns the logger, or one that discards everything when none is set, as in most tests. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` (the Legistar adapter below) and `metrolink` (the Granicus adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
+Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock, Logger}`: `fetch.New(cfg.Fetch)`, `sources.SystemClock{}` and the worker's logger. `Deps.Log()` returns the logger, or one that discards everything when none is set, as in most tests. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` and `octa` (the Legistar adapter below) and `metrolink` (the Granicus adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
 
 An adapter must guarantee:
 
@@ -346,10 +346,18 @@ Tests never call a live site. `internal/sources/sourcestest` has a fake adapter 
 
 ```go
 var LAMetro = legistar.Config{
-	Client:   "metro",
-	BodyIDs:  []int{138, 199},
+	Client:               "metro",
+	BodyIDs:              []int{138, 199},
+	TimeZone:             "America/Los_Angeles",
+	Granicus:             legistar.Granicus{Host: "metro.granicus.com", ViewID: 2},
+	FinalMinutesMeanHeld: true,
+}
+
+var OCTA = legistar.Config{
+	Client:   "octa",
+	BodyIDs:  []int{138},
 	TimeZone: "America/Los_Angeles",
-	Granicus: legistar.Granicus{Host: "metro.granicus.com", ViewID: 2},
+	Granicus: legistar.Granicus{Host: "octa.granicus.com", ViewID: 2},
 }
 ```
 
@@ -359,6 +367,7 @@ var LAMetro = legistar.Config{
 | `BodyIDs` | The `EventBodyId`s of the full board: regular and special board meetings, no committees. |
 | `TimeZone` | IANA zone of the agency's wall-clock times. |
 | `Granicus` | Host and `view_id` of the agency's Granicus media player, for the recording URL. Leave it empty if the agency has none. |
+| `FinalMinutesMeanHeld` | Whether minutes status `Final` is evidence that a past meeting took place. True for LA Metro. False for OCTA, whose `Final` does not mean minutes exist: cancelled board meeting 1460 (2016-07-11) is `Final`, and board meeting 2906 (2026-11-09) has been `Final` with no minutes file since its last edit on 2026-11-06. |
 | `BaseURL` | Defaults to `https://webapi.legistar.com`. Tests point it elsewhere. |
 | `PageSize` | Defaults to 1000, Legistar's largest page. |
 
@@ -370,18 +379,24 @@ To add a Legistar agency:
 
 For LA Metro, body 138 is "Board of Directors - Regular Board Meeting" and 199 "Board of Directors - Special Board Meeting". Not included: the committees, the `(SAP)` copies, the service councils, the taxpayer oversight committees, the public hearings, the test bodies (300 to 303), and the board workshops ("Special Board Budget Workshop" 306, "Special Board Member Workshop" 310).
 
+For OCTA, body 138 "Board" is the full board, and the only body whose name mentions a board. Checked against all 1,185 OCTA events from 2015-01-05 to 2026-11-25 on 2026-11-18. Kept: the 279 events of body 138, which include special meetings (marked only by `EventComment` `SPECIAL` or `SPECIAL MEETING`, such as 2444 on 2021-11-01) and a budget workshop recorded as its own event (2198 on 2019-05-13, with no `EventTime`, beside regular meeting 2099 the same day). Dropped: the 3 hidden events of body 138, which are training and test meetings (2536 "GRANICUS TESTING", 2543 "Jordan's Agenda for Training", 2665 "For Training Only", all with agenda status `Hidden`), and every other body: Executive (139), Finance and Administration (140), Legislative (172), Regional Transportation Planning (173), State Route 91 Advisory (174) and Transit (175) Committees, the inactive Transportation 2020 Committee (183), "Authors" (191), and the citizens', technical and taxpayer oversight committees and subcommittees (205 to 213, 220, 221).
+
 How the adapter reads Legistar:
 
 - **Query.** One `GET /v1/{client}/events` with `$filter=EventDate ge datetime'{from}' and EventDate le datetime'{to}' and (EventBodyId eq … or …)`, `$orderby=EventDate,EventId`, `$top` and `$skip`. `{from}` and `{to}` are the window's ends as dates in the agency's zone, since `EventDate` is a local date. It pages with `$skip` until a page is shorter than `$top`; an event repeated across pages is returned once, and a full page with no new events is a malformed response. Events of other bodies are dropped in code as well.
-- **Ids and titles.** `SourceID` is `EventId`. `Title` is `EventBodyName`.
-- **Time.** `EventDate` holds the local date (its time part is always midnight) and `EventTime` the local wall-clock time as text, such as `10:00 AM`. The two are joined in the agency's zone and converted to UTC, so daylight saving time is applied for that date. Accepted time forms are `3:04 PM`, `3:04PM` and `15:04`, in either case. A missing, empty or unparseable `EventTime` gives local midnight of the date: the date is right, and when the agency fixes the time the next check moves the meeting.
-- **Status.** `cancelled` when `EventAgendaStatusName` contains "cancel" in any case (LA Metro writes `Canceled`, OCTA `CANCELLED`). Otherwise `held` when the start time has passed and there is evidence the meeting took place: a recording (`EventMedia` or `EventVideoPath`), a minutes file (`EventMinutesFile`), or minutes status `Final`. Otherwise `scheduled`, which includes a past meeting with no such evidence. A past date alone is not evidence: LA Metro's minutes stay `Draft` with no file in Legistar, so for LA Metro the recording is the evidence.
-- **URLs.** `PageURL` is `EventInSiteURL`. `AgendaURL` is `EventAgendaFile`, empty until the agenda is published. `RecordingURL` is `EventVideoPath` when set; otherwise, when `EventMedia` (a Granicus clip id) is set and `Granicus` is configured, `https://{host}/MediaPlayer.php?view_id={view}&clip_id={EventMedia}`; otherwise empty. The adapter never fetches the player page or the media; resolving the media file belongs to the recording download.
-- **Errors.** Fetch errors are wrapped with `%w` and keep their retryability. A body that is not a JSON list of events, or an event without an id, a parseable date, a body name, an absolute `EventInSiteURL`, or with a relative agenda or video URL, is `legistar.ErrMalformed`, which is permanent. If Legistar answers 401, 403, 406 or 429 and Firecrawl is configured, `fetch.New` falls back to Firecrawl, whose markdown is not JSON, so that check is cancelled as malformed and the next day's check tries again.
+- **Ids and titles.** `SourceID` is `EventId`, Legistar's key for the event row. The row is created once and edited in place: when OCTA revises an agenda (`EventComment` `REVISED`, agenda status `FINAL-REVISED`, a new `EventAgendaLastPublishedUTC`), when the clip is linked after the meeting, and when it is cancelled, the `EventId` stays and the agenda file name is built from it (`2906_A_Board_26-11-09_Agenda.pdf`). It does not depend on the position or order of events in the response. `Title` is `EventBodyName` (OCTA's is just "Board").
+- **Hidden events.** An event whose `EventAgendaStatusName` is `Hidden` is not on the agency's public calendar; OCTA uses it for training and test meetings. It is dropped with an info log. An event of a body outside `BodyIDs` whose name contains "board" is also logged when dropped.
+- **Time.** `EventDate` holds the local date (its time part is always midnight) and `EventTime` the local wall-clock time as text, such as `10:00 AM`. The two are joined in the agency's zone and converted to UTC, so daylight saving time is applied for that date. Runs of spaces are collapsed first (OCTA's older events have `09:00  AM`). Accepted time forms are `3:04 PM`, `3:04PM` and `15:04`, in either case. A missing, empty or unparseable `EventTime` gives local midnight of the date: the date is right, and when the agency fixes the time the next check moves the meeting. An unparseable one is logged as a warning. The agenda file name carries a date too (`_26-11-09_Agenda.pdf`); when it differs from `EventDate` the adapter logs a warning and keeps `EventDate`, the field the clerk edits. All 279 of OCTA's board events and LA Metro's recorded ones agree.
+- **Status.** `cancelled` when `EventAgendaStatusName` or `EventComment` contains "cancel" in any case (LA Metro writes `Canceled`; OCTA writes `CANCELLED`, and of its 6 cancelled board meetings 5 say so only in `EventComment`). Otherwise `held` when the start time has passed and there is evidence the meeting took place: a recording (`EventMedia` or `EventVideoPath`), a minutes file (`EventMinutesFile`), or, when `FinalMinutesMeanHeld` is set, minutes status `Final`. Otherwise `scheduled`, which includes a past meeting with no such evidence. A past date alone is not evidence: LA Metro's minutes stay `Draft` with no file in Legistar, so for LA Metro the recording is the evidence.
+- **URLs.** `PageURL` is `EventInSiteURL`. `AgendaURL` is `EventAgendaFile`, empty until the agenda is published. `RecordingURL` is `EventVideoPath` when set; otherwise, when `EventMedia` (a Granicus clip id) is set and `Granicus` is configured, `https://{host}/MediaPlayer.php?view_id={view}&clip_id={EventMedia}`; otherwise empty. It is set only when the start time has passed and the meeting is not cancelled: the evidence of a recording is a clip that Legistar has linked to a meeting that has started. A clip id alone is not, since a clip can be linked ahead of the meeting for the live stream. The adapter never fetches the player page or the media; resolving the media file belongs to the recording download, and OCTA's media can appear days after the meeting.
+- **Upcoming meetings.** OCTA creates a board event in Legistar when it posts the agenda, a few days before the meeting (the 2026-11-23 meeting was not in Legistar on 2026-11-18), and LA Metro lists its calendar ahead. Both are returned as soon as they are in the window, as `scheduled`, with the agenda URL when there is one. The agenda PDF keeps its URL when revised.
+- **Errors.** Fetch errors are wrapped with `%w` and keep their retryability. A body that is not a JSON list is `legistar.ErrMalformed`, which is permanent. An event that cannot be read (not a JSON object of the expected types, or without an id, a parseable date, a body name, an absolute `EventInSiteURL`, or with a relative agenda or video URL) is skipped with a warning, and the other events are kept. When every board event in the response is unreadable, the check fails with `ErrMalformed`: that is what a change in Legistar's format looks like. If Legistar answers 401, 403, 406 or 429 and Firecrawl is configured, `fetch.New` falls back to Firecrawl, whose markdown is not JSON, so that check is cancelled as malformed and the next day's check tries again.
 
-The daily check calls only the API host, which has no `robots.txt`. The agenda host `metro.legistar1.com` and the player host `metro.granicus.com` disallow crawlers. The check does not touch them; the later stages that do identify themselves with `FETCH_USER_AGENT` (see [Fetching](#fetching)).
+The daily check calls only the API host, which has no `robots.txt`. The agenda hosts `metro.legistar1.com` and `octa.legistar1.com` and the player hosts `metro.granicus.com` and `octa.granicus.com` disallow crawlers; following CIV-62 they may be fetched once a day with an identifying User-Agent. The check does not touch them; the later stages that do identify themselves with `FETCH_USER_AGENT` (see [Fetching](#fetching)).
 
 The fixtures in `internal/sources/legistar/testdata` are real LA Metro responses recorded on 2026-11-17 and trimmed to a few events and fields: `metro_board_events.json` (the board-only query for 2026-01-01 to 2027-01-31) and `metro_events_with_committee.json` (a board meeting and a Planning and Programming Committee meeting from an unfiltered query). LA Metro had no upcoming board meeting without an agenda that day, so that case, the time edge cases and the status edge cases use events built in the tests.
+
+The OCTA fixtures are real responses recorded on 2026-11-18, without `EventItems` and `EventRowVersion`: `octa_board_events.json` (every board event from 2026-08-01, 2900 to 2906: one cancelled, one revised, all with agendas), `octa_board_history.json` (eight older board events: cancelled by comment only, special, the null-time budget workshop, the double-spaced time, and the three hidden training events) and `octa_events_with_committees.json` (every event of any body from 2026-11-12, upcoming committee meetings with agendas and cancelled committees, no board meeting). OCTA had no upcoming board event that day, so `TestOCTASourceIDsAreStableAcrossDailyRuns` derives the earlier states of meeting 2906 (agenda posted, agenda revised, the morning of the meeting) and a next meeting 2907 from the recorded 2906, feeds the states in changing order and checks every `SourceID` keeps its meeting.
 
 ### Granicus
 
