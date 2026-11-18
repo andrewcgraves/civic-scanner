@@ -1,8 +1,8 @@
 package legistar_test
 
 import (
+	"io/fs"
 	"os"
-	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -22,7 +22,7 @@ func jsonResponse(req fetch.Request, body []byte) fetch.Response {
 
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join("testdata", name))
+	body, err := fs.ReadFile(os.DirFS("testdata"), name)
 	if err != nil {
 		t.Fatal(err)
 	}
