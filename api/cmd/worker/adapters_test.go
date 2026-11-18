@@ -63,3 +63,21 @@ func TestMetrolinkIsRegisteredAsAGranicusAdapter(t *testing.T) {
 		t.Errorf("requests = %+v, want two to the Metrolink Granicus feeds", calls)
 	}
 }
+
+func TestVCTCIsRegisteredForTheCommissionPostsOnly(t *testing.T) {
+	fake := fetchtest.Returning("[]")
+	now := time.Date(2026, 11, 18, 13, 0, 0, 0, time.UTC)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fake, Clock: sourcestest.NewClock(now)}, adapters)
+
+	adapter, ok := registry.Lookup("vctc")
+	if !ok {
+		t.Fatalf("no adapter for vctc; registered: %v", registry.Slugs())
+	}
+	if _, err := adapter.Meetings(t.Context(), sources.Window{From: now, To: now.AddDate(0, 0, 1)}); err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || !strings.HasPrefix(calls[0].URL, "https://www.goventura.org/wp-json/wp/v2/meeting?") || !strings.Contains(calls[0].URL, "meeting_type=25%2C33") {
+		t.Errorf("requests = %+v, want one to the goventura.org meeting posts of types 25 and 33 and none to YouTube", calls)
+	}
+}
