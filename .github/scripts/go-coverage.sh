@@ -30,6 +30,7 @@ fi
 report="$(go tool cover -func="$profile" | sed "s#^$module/##")"
 total="$(awk '/^total:/ { sub(/%/, "", $NF); print $NF }' <<<"$report")"
 go tool cover -html="$profile" -o "${profile%.*}.html"
+echo "$total" >"${profile%.*}.total"
 
 echo "$report"
 echo "$label coverage: $total% (minimum $min%)"

@@ -117,6 +117,7 @@ jobs:
           path: |
             api/coverage.unit.out
             api/coverage.unit.html
+            api/coverage.unit.total
       - name: Generated code is up to date (oapi-codegen)
         run: |
           go generate ./...
@@ -169,6 +170,7 @@ jobs:
           path: |
             api/coverage.out
             api/coverage.html
+            api/coverage.total
 
   migrations-lint:
     needs: changes
@@ -251,6 +253,51 @@ jobs:
           fi
       - name: Build
         run: pnpm build
+
+  coverage-comment:
+    needs:
+      - api
+      - api-integration
+      - web
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download this run's coverage
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: "*coverage*"
+          path: coverage/current
+      - name: Download the default branch's coverage
+        run: .github/scripts/coverage-baseline.sh coverage/baseline
+      - name: Write the comment
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: .github/scripts/coverage-comment.sh coverage/current coverage/baseline | tee coverage/comment.md
+      - name: Post or update the comment
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("### Coverage"))) | .id' | tail -n 1)"
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@coverage/comment.md >/dev/null
+            echo "Updated comment $existing."
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@coverage/comment.md >/dev/null
+            echo "Posted a new comment."
+          fi
 
   ci-ok:
     if: always()
