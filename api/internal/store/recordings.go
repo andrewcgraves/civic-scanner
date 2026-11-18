@@ -65,8 +65,10 @@ func scanRecording(row pgx.Row, extra ...any) (Recording, error) {
 		expiresAt *time.Time
 		failure   *string
 	)
-	dest := append([]any{&r.ID, &r.MeetingID, &r.SourceURL, &key, &expiresAt, &r.AudioDeletedAt,
-		&r.Download.Attempts, &failure, &r.Download.FailedAt, &r.Download.RetryAfter, &r.CreatedAt, &r.UpdatedAt}, extra...)
+	dest := append([]any{
+		&r.ID, &r.MeetingID, &r.SourceURL, &key, &expiresAt, &r.AudioDeletedAt,
+		&r.Download.Attempts, &failure, &r.Download.FailedAt, &r.Download.RetryAfter, &r.CreatedAt, &r.UpdatedAt,
+	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return Recording{}, err
 	}
