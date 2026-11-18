@@ -33,13 +33,18 @@ Run from the repo root. `make help` lists every target.
 - `make dev-db` / `make dev-db-down`: local Postgres through docker compose.
 - `make migrate`: apply goose and River migrations to `DATABASE_URL`.
 - `make generate` / `make generate-check`: regenerate code; fail if it differs from what is committed.
-- `make lint`: `openapi-lint`, `lint-migrations`, `lint-api`, `lint-web`. `lint-api` needs golangci-lint v2 installed.
+- `make prepush`: install, every linter, unit tests, codegen drift and build. No Docker needed.
+- `make lint`: `openapi-lint`, `lint-migrations`, `lint-api`, `lint-web`. `lint-api` builds the golangci-lint version CI uses into `api/bin/` on first use; do not use a globally installed one.
 - `make test`: unit tests. `make test-integration`: migrates, then runs the API integration tests (needs `make dev-db`).
 - `make coverage`: unit and integration coverage for both sides, failing below the minimums (needs `make dev-db`). See "Coverage" in `README.md`.
 - `make build`: build both sides.
 - In `web/`: `pnpm dev`, `pnpm lint`, `pnpm format`, `pnpm format:check`, `pnpm typecheck`, `pnpm test`, `pnpm test:coverage`, `pnpm generate`, `pnpm build`.
 
-Run `make ci` before pushing. It runs everything CI runs and needs Docker.
+## Before every push
+
+Run `make prepush` before every `git push` and fix everything it reports. Do not push while it fails, and do not rely on CI to find lint errors. Commit first: `generate-check` fails on uncommitted changes under `api/` and `web/`.
+
+Run `make ci` as well when the change touches migrations, the store, jobs or anything else covered by integration tests. It runs everything CI runs and needs Docker.
 
 ## Migrations
 

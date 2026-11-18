@@ -1,5 +1,10 @@
 REDOCLY_CLI_VERSION ?= 2.78.0
 GO_COVERAGE_MIN ?= 90
+GOLANGCI_LINT_VERSION ?= v2.15.0
+
+GO_VERSION := $(shell awk '$$1 == "go" {print $$2}' api/go.mod)
+GOLANGCI_LINT_DIR := $(CURDIR)/api/bin/golangci-lint-$(GOLANGCI_LINT_VERSION)-go$(GO_VERSION)
+GOLANGCI_LINT := $(GOLANGCI_LINT_DIR)/golangci-lint
 
 DATABASE_URL ?= postgres://civic:civic@localhost:5432/civic?sslmode=disable
 export DATABASE_URL
@@ -54,9 +59,12 @@ openapi-lint: ## Lint the OpenAPI specs with Redocly
 lint-migrations: ## Lint SQL migrations with Squawk
 	.github/scripts/lint-migrations.sh
 
+$(GOLANGCI_LINT):
+	GOBIN=$(GOLANGCI_LINT_DIR) GOTOOLCHAIN=go$(GO_VERSION) go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 .PHONY: lint-api
-lint-api: ## go vet + golangci-lint (v2, must be installed)
-	cd api && go vet ./... && golangci-lint run
+lint-api: $(GOLANGCI_LINT) ## go vet + golangci-lint (the CI version, built on first use)
+	cd api && go vet ./... && $(GOLANGCI_LINT) run
 
 .PHONY: lint-web
 lint-web: ## eslint, prettier check, typecheck
@@ -83,6 +91,9 @@ test-integration: migrate ## Migrate, then run api integration tests (needs Post
 coverage: ## Unit + integration coverage for api (needs make dev-db) and web; fails below the minimums
 	GO_COVERAGE_MIN=$(GO_COVERAGE_MIN) .github/scripts/go-coverage.sh "Go unit + integration" coverage.out integration
 	cd web && pnpm test:coverage
+
+.PHONY: prepush
+prepush: install lint test generate-check build ## Run before every push: install, every linter, unit tests, codegen drift, build (no Docker)
 
 .PHONY: ci
 ci: install lint test generate-check build dev-db coverage ## Everything CI runs
