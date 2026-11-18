@@ -14,6 +14,7 @@ type Agency struct {
 	ID        uuid.UUID
 	Slug      string
 	Name      string
+	Website   string
 	CreatedAt time.Time
 }
 
@@ -42,13 +43,13 @@ func (s *Store) Ping(ctx context.Context) error {
 }
 
 func (s *Store) ListAgencies(ctx context.Context) ([]Agency, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, slug, name, created_at FROM agencies ORDER BY name, slug`)
+	rows, err := s.pool.Query(ctx, `SELECT id, slug, name, website, created_at FROM agencies WHERE status = 'live' ORDER BY name, slug`)
 	if err != nil {
 		return nil, fmt.Errorf("query agencies: %w", err)
 	}
 	agencies, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Agency, error) {
 		var a Agency
-		err := row.Scan(&a.ID, &a.Slug, &a.Name, &a.CreatedAt)
+		err := row.Scan(&a.ID, &a.Slug, &a.Name, &a.Website, &a.CreatedAt)
 		return a, err
 	})
 	if err != nil {

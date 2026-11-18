@@ -67,11 +67,11 @@ func TestHealth(t *testing.T) {
 func TestListAgencies(t *testing.T) {
 	id := uuid.New()
 	var body v1.AgencyList
-	code := get(t, fakeStore{agencies: []store.Agency{{ID: id, Slug: "la-metro", Name: "LA Metro"}}}, "/v1/agencies", &body)
+	code := get(t, fakeStore{agencies: []store.Agency{{ID: id, Slug: "la-metro", Name: "LA Metro", Website: "https://www.metro.net"}}}, "/v1/agencies", &body)
 	if code != http.StatusOK {
 		t.Fatalf("status = %d", code)
 	}
-	want := v1.Agency{Id: id, Slug: "la-metro", Name: "LA Metro"}
+	want := v1.Agency{Id: id, Slug: "la-metro", Name: "LA Metro", Website: "https://www.metro.net"}
 	if len(body.Agencies) != 1 || body.Agencies[0] != want {
 		t.Errorf("agencies = %+v, want [%+v]", body.Agencies, want)
 	}
