@@ -55,7 +55,7 @@ func TestFallbackKeepsPrimaryErrorForOtherFailures(t *testing.T) {
 	for _, failure := range failures {
 		secondary := fetchtest.Returning("firecrawl")
 		_, err := fetch.NewFallback(fetchtest.Failing(failure), secondary).Fetch(context.Background(), fetch.Request{URL: "https://agency.test/a"})
-		if err != failure {
+		if !errors.Is(err, failure) {
 			t.Errorf("err = %v, want %v", err, failure)
 		}
 		if n := len(secondary.Calls()); n != 0 {
@@ -67,7 +67,7 @@ func TestFallbackKeepsPrimaryErrorForOtherFailures(t *testing.T) {
 func TestFallbackReportsPrimaryErrorWhenSecondaryNotConfigured(t *testing.T) {
 	primary := statusFailure(403)
 	_, err := fetch.NewFallback(fetchtest.Failing(primary), fetchtest.Failing(fetch.ErrNotConfigured)).Fetch(context.Background(), fetch.Request{URL: "https://agency.test/a"})
-	if err != primary {
+	if !errors.Is(err, primary) {
 		t.Errorf("err = %v, want the plain 403", err)
 	}
 }
@@ -75,7 +75,7 @@ func TestFallbackReportsPrimaryErrorWhenSecondaryNotConfigured(t *testing.T) {
 func TestFallbackReportsSecondaryError(t *testing.T) {
 	secondaryErr := &fetch.Error{StatusCode: 402, Err: errors.New("out of credits")}
 	_, err := fetch.NewFallback(fetchtest.Failing(statusFailure(403)), fetchtest.Failing(secondaryErr)).Fetch(context.Background(), fetch.Request{URL: "https://agency.test/a"})
-	if err != secondaryErr {
+	if !errors.Is(err, secondaryErr) {
 		t.Errorf("err = %v, want %v", err, secondaryErr)
 	}
 }

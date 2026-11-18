@@ -119,7 +119,7 @@ func TestPlainStopsAfterTooManyRedirects(t *testing.T) {
 }
 
 func TestPlainRejectsBodyOverCap(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
 		w.(http.Flusher).Flush()
 		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
@@ -138,7 +138,7 @@ func TestPlainRejectsBodyOverCap(t *testing.T) {
 }
 
 func TestPlainRejectsDeclaredLengthOverCap(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(strings.Repeat("x", 500)))
 	}))
 	defer srv.Close()
@@ -150,7 +150,7 @@ func TestPlainRejectsDeclaredLengthOverCap(t *testing.T) {
 }
 
 func TestPlainPerCallCapRaisesLimit(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(strings.Repeat("x", 500)))
 	}))
 	defer srv.Close()
@@ -217,7 +217,7 @@ func TestPlainReadsRetryAfter(t *testing.T) {
 
 func TestPlainTimeoutIsRetryable(t *testing.T) {
 	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		select {
 		case <-release:
 		case <-r.Context().Done():
