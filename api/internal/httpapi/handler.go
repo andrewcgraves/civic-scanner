@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
@@ -15,6 +17,8 @@ const healthTimeout = 2 * time.Second
 type Store interface {
 	Ping(ctx context.Context) error
 	ListAgencies(ctx context.Context) ([]store.Agency, error)
+	GetLiveAgency(ctx context.Context, slug string) (store.Agency, error)
+	ListMeetings(ctx context.Context, agencyID uuid.UUID, params store.ListMeetingsParams) (store.MeetingPage, error)
 }
 
 type Handler struct {
@@ -52,7 +56,7 @@ func (h *Handler) ListAgencies(ctx context.Context, _ v1.ListAgenciesRequestObje
 
 	agencies := make([]v1.Agency, 0, len(rows))
 	for _, a := range rows {
-		agencies = append(agencies, v1.Agency{Id: a.ID, Slug: a.Slug, Name: a.Name, Website: a.Website})
+		agencies = append(agencies, apiAgency(a))
 	}
 	return v1.ListAgencies200JSONResponse{Agencies: agencies}, nil
 }
