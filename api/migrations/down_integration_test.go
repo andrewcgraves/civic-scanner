@@ -158,6 +158,35 @@ func TestRecordingsMigrationRollsBackAndReapplies(t *testing.T) {
 	}
 }
 
+func TestUsersMigrationRollsBackAndReapplies(t *testing.T) {
+	ctx := t.Context()
+	provider, pool, schema := isolatedProvider(t)
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if !tableExists(t, pool, schema, "users") {
+		t.Fatal("users missing after Up")
+	}
+
+	if _, err := provider.DownTo(ctx, 7); err != nil {
+		t.Fatalf("DownTo(7): %v", err)
+	}
+	if tableExists(t, pool, schema, "users") {
+		t.Error("users still exists after rolling back 00009")
+	}
+	if !tableExists(t, pool, schema, "recordings") {
+		t.Error("recordings missing after rolling back only 00009")
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	if !tableExists(t, pool, schema, "users") {
+		t.Error("users missing after reapplying")
+	}
+}
+
 func columnExists(t *testing.T, pool *pgxpool.Pool, schema, table, column string) bool {
 	t.Helper()
 	var exists bool
@@ -182,16 +211,16 @@ func TestRecordingDownloadStateMigrationRollsBackAndReapplies(t *testing.T) {
 		}
 	}
 
-	if _, err := provider.DownTo(ctx, 7); err != nil {
-		t.Fatalf("DownTo(7): %v", err)
+	if _, err := provider.DownTo(ctx, 9); err != nil {
+		t.Fatalf("DownTo(9): %v", err)
 	}
 	for _, column := range columns {
 		if columnExists(t, pool, schema, "recordings", column) {
-			t.Errorf("%s still exists after rolling back 00008", column)
+			t.Errorf("%s still exists after rolling back 00010", column)
 		}
 	}
-	if !tableExists(t, pool, schema, "recordings") {
-		t.Error("recordings missing after rolling back only 00008")
+	if !tableExists(t, pool, schema, "users") {
+		t.Error("users missing after rolling back only 00010")
 	}
 
 	if _, err := provider.Up(ctx); err != nil {

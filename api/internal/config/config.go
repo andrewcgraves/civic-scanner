@@ -21,6 +21,7 @@ type Config struct {
 	Ingest        Ingest
 	Extract       Extract
 	Audio         Audio
+	WorkOS        WorkOS
 	Summary       Summary
 }
 
@@ -60,6 +61,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Audio, err = loadAudio(); err != nil {
+		return Config{}, err
+	}
+	if cfg.WorkOS, err = loadWorkOS(); err != nil {
 		return Config{}, err
 	}
 	if cfg.Summary, err = loadSummary(); err != nil {

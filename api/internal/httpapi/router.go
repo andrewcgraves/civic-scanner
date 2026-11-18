@@ -15,7 +15,7 @@ import (
 
 func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger))
+	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), authenticate(h.auth, logger))
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	})
@@ -23,7 +23,7 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 		w.Header().Set("Allow", http.MethodGet)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	})
-	v1.HandlerWithOptions(v1.NewStrictHandler(h, nil), v1.ChiServerOptions{
+	v1.HandlerWithOptions(v1.NewStrictHandler(h, []v1.StrictMiddlewareFunc{noStore}), v1.ChiServerOptions{
 		BaseURL:    "/v1",
 		BaseRouter: r,
 		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
