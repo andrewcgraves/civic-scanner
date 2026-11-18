@@ -12,9 +12,10 @@ import (
 	"net/textproto"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 )
 
 const maxResponseBytes = 32 << 20
@@ -29,15 +30,16 @@ type verboseResponse struct {
 	} `json:"segments"`
 }
 
-type errorBody struct {
-	Error struct {
-		Message string `json:"message"`
-	} `json:"error"`
-}
-
 func seconds(v float64) time.Duration {
 	return time.Duration(math.Round(v * float64(time.Second)))
 }
+
+type groq struct {
+	cfg  config.Transcription
+	http *http.Client
+}
+
+func (g *groq) acceptsDirect(string) bool { return true }
 
 func (g *groq) transcribeFile(ctx context.Context, path string) (Transcript, error) {
 	file, err := os.Open(filepath.Clean(path))
@@ -63,26 +65,14 @@ func (g *groq) transcribeFile(ctx context.Context, path string) (Transcript, err
 	req.Header.Set("Authorization", "Bearer "+g.cfg.APIKey)
 	req.Header.Set("Content-Type", contentType)
 
-	resp, err := g.http.Do(req)
+	raw, err := send(g.http, req, "groq", retryableStatus)
 	if err != nil {
-		return Transcript{}, &Error{Retryable: true, Err: err}
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return Transcript{}, &Error{StatusCode: resp.StatusCode, Retryable: true, Err: err}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return Transcript{}, statusError(resp, raw)
-	}
-	if len(raw) > maxResponseBytes {
-		return Transcript{}, fmt.Errorf("%w: over %d bytes", ErrResponseTooLarge, maxResponseBytes)
+		return Transcript{}, err
 	}
 
 	var parsed verboseResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return Transcript{}, &Error{StatusCode: resp.StatusCode, Retryable: true, Err: fmt.Errorf("decode response: %w", err)}
+		return Transcript{}, &Error{Retryable: true, Err: fmt.Errorf("decode response: %w", err)}
 	}
 	segments := make([]Segment, 0, len(parsed.Segments))
 	for _, s := range parsed.Segments {
@@ -121,23 +111,6 @@ func (g *groq) multipartFrame(filename string) (head, tail []byte, contentType s
 	}
 	all := buf.Bytes()
 	return all[:headLen], all[headLen:], mw.FormDataContentType(), nil
-}
-
-func statusError(resp *http.Response, raw []byte) *Error {
-	message := http.StatusText(resp.StatusCode)
-	var parsed errorBody
-	if json.Unmarshal(raw, &parsed) == nil && parsed.Error.Message != "" {
-		message = parsed.Error.Message
-	}
-	e := &Error{
-		StatusCode: resp.StatusCode,
-		Retryable:  retryableStatus(resp.StatusCode),
-		Err:        fmt.Errorf("groq returned %d: %s", resp.StatusCode, message),
-	}
-	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
-		e.RetryAfter = time.Duration(s) * time.Second
-	}
-	return e
 }
 
 func retryableStatus(code int) bool {

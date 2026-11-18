@@ -6,7 +6,7 @@ import (
 )
 
 var (
-	ErrNotConfigured    = errors.New("transcribe: not configured, set GROQ_API_KEY")
+	ErrNotConfigured    = errors.New("transcribe: not configured, set AI_GATEWAY_API_KEY, or GROQ_API_KEY for the groq provider")
 	ErrResponseTooLarge = errors.New("transcribe: response too large")
 	ErrChunkTooLarge    = errors.New("transcribe: audio chunk exceeds the upload limit")
 	ErrInvalidChunking  = errors.New("transcribe: chunk overlap must be shorter than the chunk length")

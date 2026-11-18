@@ -85,12 +85,18 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | --- | --- |
 | `POSTHOG_API_KEY` | PostHog project API key. When set, PostHog decides every flag and `FEATURE_FLAGS` is ignored. |
 | `POSTHOG_HOST` | PostHog host. Empty means `https://us.i.posthog.com`; EU projects use `https://eu.i.posthog.com`. With a PostHog key set, anything other than an `http` or `https` URL with a host (for example `us.i.posthog.com` without a scheme) stops the binary at startup. |
-| `POSTHOG_FLAG_TIMEOUT` | How long one PostHog flag check may take, as a Go duration such as `500ms`. Default `1s`. A value that does not parse, or is not positive, stops the binary at startup. |
+| `POSTHOG_FLAG_TIMEOUT` | How long one PostHog request for flags may take, as a Go duration such as `500ms`. Default `1s`. A value that does not parse, or is not positive, stops the binary at startup. |
+| `POSTHOG_FLAG_CACHE_TTL` | How long the provider reuses one PostHog answer, as a Go duration such as `10s`. Default `30s`. `0` turns the cache off, so every check is a request. A value that does not parse, or is negative, stops the binary at startup. |
 | `FEATURE_FLAGS` | Used only without a PostHog key. A comma-separated list of the flags that are on, such as `new-search,digest-emails`. `*` turns every flag on, for staging-like runs. Empty means every flag is off. |
 
 - A flag is off unless the provider says it is on. These all evaluate to off: an unknown flag, a PostHog error, an unreachable or slow PostHog, a flag PostHog failed to evaluate, a quota-limited project, and a multivariate flag (whatever its variant, since `Enabled` answers only boolean flags).
 - What gets logged at `warn`: request errors, timeouts, context deadlines and multivariate flags, all by the provider. posthog-go logs quota limits and responses that report `errorsWhileComputingFlags` itself, through the service logger. posthog-go returns the same `ErrFlagNotFound` for an unknown flag, a flag that failed to evaluate and a quota-limited project, and does not expose which one happened. So the provider logs none of those three itself, and a failed flag is logged only when PostHog also reports `errorsWhileComputingFlags`.
-- PostHog evaluates each call remotely, through its `/flags` endpoint. A check makes one attempt, without retries, limited by `POSTHOG_FLAG_TIMEOUT`, and returns off as soon as the caller's context ends, whichever comes first. posthog-go does not take a context, so a request abandoned at the caller's deadline keeps running in the background until `POSTHOG_FLAG_TIMEOUT`. The distinct ID is `civic-scanner-server`, or the OpenFeature targeting key when a caller passes one, so a percentage rollout gives the same answer to every call that has no targeting key. No `$feature_flag_called` events are sent.
+- PostHog evaluates flags remotely, through its `/flags` endpoint, and one response holds every flag for one identity. The provider caches that whole response per identity for `POSTHOG_FLAG_CACHE_TTL`, so repeated checks of any flag make no request. The identity is the OpenFeature targeting key, or `civic-scanner-server` when a caller passes none, so a percentage rollout gives the same answer to every call that has no targeting key. A change in PostHog can take up to the TTL to show.
+- At most one request per identity is in flight: checks that arrive while it runs wait for that answer. The request runs on its own, so a caller whose context ends stops waiting and gets off, and the request still finishes and fills the cache for the next check. One attempt, no retries, limited by `POSTHOG_FLAG_TIMEOUT`. posthog-go does not take a context, so this is how the caller's deadline is honoured.
+- The cache holds at most 1024 identities. Adding one past that evicts the identity checked longest ago.
+- When a request fails, the provider serves the last good answer for that identity while it is at most 5 times the TTL old (150 s by default), then evaluates every flag to off. A flag that was never fetched is off at once. Failures are not retried within one TTL, so an outage costs one request per identity per TTL, not one per check. Off after a bounded grace period, not stale forever, because a rollout that was turned off in PostHog must not stay on indefinitely behind an outage; a short grace keeps a brief PostHog blip from flipping every flag. Each failed request is logged once at `warn`.
+- With `POSTHOG_FLAG_CACHE_TTL=0` there is no cache, no sharing and no grace: every check makes its own request. No `$feature_flag_called` events are sent.
+- Not done: PostHog local evaluation, where the client downloads flag definitions and evaluates them in process. It needs a personal API key, a secret that can read the whole project, in every binary. The cache gets the call volume down without one.
 - The PostHog provider (`internal/featureflags/posthog.go`) is a thin layer over the official `posthog-go` client, because no maintained OpenFeature Go provider for PostHog exists. Another vendor means another provider in that package; callers do not change.
 - OpenFeature's provider is process-wide. A test that calls `featureflags.Init` with `config.FeatureFlags{On: ...}` must not run in parallel with other flag tests. Parallel tests can register OpenFeature's `openfeature/testing` provider instead, which keys flags by test.
 
@@ -339,33 +345,48 @@ The unit tests use the fake adapter and fake clock. The integration tests run a 
 
 ## Transcription
 
-`internal/transcribe` turns an audio file into a timestamped transcript through [Groq's](https://console.groq.com/docs/speech-to-text) OpenAI-compatible `POST /audio/transcriptions` endpoint, using only the standard library. `transcribe.New(cfg.Transcription)` returns a `transcribe.Client`, whose one method, `Transcribe(ctx, audioPath)`, takes a file path and returns a `transcribe.Transcript`: the full `Text`, the audio `Duration`, and ordered `Segments`, each with `Start`, `End` and `Text`. There are no speaker labels. A file path, not a reader, is the input so a multi-hundred-MB recording is streamed from disk into the request and never held in memory.
+`internal/transcribe` turns an audio file into a timestamped transcript through the [Vercel AI Gateway speech-to-text endpoint](https://vercel.com/docs/ai-gateway/modalities/speech-to-text), using only the standard library. `transcribe.New(cfg.Transcription)` returns a `transcribe.Client`, whose one method, `Transcribe(ctx, audioPath)`, takes a file path and returns a `transcribe.Transcript`: the full `Text`, the audio `Duration`, and ordered `Segments`, each with `Start`, `End`, `Text` and an optional `Speaker`. A file path, not a reader, is the input so a multi-hundred-MB recording is never held in memory.
+
+The gateway call is `POST {origin}/v4/ai/transcription-model` with `Authorization: Bearer <AI_GATEWAY_API_KEY>`, `ai-gateway-protocol-version: 0.0.1`, `ai-transcription-model-specification-version: 4`, `ai-model-id: <model>`, and a JSON body `{"audio": "<base64>", "mediaType": "audio/mpeg"}`. Multipart is not supported. The base64 is produced as the request streams from disk, so only one chunk is ever read, and never more than a few KiB is buffered. The request carries an exact `Content-Length`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `GROQ_API_KEY` | none | Groq API key, sent as `Authorization: Bearer`. A secret: set it in Railway, never in `.railway/railway.ts`. |
-| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq base URL. Must be an `http` or `https` URL with a host, or the binaries fail at startup. |
-| `TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Whisper model ID. |
-| `TRANSCRIPTION_TIMEOUT` | `5m` | Limit on one Groq request, upload included, as a Go duration. Must be positive. |
-| `TRANSCRIPTION_MAX_UPLOAD_MB` | `25` | Largest single upload, in MiB. Groq allows 25 MB on the free tier and 100 MB on the dev tier; raise this only on the dev tier. |
+| `TRANSCRIPTION_PROVIDER` | `gateway` | `gateway` or `groq`. Anything else fails at startup. |
+| `AI_GATEWAY_API_KEY` | none | Shared with the LLM client. A secret: set it in Railway, never in `.railway/railway.ts`. |
+| `AI_GATEWAY_BASE_URL` | `https://ai-gateway.vercel.sh/v1` | Shared with the LLM client. The transcription endpoint lives under `/v4/ai/`, not `/v1`, so only the scheme and host of this URL are used (`https://ai-gateway.vercel.sh`). |
+| `TRANSCRIPTION_MODEL` | `elevenlabs/scribe-v2` | Gateway model ID (`whisper-large-v3-turbo` when the provider is `groq`). `elevenlabs/scribe-v2` labels speakers and times every word by default. |
+| `TRANSCRIPTION_TIMEOUT` | `5m` | Limit on one request, upload included, as a Go duration. Must be positive. |
+| `TRANSCRIPTION_DIRECT_UPLOAD_MB` | `2` | Largest MP3 sent as is, in MiB. Anything larger, or not an `.mp3`, is re-encoded in chunks. |
+| `TRANSCRIPTION_MAX_CHUNK_MB` | `8` | Largest single chunk, in MiB. The gateway documents no request size limit, so chunks stay small. |
+| `TRANSCRIPTION_PROVIDER_OPTIONS` | none | A JSON object sent verbatim as the request's `providerOptions`, for example `{"azure":{"timestamps":"word","diarization":{"enabled":true}}}` for `microsoft/mai-transcribe-2`. A value that is not a JSON object fails at startup. |
+| `GROQ_API_KEY`, `GROQ_BASE_URL`, `TRANSCRIPTION_MAX_UPLOAD_MB` | none, `https://api.groq.com/openai/v1`, `25` | Used only when the provider is `groq`, which keeps the previous multipart client. `TRANSCRIPTION_MAX_UPLOAD_MB` is both its direct-upload threshold and its chunk limit. |
 
-Without `GROQ_API_KEY` the binaries start normally, and every `Transcribe` call returns `transcribe.ErrNotConfigured` without contacting Groq.
+Without a key for the selected provider the binaries start normally, and every `Transcribe` call returns `transcribe.ErrNotConfigured` without contacting the service.
 
-Requests send `response_format=verbose_json`, `timestamp_granularities[]=segment` and `temperature=0`; the language is auto-detected.
+The REST response is `{text, segments, language, durationInSeconds, warnings, providerMetadata}`, where each segment is `{text, startSecond, endSecond}`. Segments carry no speaker, so speaker data is read from `providerMetadata`:
+
+- `elevenlabs.words` (`text`, `type` of `word`, `spacing` or `audio_event`, `start`, `end`, `speaker_id`). When `segments` is empty, segments are built from the words: a new segment starts on a speaker change, a pause of 1.5 s or more, after a word ending in `.`, `?` or `!`, or when a segment would pass 30 s. When `segments` is present, each takes the speaker of the word at its midpoint.
+- `azure.phrases` (`text`, `offsetMilliseconds`, `durationMilliseconds`, `speaker`). Phrases become the segments, since they carry the speaker.
+
+Models that return neither get segments from `segments`, or none (the `Text` is still set), and no speakers. The request and response shapes follow the docs and the `@ai-sdk/gateway` source; the committed tests run only against `httptest`.
+
+### Speakers
+
+`Segment.Speaker` is empty when the model gives no speaker. Otherwise it is `c<chunk>/<model id>`, such as `c0/speaker_0`. Models assign speaker IDs independently for every upload, so `speaker_0` in one chunk is not necessarily the same person as `speaker_0` in the next. The chunk prefix makes the IDs unique across the whole transcript and never claims that two chunks share a speaker; identifying the same person across chunks is left to a later step (for example the LLM pass, using the text). A file sent in one request is chunk 0.
 
 ### Chunking
 
-A file at or under `TRANSCRIPTION_MAX_UPLOAD_MB` is uploaded as is. A larger file is split with `ffprobe` and `ffmpeg`, which must be on `PATH` (the worker image does not have them yet; CIV-34 adds ffmpeg). Chunks are 10 minutes long and overlap by 5 seconds, so each starts 9 minutes 55 seconds after the previous one. Each chunk is re-encoded as 16 kHz mono 32 kbps MP3 (about 2.4 MB), which is the rate Groq downsamples to anyway, so the upload limit is never a concern for a chunk. A chunk that still exceeds the limit fails with `transcribe.ErrChunkTooLarge`.
+The gateway path always re-encodes through `ffprobe` and `ffmpeg` (which must be on `PATH`; the worker image does not have them yet, CIV-34 adds ffmpeg), unless the file is an `.mp3` at or under `TRANSCRIPTION_DIRECT_UPLOAD_MB`. Chunks are 10 minutes long and overlap by 5 seconds, so each starts 9 minutes 55 seconds after the previous one. Each chunk is re-encoded as 16 kHz mono 32 kbps MP3 (about 2.4 MB, about 3.2 MB as base64). A chunk over `TRANSCRIPTION_MAX_CHUNK_MB` fails with `transcribe.ErrChunkTooLarge`. The `groq` provider uploads a file at or under `TRANSCRIPTION_MAX_UPLOAD_MB` as is and chunks larger ones.
 
 Overlap means a sentence cut by a boundary is heard whole by one of the two chunks. Each chunk transcribes in order and its segment times are shifted by the chunk's offset. To keep overlapped speech from appearing twice, the boundary between two chunks is the middle of their overlap, and a segment is kept only by the chunk whose side of the boundary holds the segment's midpoint. The stitched `Text` joins the kept segments, and `Duration` is the `ffprobe` duration of the whole file. Chunks are extracted and uploaded one at a time, and the temporary directory holding them is removed on every return path, including errors and a canceled context.
 
 ### Errors
 
-`Transcribe` does not retry; River retries the job, but a retry restarts the whole file. `transcribe.IsRetryable(err)` is true for network failures, the `TRANSCRIPTION_TIMEOUT` limit, a canceled context, 408, 429 (with `RetryAfter` from the `Retry-After` header when present), 5xx, and a 200 response that cannot be decoded. These are `*transcribe.Error` values. Everything else is permanent and a worker should wrap it in `river.JobCancel`: other 4xx statuses (including 413), `ErrNotConfigured`, `ErrChunkTooLarge`, `ErrResponseTooLarge` (a reply over 32 MiB), a missing audio file, and `ffmpeg` or `ffprobe` failures such as unreadable audio or a binary that is not installed.
+`Transcribe` does not retry; River retries the job, but a retry restarts the whole file. `transcribe.IsRetryable(err)` is true for network failures, the `TRANSCRIPTION_TIMEOUT` limit, a canceled context, 408, 429 (with `RetryAfter` from the `Retry-After` header when present), 5xx, 402 on the gateway (as in `internal/llm`; the balance can be topped up), and a 200 response that cannot be decoded. These are `*transcribe.Error` values. Everything else is permanent and a worker should wrap it in `river.JobCancel`: other 4xx statuses (including 413), `ErrNotConfigured`, `ErrInvalidProviderOptions`, `ErrChunkTooLarge`, `ErrResponseTooLarge` (a reply over 32 MiB), a missing audio file, and `ffmpeg` or `ffprobe` failures such as unreadable audio or a binary that is not installed.
 
 ### Tests
 
-Tests never call Groq; the client's own tests run against `httptest` servers and a fake `Splitter`. One test runs real `ffmpeg` on a generated tone and skips when `ffmpeg` or `ffprobe` is not installed. `internal/transcribe/transcribetest` provides `transcribetest.Fake`, a `transcribe.Client` for other packages' tests (`Returning(transcript)`, `Failing(err)`, or a `Respond` function; `Calls()` returns the paths received), and `transcribetest.FakeSplitter`.
+Tests never call the gateway or Groq; the client's own tests run against `httptest` servers and a fake `Splitter`. One test runs real `ffmpeg` on a generated tone and skips when `ffmpeg` or `ffprobe` is not installed. `internal/transcribe/transcribetest` provides `transcribetest.Fake`, a `transcribe.Client` for other packages' tests (`Returning(transcript)`, `Failing(err)`, or a `Respond` function; `Calls()` returns the paths received), and `transcribetest.FakeSplitter`.
 
 ## Migrations
 

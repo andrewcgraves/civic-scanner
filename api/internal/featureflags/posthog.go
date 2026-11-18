@@ -18,12 +18,8 @@ const serverDistinctID = "civic-scanner-server"
 type posthogProvider struct {
 	openfeature.NoopProvider
 	client posthog.Client
+	cache  *flagCache
 	logger *slog.Logger
-}
-
-type flagResult struct {
-	result *posthog.FeatureFlagResult
-	err    error
 }
 
 func newPostHogProvider(cfg config.FeatureFlags, logger *slog.Logger) (*posthogProvider, error) {
@@ -39,7 +35,16 @@ func newPostHogProvider(cfg config.FeatureFlags, logger *slog.Logger) (*posthogP
 	if err != nil {
 		return nil, err
 	}
-	return &posthogProvider{client: client, logger: logger}, nil
+	p := &posthogProvider{client: client, logger: logger}
+	p.cache = newFlagCache(cfg.PostHogCacheTTL, p.fetchAll, logger)
+	return p, nil
+}
+
+func (p *posthogProvider) fetchAll(distinctID string) (flagValues, error) {
+	return p.client.GetAllFlags(posthog.FeatureFlagPayloadNoKey{
+		DistinctId:            distinctID,
+		SendFeatureFlagEvents: posthog.Ptr(false),
+	})
 }
 
 func validateHost(host string) error {
@@ -75,38 +80,26 @@ func (p *posthogProvider) BooleanEvaluation(ctx context.Context, flag string, de
 	if distinctID == "" {
 		distinctID = serverDistinctID
 	}
-	result, err := p.evaluate(ctx, flag, distinctID)
-	switch {
-	case errors.Is(err, posthog.ErrFlagNotFound):
-		return unresolved(defaultValue, openfeature.NewFlagNotFoundResolutionError(flag))
-	case err != nil:
-		p.logger.WarnContext(ctx, "feature flag evaluation failed", "flag", flag, "error", err)
+	values, err := p.cache.values(ctx, distinctID)
+	if err != nil {
+		if !errors.Is(err, errRefreshFailed) {
+			p.logger.WarnContext(ctx, "feature flag evaluation failed", "flag", flag, "error", err)
+		}
 		return unresolved(defaultValue, openfeature.NewGeneralResolutionError(err.Error()))
-	case result.Variant != nil:
-		p.logger.WarnContext(ctx, "multivariate feature flag evaluated as boolean", "flag", flag, "variant", *result.Variant)
+	}
+	switch value := values[flag].(type) {
+	case nil:
+		return unresolved(defaultValue, openfeature.NewFlagNotFoundResolutionError(flag))
+	case bool:
+		return openfeature.BoolResolutionDetail{
+			Value:                    value,
+			ProviderResolutionDetail: openfeature.ProviderResolutionDetail{Reason: openfeature.TargetingMatchReason},
+		}
+	case string:
+		p.logger.WarnContext(ctx, "multivariate feature flag evaluated as boolean", "flag", flag, "variant", value)
 		return unresolved(defaultValue, openfeature.NewTypeMismatchResolutionError(flag+" is multivariate"))
-	}
-	return openfeature.BoolResolutionDetail{
-		Value:                    result.Enabled,
-		ProviderResolutionDetail: openfeature.ProviderResolutionDetail{Reason: openfeature.TargetingMatchReason},
-	}
-}
-
-func (p *posthogProvider) evaluate(ctx context.Context, flag, distinctID string) (*posthog.FeatureFlagResult, error) {
-	done := make(chan flagResult, 1)
-	go func() {
-		result, err := p.client.GetFeatureFlagResult(posthog.FeatureFlagPayload{
-			Key:                   flag,
-			DistinctId:            distinctID,
-			SendFeatureFlagEvents: posthog.Ptr(false),
-		})
-		done <- flagResult{result: result, err: err}
-	}()
-	select {
-	case r := <-done:
-		return r.result, r.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	default:
+		return unresolved(defaultValue, openfeature.NewTypeMismatchResolutionError(flag+" is not boolean"))
 	}
 }
 
