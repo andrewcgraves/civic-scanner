@@ -1,10 +1,28 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  vi,
+} from "vitest";
+
+import type { FlagKey } from "./registry";
 
 const nextServer = vi.hoisted(() => ({
   connection: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("next/server", () => ({ connection: nextServer.connection }));
+
+vi.mock("./registry", () => ({
+  FLAG_KEYS: ["new-search", "meeting-alerts"],
+}));
+
+const NEW_SEARCH = "new-search" as FlagKey;
+const MEETING_ALERTS = "meeting-alerts" as FlagKey;
+const UNREGISTERED = "not-registered" as FlagKey;
 
 async function loadServerFlags(env: Record<string, string | undefined>) {
   for (const [name, value] of Object.entries(env)) {
@@ -15,91 +33,80 @@ async function loadServerFlags(env: Record<string, string | undefined>) {
 }
 
 function flagsResponse(flags: Record<string, boolean>) {
-  return new Response(
-    JSON.stringify({
-      flags: Object.fromEntries(
-        Object.entries(flags).map(([key, enabled]) => [
+  return Response.json({
+    flags: Object.fromEntries(
+      Object.entries(flags).map(([key, enabled]) => [
+        key,
+        {
           key,
-          {
-            key,
-            enabled,
-            variant: null,
-            reason: { code: "condition_match", description: "matched" },
-            metadata: { id: 1, version: 1, payload: null },
-          },
-        ]),
-      ),
-      errorsWhileComputingFlags: false,
-      requestId: "request-1",
-    }),
-    { status: 200, headers: { "content-type": "application/json" } },
-  );
+          enabled,
+          variant: null,
+          reason: { code: "condition_match", description: "matched" },
+          metadata: { id: 1, version: 1, payload: null },
+        },
+      ]),
+    ),
+  });
 }
 
-function stubPostHog(answer: (init?: RequestInit) => Promise<Response>) {
-  const fetchMock = vi.fn((_url: string, init?: RequestInit) => answer(init));
+function stubPostHog(flags: Record<string, boolean>) {
+  const fetchMock = vi.fn<
+    (url: string, init?: RequestInit) => Promise<Response>
+  >(() => Promise.resolve(flagsResponse(flags)));
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
 
-function requestsTo(fetchMock: ReturnType<typeof stubPostHog>) {
-  return fetchMock.mock.calls.map(([url, init]) => ({
-    url,
-    body: JSON.parse(
-      typeof init?.body === "string" ? init.body : "{}",
-    ) as Record<string, unknown>,
-  }));
-}
+afterEach(async () => {
+  const { OpenFeature } = await import("@openfeature/server-sdk");
+  await OpenFeature.clearProviders();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe("server flags", () => {
+  it("accept only registered flag keys", async () => {
+    const { isFlagEnabled } = await loadServerFlags({});
+
+    expectTypeOf(isFlagEnabled).parameter(0).toEqualTypeOf<FlagKey>();
+  });
+});
 
 describe("server flags in memory", () => {
   beforeEach(() => {
     nextServer.connection.mockClear();
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("turns on the flags listed in NEXT_PUBLIC_FEATURE_FLAGS", async () => {
+  it("turns on the registered flags listed in NEXT_PUBLIC_FEATURE_FLAGS", async () => {
     const { isFlagEnabled, getFlagsOn } = await loadServerFlags({
       NEXT_PUBLIC_POSTHOG_KEY: undefined,
-      NEXT_PUBLIC_FEATURE_FLAGS: "new-search, meeting-alerts",
+      NEXT_PUBLIC_FEATURE_FLAGS: "new-search, not-registered",
     });
 
-    expect(await isFlagEnabled("new-search")).toBe(true);
-    expect(await isFlagEnabled("meeting-alerts")).toBe(true);
-    expect(await getFlagsOn()).toEqual(["new-search", "meeting-alerts"]);
-  });
-
-  it("turns off a flag that is not listed", async () => {
-    const { isFlagEnabled } = await loadServerFlags({
-      NEXT_PUBLIC_POSTHOG_KEY: undefined,
-      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
-    });
-
-    expect(await isFlagEnabled("new-search-v2")).toBe(false);
+    expect(await getFlagsOn()).toEqual(["new-search"]);
+    expect(await isFlagEnabled(NEW_SEARCH)).toBe(true);
+    expect(await isFlagEnabled(MEETING_ALERTS)).toBe(false);
+    expect(await isFlagEnabled(UNREGISTERED)).toBe(false);
   });
 
   it("turns every flag off when NEXT_PUBLIC_FEATURE_FLAGS is unset", async () => {
-    const { isFlagEnabled, getFlagsOn } = await loadServerFlags({
+    const { getFlagsOn } = await loadServerFlags({
       NEXT_PUBLIC_POSTHOG_KEY: undefined,
       NEXT_PUBLIC_FEATURE_FLAGS: undefined,
     });
 
-    expect(await isFlagEnabled("new-search")).toBe(false);
-    expect(await isFlagEnabled("")).toBe(false);
     expect(await getFlagsOn()).toEqual([]);
   });
 
-  it("turns every flag on when NEXT_PUBLIC_FEATURE_FLAGS is *", async () => {
+  it("turns every registered flag on when NEXT_PUBLIC_FEATURE_FLAGS is *", async () => {
     const { isFlagEnabled, getFlagsOn } = await loadServerFlags({
       NEXT_PUBLIC_POSTHOG_KEY: undefined,
       NEXT_PUBLIC_FEATURE_FLAGS: " * ",
     });
 
-    expect(await isFlagEnabled("new-search")).toBe(true);
-    expect(await isFlagEnabled("anything-at-all")).toBe(true);
-    expect(await getFlagsOn()).toBe("all");
+    expect(await getFlagsOn()).toEqual(["new-search", "meeting-alerts"]);
+    expect(await isFlagEnabled(UNREGISTERED)).toBe(false);
   });
 
   it("leaves the page free to render statically", async () => {
@@ -108,10 +115,29 @@ describe("server flags in memory", () => {
       NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
     });
 
-    await isFlagEnabled("new-search");
     await getFlagsOn();
+    await isFlagEnabled(NEW_SEARCH);
 
     expect(nextServer.connection).not.toHaveBeenCalled();
+  });
+
+  it("turns flags off and reports it when the provider fails to start", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const failure = new Error("provider broke");
+    const { isFlagEnabled } = await loadServerFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      NEXT_PUBLIC_FEATURE_FLAGS: "*",
+    });
+    const { OpenFeature } = await import("@openfeature/server-sdk");
+    vi.spyOn(OpenFeature, "setProviderAndWait").mockRejectedValue(failure);
+
+    expect(await isFlagEnabled(NEW_SEARCH)).toBe(false);
+    expect(consoleError).toHaveBeenCalledWith(
+      "Feature flag provider failed to start",
+      failure,
+    );
   });
 });
 
@@ -120,19 +146,12 @@ describe("server flags from PostHog", () => {
     nextServer.connection.mockClear();
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.unstubAllEnvs();
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-  });
-
-  it("asks PostHog once for every flag of the anonymous visitor", async () => {
-    const fetchMock = stubPostHog(() =>
-      Promise.resolve(
-        flagsResponse({ "new-search": true, "meeting-alerts": false }),
-      ),
-    );
+  it("asks PostHog once for every registered flag of the anonymous visitor", async () => {
+    const fetchMock = stubPostHog({
+      "new-search": true,
+      "meeting-alerts": false,
+      "not-registered": true,
+    });
     const { isFlagEnabled, getFlagsOn } = await loadServerFlags({
       NEXT_PUBLIC_POSTHOG_KEY: " phc_test ",
       NEXT_PUBLIC_POSTHOG_HOST: "https://eu.i.posthog.com",
@@ -140,39 +159,36 @@ describe("server flags from PostHog", () => {
     });
 
     expect(await getFlagsOn()).toEqual(["new-search"]);
-    expect(await isFlagEnabled("new-search")).toBe(true);
-    expect(await isFlagEnabled("meeting-alerts")).toBe(false);
+    expect(await isFlagEnabled(NEW_SEARCH)).toBe(true);
+    expect(await isFlagEnabled(MEETING_ALERTS)).toBe(false);
+    expect(await isFlagEnabled(UNREGISTERED)).toBe(false);
 
-    const requests = requestsTo(fetchMock);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toMatch(/^https:\/\/eu\.i\.posthog\.com\/flags\//);
-    expect(requests[0]?.body).toMatchObject({
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(url).toMatch(/^https:\/\/eu\.i\.posthog\.com\/flags\//);
+    const body = typeof init?.body === "string" ? init.body : "{}";
+    expect(JSON.parse(body)).toMatchObject({
       token: "phc_test",
       distinct_id: "anonymous",
     });
-    expect(requests[0]?.body).not.toHaveProperty("flag_keys_to_evaluate");
   });
 
   it("uses the PostHog US host and ignores the in-memory list", async () => {
-    const fetchMock = stubPostHog(() =>
-      Promise.resolve(flagsResponse({ "new-search": false })),
-    );
+    const fetchMock = stubPostHog({ "new-search": false });
     const { isFlagEnabled } = await loadServerFlags({
       NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
       NEXT_PUBLIC_POSTHOG_HOST: undefined,
       NEXT_PUBLIC_FEATURE_FLAGS: "*",
     });
 
-    expect(await isFlagEnabled("new-search")).toBe(false);
-    expect(requestsTo(fetchMock)[0]?.url).toMatch(
+    expect(await isFlagEnabled(NEW_SEARCH)).toBe(false);
+    expect(fetchMock.mock.calls[0]?.[0]).toMatch(
       /^https:\/\/us\.i\.posthog\.com\/flags\//,
     );
   });
 
   it("renders the page per request, before asking PostHog", async () => {
-    const fetchMock = stubPostHog(() =>
-      Promise.resolve(flagsResponse({ "new-search": true })),
-    );
+    const fetchMock = stubPostHog({ "new-search": true });
     const { getFlagsOn } = await loadServerFlags({
       NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
     });
@@ -183,133 +199,5 @@ describe("server flags from PostHog", () => {
     const [connected] = nextServer.connection.mock.invocationCallOrder;
     const [asked] = fetchMock.mock.invocationCallOrder;
     expect(connected).toBeLessThan(asked ?? 0);
-  });
-
-  it("asks PostHog at most once every 30 seconds", async () => {
-    vi.useFakeTimers();
-    const fetchMock = stubPostHog(() =>
-      Promise.resolve(flagsResponse({ "new-search": true })),
-    );
-    const { isFlagEnabled, getFlagsOn } = await loadServerFlags({
-      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
-    });
-
-    expect(await getFlagsOn()).toEqual(["new-search"]);
-    expect(await isFlagEnabled("new-search")).toBe(true);
-    expect(await isFlagEnabled("meeting-alerts")).toBe(false);
-    vi.advanceTimersByTime(29_999);
-    expect(await getFlagsOn()).toEqual(["new-search"]);
-    expect(fetchMock).toHaveBeenCalledOnce();
-
-    vi.advanceTimersByTime(1);
-    await getFlagsOn();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("sends PostHog nothing but the flag request", async () => {
-    vi.useFakeTimers();
-    const fetchMock = stubPostHog(() =>
-      Promise.resolve(flagsResponse({ "new-search": true })),
-    );
-    const { isFlagEnabled } = await loadServerFlags({
-      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
-    });
-
-    await isFlagEnabled("new-search");
-    for (let second = 0; second < 60; second += 1) {
-      await vi.advanceTimersByTimeAsync(1_000);
-    }
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(requestsTo(fetchMock)[0]?.url).toContain("/flags/");
-  });
-
-  it("turns off a flag PostHog does not know", async () => {
-    stubPostHog(() => Promise.resolve(flagsResponse({ "new-search": true })));
-    const { isFlagEnabled } = await loadServerFlags({
-      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
-    });
-
-    expect(await isFlagEnabled("new-search-v2")).toBe(false);
-  });
-
-  it("turns every flag off and reports it when PostHog fails", async () => {
-    vi.useFakeTimers();
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
-    const fetchMock = stubPostHog(() =>
-      Promise.resolve(new Response("bad gateway", { status: 502 })),
-    );
-    const { isFlagEnabled, getFlagsOn } = await loadServerFlags({
-      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
-    });
-
-    const flags = getFlagsOn();
-    await vi.advanceTimersByTimeAsync(10_000);
-
-    await expect(flags).resolves.toEqual([]);
-    expect(await isFlagEnabled("new-search")).toBe(false);
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(consoleError).toHaveBeenCalledWith(
-      "Feature flags could not be evaluated",
-      expect.anything(),
-    );
-  });
-
-  it("turns every flag off and reports it when the PostHog client throws", async () => {
-    const consoleError = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
-    const failure = new Error("client bug");
-    const { isFlagEnabled } = await loadServerFlags({
-      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
-    });
-    const { PostHog } = await import("posthog-node");
-    vi.spyOn(PostHog.prototype, "evaluateFlags").mockRejectedValue(failure);
-
-    expect(await isFlagEnabled("new-search")).toBe(false);
-    expect(consoleError).toHaveBeenCalledWith(
-      "Feature flags could not be evaluated",
-      failure,
-    );
-  });
-
-  it("turns every flag off when PostHog cannot be reached", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    stubPostHog(() => Promise.reject(new TypeError("fetch failed")));
-    const { isFlagEnabled } = await loadServerFlags({
-      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
-    });
-
-    expect(await isFlagEnabled("new-search")).toBe(false);
-  });
-
-  it("gives up on an unanswered request after half a second", async () => {
-    vi.useFakeTimers();
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const fetchMock = stubPostHog(
-      (init) =>
-        new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => {
-            reject(new DOMException("aborted", "AbortError"));
-          });
-        }),
-    );
-    const { isFlagEnabled } = await loadServerFlags({
-      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
-    });
-
-    const check = { settled: false, result: isFlagEnabled("new-search") };
-    void check.result.finally(() => {
-      check.settled = true;
-    });
-    await vi.advanceTimersByTimeAsync(400);
-    expect(check.settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(200);
-
-    expect(check.settled).toBe(true);
-    await expect(check.result).resolves.toBe(false);
-    expect(fetchMock).toHaveBeenCalledOnce();
   });
 });

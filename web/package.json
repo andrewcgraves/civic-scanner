@@ -27,6 +27,8 @@
     ]
   },
   "dependencies": {
+    "@openfeature/core": "^1.12.0",
+    "@openfeature/server-sdk": "^1.23.0",
     "next": "^16.4.6",
     "openapi-fetch": "^0.17.0",
     "posthog-node": "^6.0.2",

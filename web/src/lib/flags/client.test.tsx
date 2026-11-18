@@ -1,16 +1,18 @@
 import { act } from "@testing-library/react";
 import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
-import type { FlagsOn } from "./config";
 import { FlagsProvider, useFlag } from "./client";
+import type { FlagKey } from "./registry";
 
-function Gated({ flag }: { flag: string }) {
+const REGISTERED: FlagKey = "test-only-flag";
+
+function Gated({ flag }: { flag: FlagKey }) {
   return <p>{useFlag(flag) ? "on" : "off"}</p>;
 }
 
-function page(on: FlagsOn, flag: string) {
+function page(on: readonly FlagKey[], flag: FlagKey) {
   return (
     <FlagsProvider on={on}>
       <Gated flag={flag} />
@@ -18,7 +20,7 @@ function page(on: FlagsOn, flag: string) {
   );
 }
 
-async function serverRenderThenHydrate(on: FlagsOn, flag: string) {
+async function serverRenderThenHydrate(on: readonly FlagKey[], flag: FlagKey) {
   const container = document.createElement("div");
   container.innerHTML = renderToString(page(on, flag));
   const serverHtml = container.innerHTML;
@@ -43,11 +45,13 @@ async function serverRenderThenHydrate(on: FlagsOn, flag: string) {
 }
 
 describe("useFlag", () => {
+  it("accepts only registered flag keys", () => {
+    expectTypeOf(useFlag).parameter(0).toEqualTypeOf<FlagKey>();
+    expectTypeOf<"not-registered">().not.toExtend<FlagKey>();
+  });
+
   it("is on in the server HTML and after hydration for a flag the server turned on", async () => {
-    const result = await serverRenderThenHydrate(
-      ["meeting-alerts", "new-search"],
-      "new-search",
-    );
+    const result = await serverRenderThenHydrate([REGISTERED], REGISTERED);
 
     expect(result.serverHtml).toBe("<p>on</p>");
     expect(result.hydratedHtml).toBe("<p>on</p>");
@@ -56,22 +60,19 @@ describe("useFlag", () => {
   });
 
   it("is off for a flag the server did not turn on", async () => {
-    const result = await serverRenderThenHydrate(
-      ["new-search"],
-      "new-search-v2",
-    );
+    const result = await serverRenderThenHydrate([], REGISTERED);
 
     expect(result.serverHtml).toBe("<p>off</p>");
     expect(result.hydratedHtml).toBe("<p>off</p>");
   });
 
-  it("is on for any flag when the server turned every flag on", async () => {
-    const result = await serverRenderThenHydrate("all", "anything-at-all");
+  it("is off for a flag that is not registered", () => {
+    const unregistered = "not-registered" as FlagKey;
 
-    expect(result.serverHtml).toBe("<p>on</p>");
+    expect(renderToString(page([REGISTERED], unregistered))).toBe("<p>off</p>");
   });
 
   it("is off outside a FlagsProvider", () => {
-    expect(renderToString(<Gated flag="new-search" />)).toBe("<p>off</p>");
+    expect(renderToString(<Gated flag={REGISTERED} />)).toBe("<p>off</p>");
   });
 });
