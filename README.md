@@ -272,7 +272,7 @@ Tests never call a live site or Firecrawl. `internal/fetch/fetchtest` provides `
 
 ## Ingestion
 
-The worker checks every live agency once a day for board meetings and records them. This is the first link of the pipeline (check agency, process agenda, download audio, transcribe, summarize). Two River jobs in `internal/jobs` do it, behind the `ingest-check-agencies` feature flag.
+The worker checks every live agency once a day for board meetings, records them, and stores the text of each published agenda. These are the first links of the pipeline (check agency, process agenda, download audio, transcribe, summarize). Three River jobs in `internal/jobs` do it, behind the `ingest-check-agencies` feature flag.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -289,14 +289,31 @@ The worker checks every live agency once a day for board meetings and records th
 2. It looks up the agency's source adapter by slug. An agency with no adapter is skipped: an info log, and the job completes. So is an agency that is no longer live.
 3. It asks the adapter for meetings in the window from 30 days before now to 90 days after. The look-back catches recordings, minutes and status changes posted after a meeting; the look-ahead covers the meeting calendars agencies publish for the coming quarter.
 4. It checks the result with `sources.Validate`. A result that breaks the adapter contract cancels the job and writes nothing.
-5. In one transaction for the agency, it upserts each meeting with `store.UpsertMeetingTx` (unique on agency and source id, so a rerun updates rows instead of duplicating them; a changed title or start time updates the row) and hands each one to the follow-up hook. Any error rolls back the whole agency.
+5. In one transaction for the agency, it upserts each meeting with `store.UpsertMeetingTx` (unique on agency and source id, so a rerun updates rows instead of duplicating them; a changed title or start time updates the row) and hands each one to the follow-up hook, which inserts a `process_agenda` job for every meeting with an agenda URL. Any error rolls back the whole agency, including the jobs it inserted.
 
-Errors:
+`process_agenda` downloads one meeting's agenda and stores its text as an agenda version (see [Agendas](#agendas)). Its args are the meeting id and the agenda URL. It is unique by args, queue and UTC day, like `check_agency`, so a meeting's agenda is read at most once a day per URL. Every daily check enqueues it again for every meeting in the window that has an agenda, because an agency can replace an agenda without changing its URL; an unchanged agenda stores nothing. The job has a 5 minute timeout and at most 5 attempts.
+
+Two things are deliberately simple for now. Agenda processing has no flag of its own: it shares `ingest-check-agencies`, so turning that off stops both the checks and the agenda downloads. And every agenda in the 120-day window is downloaded again every day, with no conditional GET (`If-None-Match`, `If-Modified-Since`) and no per-host rate limit; for the agencies registered today that is a handful of documents per agency per day.
+
+`process_agenda` does this, in order:
+
+1. With the flag off, it completes without doing anything.
+2. It fetches the agenda URL through `jobs.Config.Fetcher`, with the default `FETCH_MAX_BYTES` cap. The worker passes plain HTTP with the Firecrawl fallback for bot-blocking statuses, the same composition as `fetch.New(cfg.Fetch)` that the adapters use. Without a fetcher the job is cancelled with `jobs.ErrNoFetcher`.
+3. It extracts and normalizes the text through `jobs.Config.Extractor` (see [Agenda text](#agenda-text)). The URL tells the extractor what to expect: a URL whose path ends in `.pdf`, in any case, must not come back as an HTML page.
+4. If the response was a bot check or error page (`extract.ErrBlocked`: HTML for a `.pdf` URL, or a page with a known interstitial marker), it fetches the URL again through `jobs.Config.Fallback` (the worker passes the Firecrawl fetcher, which returns markdown) and extracts that. Without Firecrawl configured, or when Firecrawl gets a bot check too, nothing is stored and the job fails so that River retries it.
+5. In one transaction, it adds the version with `store.AddAgendaVersionTx`, hashing the normalized text with `store.HashContent`. When the text equals the latest version's, nothing is stored, no event is recorded, and the job completes. When a version is created, the store records the `agenda_published` (version 1) or `agenda_changed` event in that transaction (see [Meeting events](#meeting-events)), and the job then calls the agenda follow-up hook in the same transaction; an error there rolls back the version and its event.
+
+Errors of `check_agency`:
 
 - Retryable: `sources.Retryable(err)`, which is `fetch.IsRetryable` (network failures, timeouts, 408, 429, 5xx) plus a canceled context or exceeded deadline, including the job's own timeout. The job returns the error and River retries it with backoff. Database and follow-up errors are retried the same way.
 - Permanent: everything else, such as a 404 or other 4xx, `fetch.ErrTooLarge`, markup the adapter cannot parse, or `sources.ErrInvalidMeeting`. The job is cancelled with `river.JobCancel`; the next day's run tries again.
 
 One agency's failure never affects another: each agency is its own job and its own transaction.
+
+Errors of `process_agenda`, classified the same way:
+
+- Retryable: `sources.Retryable(err)` for the fetch and for the extraction (a canceled context or the job's own timeout while the PDF extractor runs), `extract.ErrBlocked`, and database and follow-up errors. River retries with backoff; a page that is still blocked after 5 attempts is discarded and the next day's check enqueues it again.
+- Permanent, cancelled with `river.JobCancel`: other fetch errors (404 and other 4xx, `fetch.ErrTooLarge`), `extract.ErrUnsupported`, `extract.ErrMalformed`, `extract.ErrNoText`, `extract.ErrLimitExceeded`, `extract.ErrUnavailable` (the PDF extractor binary is missing), and a meeting that no longer exists (`store.ErrNotFound`). The next day's check enqueues the agenda again.
 
 Meeting status: `held` is final. Once a meeting is `held`, the upsert keeps it `held` whatever a source reports later, so a source that misreports a past meeting as `scheduled` cannot undo it. Other changes follow the source: `scheduled` to `cancelled`, `cancelled` back to `scheduled` (reinstated), and either to `held`. The rule lives in the upsert's SQL, so every caller gets it.
 
@@ -324,7 +341,7 @@ type Meeting struct {
 
 `Status` is `sources.StatusScheduled`, `StatusHeld` or `StatusCancelled`, the values the `meetings` table accepts.
 
-Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock, Logger}`: `fetch.New(cfg.Fetch)`, `sources.SystemClock{}` and the worker's logger. `Deps.Log()` returns the logger, or one that discards everything when none is set, as in most tests. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` and `octa` (the Legistar adapter below) and `metrolink` (the Granicus adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
+Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock, Logger}`: plain HTTP with the Firecrawl fallback (the composition `fetch.New(cfg.Fetch)` returns; the worker builds it from its parts so it can also give the Firecrawl fetcher to `process_agenda`), `sources.SystemClock{}` and the worker's logger. `Deps.Log()` returns the logger, or one that discards everything when none is set, as in most tests. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` and `octa` (the Legistar adapter below) and `metrolink` (the Granicus adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
 
 An adapter must guarantee:
 
@@ -456,7 +473,7 @@ Other cases (corrections, cancellations, several items for one meeting across su
 
 ### Follow-up jobs
 
-The next stories enqueue `process-agenda` when a meeting has an agenda URL and `download-audio` when it has a recording URL, in the same transaction as the upsert. The seam is `jobs.FollowUp`:
+`check_agency` enqueues `process_agenda` when a meeting has an agenda URL, in the same transaction as the upsert; the recording story will enqueue `download-audio` when it has a recording URL. The seam is `jobs.FollowUp`:
 
 ```go
 type FollowUp interface {
@@ -471,11 +488,21 @@ type UpsertedMeeting struct {
 }
 ```
 
-`check_agency` calls it for every upserted meeting, inside the upsert transaction; an error rolls back the agency's whole check. Today `jobs.NoFollowUp` does nothing. An implementation inserts its jobs with `river.ClientFromContext[pgx.Tx](ctx).InsertTx(ctx, tx, ...)` and is set through `jobs.Config.FollowUp`.
+`check_agency` calls it for every upserted meeting, inside the upsert transaction; an error rolls back the agency's whole check. The default, `jobs.EnqueueProcessAgenda{Queue}` on the client's queue, inserts `process_agenda` with `river.ClientFromContextSafely[pgx.Tx](ctx)` and `InsertTx`, and does nothing for a meeting without an agenda URL. `jobs.NoFollowUp` does nothing. Another implementation is set through `jobs.Config.FollowUp`; one that also wants agendas processed calls `EnqueueProcessAgenda` itself.
+
+`process_agenda` has the same kind of seam for new agenda versions, `jobs.AgendaFollowUp`:
+
+```go
+type AgendaFollowUp interface {
+	AgendaVersionAdded(ctx context.Context, tx pgx.Tx, v store.AgendaVersion) error
+}
+```
+
+It is called once for each version that was created, never for an unchanged agenda, inside the transaction that inserted the version, so whatever it writes commits or rolls back with the version. It is for follow-up jobs: the summary story (CIV-39) and the change story (CIV-40) enqueue their jobs here with `InsertTx`. It must not record meeting events: `AddAgendaVersionTx` already records `agenda_published` or `agenda_changed` in the same transaction, so an event written here would be a duplicate. Today the default, `jobs.NoAgendaFollowUp`, does nothing; another implementation is set through `jobs.Config.AgendaFollowUp`.
 
 ### Tests
 
-The unit tests use the fake adapter and fake clock. The integration tests run a real River client against Postgres. Each test uses its own random queue (`jobs.Config.Queue`) and turns off the periodic job (`jobs.Config.NoPeriodicJobs`), so tests in other packages, which share the database, never work its jobs. A test that runs a check twice schedules the runs on different days, since a second check the same day is a duplicate.
+The unit tests use the fake adapter, fake fetcher and fake clock. The integration tests run a real River client against Postgres; the harness gives every client a fetcher that serves a plain-text agenda and an in-process PDF reader (`extract.InProcess`) unless the test sets its own, so no test reaches a real agenda host. The PDF agenda test runs the real `cmd/extract` binary, built with `testbin.BuildPackage`. Each test uses its own random queue (`jobs.Config.Queue`) and turns off the periodic job (`jobs.Config.NoPeriodicJobs`), so tests in other packages, which share the database, never work its jobs. A test that runs a check twice schedules the runs on different days, since a second check the same day is a duplicate.
 
 ## Agendas
 
@@ -497,6 +524,40 @@ The `...Tx` variants run in the caller's transaction, so a job can add a version
 **Concurrency.** Two jobs may add a version for the same meeting at once. `AddAgendaVersion` locks the meeting row with `SELECT ... FOR NO KEY UPDATE` before it reads the latest version, then inserts. Adds for one meeting run one at a time; adds for different meetings never wait for each other. `FOR NO KEY UPDATE` does not block inserts elsewhere that only reference the meeting by foreign key. The lock is held until the transaction ends, which for the `...Tx` variants is when the caller commits or rolls back, so keep that transaction short. It also waits on a concurrent `UpsertMeetingTx` of the same meeting. The `...Tx` variants need the transaction at `READ COMMITTED`, Postgres's default and what `pool.Begin` gives: under `REPEATABLE READ` the waiting transaction would not see the version committed ahead of it, and the unique constraint on `(meeting_id, version)` would reject its insert instead of silently duplicating a number. `TestAddAgendaVersionConcurrentAddsGetDistinctNumbers` runs concurrent adds, through both variants, and checks the numbers are 1 to N with none lost; without the lock it fails with unique violations.
 
 The migration's down half drops the table. `api/migrations/down_integration_test.go` applies every migration in a throwaway schema, rolls back to `00003`, checks the table is gone, and applies it again, without touching the shared tables other tests use.
+
+### Agenda text
+
+`internal/extract` turns a downloaded agenda into text. `extract.Extractor.Text(ctx, extract.Request{ContentType, Body, ExpectPDF})` returns the normalized text, and `extract.Normalize(s)` applies the same normalization to any string. The worker builds it with `extract.NewSubprocess(cfg.Extract)` as its PDF reader.
+
+- **Format.** A body with `%PDF-` in its first 1024 bytes is a PDF whatever its content type, since agency servers often send PDFs as `application/octet-stream`. Otherwise the media type decides: `application/pdf`; `text/html` and `application/xhtml+xml`; `text/plain` and `text/markdown`, taken as text (Firecrawl answers in markdown). A missing or `application/octet-stream` type is sniffed with `http.DetectContentType`. Anything else, such as a Word document or an image, is `extract.ErrUnsupported`.
+- **Bot checks and error pages.** Some hosts answer `200 text/html` with a bot check instead of the document; Imperva's "Pardon Our Interruption" page, served for a `.pdf` URL, extracts to about 600 characters of plausible English. So HTML is `extract.ErrBlocked` when the request expects a PDF, and HTML or text is `extract.ErrBlocked` when its first 256 KiB contain a known marker of Imperva/Incapsula, Cloudflare, Akamai, Sucuri or an F5 rejection page (the list is in `internal/extract/blocked.go`; `testdata/imperva_interstitial.html` is a recorded-style example). Nothing blocked is ever stored.
+- **Plausibility floor.** Text with fewer than 200 non-space characters (`extract.DefaultMinChars`; `Extractor.MinChars` overrides it) is `extract.ErrNoText`. A real agenda, even a cancellation notice with its header, is longer; an empty page, a placeholder or an error message is not.
+- **HTML and text.** Decoded by the charset in the content type, a byte order mark or, for HTML, the page's own `meta` (`golang.org/x/net/html/charset`); text without a declared charset that is not valid UTF-8 is read as Windows-1252, as browsers do. HTML is parsed with `golang.org/x/net/html`. Text in `head`, `script`, `style`, `noscript`, `template`, `svg`, `iframe` and `object` is dropped. Block elements (paragraphs, headings, list items, table rows, `br` and the like) start new lines; table cells in a row are joined with a space. A page nested more than 512 elements deep is `extract.ErrMalformed`.
+- **Normalization.** Invalid UTF-8, U+FFFD replacement characters (fonts without a usable Unicode map produce them), NUL and other control characters, byte order marks, soft hyphens and zero-width spaces are removed (Postgres `text` rejects NUL and invalid UTF-8). Any run of spaces, tabs or Unicode spaces becomes one space, each line is trimmed, and empty lines are dropped. Line breaks are `\n`.
+
+The normalized text is both what is stored as the version's `Text` and what is hashed, so a change only in whitespace, line endings or blank lines is not a new version. The same agenda read once directly and once through Firecrawl's markdown gives different text, so a switch between the two paths stores a new version (and records `agenda_changed`); telling real changes from such noise is CIV-40.
+
+#### PDF extraction in a child process
+
+PDFs are read in pure Go with [`github.com/ledongthuc/pdf`](https://github.com/ledongthuc/pdf), since the worker image is distroless and has no `pdftotext`. That library can loop forever or allocate without bound on a hostile or broken file: a page tree that lists itself in `/Kids`, a `/Count` of two billion, or a deflate bomb of under a megabyte that expands to gigabytes of glyphs. It does this inside its own code, where `recover` and a context cannot reach. So the worker never parses a PDF in its own process.
+
+- **The child.** `cmd/extract` is a separate binary. It reads one PDF on stdin, writes the text on stdout and exits 0, or writes the reason on stderr and exits 10 (malformed), 11 (a limit) or 12 (too little text). The Dockerfile builds every `./cmd/...` binary into `/app`, so it ships as `/app/extract` next to `/app/worker`.
+- **The parent.** `extract.Subprocess` runs it for each PDF with `exec.CommandContext`. It kills the child when `EXTRACT_PDF_TIMEOUT` passes or when the job's context ends, and reads at most `EXTRACT_MAX_TEXT_BYTES` of output, killing the child if it writes more. A child killed for time or output, or exiting 11, is `extract.ErrLimitExceeded`; a crash or an unknown exit code is `extract.ErrMalformed` with the child's stderr (at most 4 KiB). The job's own cancellation comes back as the context error, which is retried.
+- **Memory.** The child polls its own Go runtime memory (`runtime/metrics`: everything mapped, minus what was returned to the OS) every 2 ms and exits 11 once it passes half of `EXTRACT_PDF_MAX_MEMORY`; it also sets the Go soft memory limit to that half so the collector works hard before then. Half, because the library grows slices by doubling, so one allocation can almost double use between two polls; with the trip point at half, peak use stays under the ceiling. Measured on macOS with the defaults: the self-referencing page tree fails in 0.09 s at 11 MB peak RSS, the two-billion `/Count` at once at 11 MB, and a 923 KB deflate bomb (600 MB of content) in 0.16 to 0.33 s at 300 to 380 MB. A real 26-page Berkeley City Council agenda takes 0.25 s at 19 MB.
+- **Limits inside the child.** The child does not trust the page tree: it walks it itself, at most 32 levels deep and at most 4 × pages + 16 nodes, and rejects a tree whose `/Count` is more than the plausible number of pages, which is the smaller of 2000 and one page per 40 bytes of file. It stops at 200,000 glyphs on a page and at `EXTRACT_MAX_TEXT_BYTES` of text, and checks its context between pages. These catch the cheap cases quickly; the timeout and the memory ceiling catch the rest.
+- **Finding the binary.** `EXTRACT_PDF_BINARY` when set; otherwise `extract` in the same directory as the running executable. The worker logs the path at startup and warns if nothing is there; PDF agendas are then cancelled with `extract.ErrUnavailable`. `go run ./cmd/worker` builds the worker into a temporary directory without the extractor, so run the worker locally with `make run-worker`, which builds every binary into `api/bin` and runs `api/bin/worker`, or set `EXTRACT_PDF_BINARY` to a built `extract`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `EXTRACT_PDF_BINARY` | `extract` next to the worker | Path to the `cmd/extract` binary. |
+| `EXTRACT_PDF_TIMEOUT` | `60s` | Wall-clock limit on one PDF extraction, after which the child is killed. Must be positive. |
+| `EXTRACT_PDF_MAX_MEMORY` | `536870912` | Memory ceiling for the child in bytes (512 MiB). The child exits at half of it. Must be positive. |
+| `EXTRACT_MAX_TEXT_BYTES` | `8388608` | Largest text one PDF may produce, in bytes (8 MiB). Must be positive. |
+
+How the text is laid out, and what is not read:
+
+- **Lines.** Glyphs on the same baseline (within half the font size) form a line, and lines run top to bottom. Within a line the glyphs keep the order of the page's content stream; they are not sorted by x position, because the library computes wrong positions for some glyphs, and sorting by them scrambled words on real agendas (on a Berkeley agenda, "To request to speak, use the raise hand function" came out as "To rsuet eqto spkea, use the s re aihd"). A space is inserted where the gap to the previous glyph is wider than 0.15 of the font size, or where the text jumps back more than twice the font size (a new column on the same baseline). When a font gives no usable glyph width, the width is taken as half the font size and the gap must be 0.45 of it. Some words still come out with a stray space where a font's widths are wrong.
+- **Not read.** Text inside form XObjects (content drawn with the `Do` operator), which the library does not follow; scanned pages without a text layer (there is no OCR); and PDF 2.0 files, whose header the library rejects. A document where more than half of the pages give no text is `extract.ErrNoText`, so a mostly empty extraction is never stored as an agenda. Bytes before the `%PDF-` header are skipped.
 
 ## Meeting events
 

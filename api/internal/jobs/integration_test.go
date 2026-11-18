@@ -17,6 +17,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
@@ -46,6 +47,10 @@ func seedAgency(t *testing.T, pool *pgxpool.Pool, slug, status string) uuid.UUID
 	}
 	t.Cleanup(func() {
 		bg := context.WithoutCancel(ctx)
+		_, _ = pool.Exec(bg, `DELETE FROM meeting_events WHERE meeting_id IN (SELECT id FROM meetings WHERE agency_id = $1)`, id)
+		_, _ = pool.Exec(bg, `DELETE FROM transcripts WHERE recording_id IN (SELECT r.id FROM recordings r JOIN meetings m ON m.id = r.meeting_id WHERE m.agency_id = $1)`, id)
+		_, _ = pool.Exec(bg, `DELETE FROM recordings WHERE meeting_id IN (SELECT id FROM meetings WHERE agency_id = $1)`, id)
+		_, _ = pool.Exec(bg, `DELETE FROM agenda_versions WHERE meeting_id IN (SELECT id FROM meetings WHERE agency_id = $1)`, id)
 		_, _ = pool.Exec(bg, `DELETE FROM meetings WHERE agency_id = $1`, id)
 		_, _ = pool.Exec(bg, `DELETE FROM agencies WHERE id = $1`, id)
 	})
@@ -69,6 +74,12 @@ func start(t *testing.T, pool *pgxpool.Pool, cfg jobs.Config) *harness {
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = sourcestest.NewClock(fixedNow)
+	}
+	if cfg.Fetcher == nil {
+		cfg.Fetcher = serving("text/plain", plainAgenda(agendaV1))
+	}
+	if cfg.Extractor == nil {
+		cfg.Extractor = &extract.Extractor{PDF: extract.InProcess{}}
 	}
 	client, err := jobs.NewClient(pool, slog.New(slog.DiscardHandler), cfg)
 	if err != nil {
