@@ -39,11 +39,13 @@ func audioFile(t *testing.T, content string) string {
 
 func testConfig(url string) config.Transcription {
 	return config.Transcription{
-		APIKey:         "gsk-test",
-		BaseURL:        url,
-		Model:          "whisper-large-v3-turbo",
-		Timeout:        5 * time.Second,
-		MaxUploadBytes: 1 << 20,
+		APIKey:            "gsk-test",
+		BaseURL:           url,
+		Model:             "whisper-large-v3-turbo",
+		Timeout:           5 * time.Second,
+		Provider:          config.TranscriptionGroq,
+		DirectUploadBytes: 1 << 20,
+		MaxChunkBytes:     1 << 20,
 	}
 }
 

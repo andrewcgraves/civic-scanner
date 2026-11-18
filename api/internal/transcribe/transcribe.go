@@ -3,7 +3,6 @@ package transcribe
 import (
 	"context"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -11,9 +10,10 @@ import (
 )
 
 type Segment struct {
-	Start time.Duration
-	End   time.Duration
-	Text  string
+	Start   time.Duration
+	End     time.Duration
+	Text    string
+	Speaker string
 }
 
 type Transcript struct {
@@ -26,40 +26,27 @@ type Client interface {
 	Transcribe(ctx context.Context, audioPath string) (Transcript, error)
 }
 
-type groq struct {
-	cfg          config.Transcription
-	http         *http.Client
-	splitter     Splitter
-	chunkLength  time.Duration
-	chunkOverlap time.Duration
-}
-
 func New(cfg config.Transcription, opts ...Option) Client {
-	g := &groq{
-		cfg:          cfg,
-		http:         &http.Client{Timeout: cfg.Timeout},
-		splitter:     FFmpeg{},
-		chunkLength:  defaultChunkLength,
-		chunkOverlap: defaultChunkOverlap,
+	var up uploader
+	switch cfg.Provider {
+	case config.TranscriptionGroq:
+		up = &groq{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout}}
+	default:
+		up = newGateway(cfg)
+	}
+	c := &chunker{
+		upload:        up,
+		apiKey:        cfg.APIKey,
+		splitter:      FFmpeg{},
+		chunkLength:   defaultChunkLength,
+		chunkOverlap:  defaultChunkOverlap,
+		directBytes:   cfg.DirectUploadBytes,
+		maxChunkBytes: cfg.MaxChunkBytes,
 	}
 	for _, opt := range opts {
-		opt(g)
+		opt(c)
 	}
-	return g
-}
-
-func (g *groq) Transcribe(ctx context.Context, audioPath string) (Transcript, error) {
-	if g.cfg.APIKey == "" {
-		return Transcript{}, ErrNotConfigured
-	}
-	info, err := os.Stat(audioPath)
-	if err != nil {
-		return Transcript{}, err
-	}
-	if info.Size() <= g.cfg.MaxUploadBytes {
-		return g.transcribeFile(ctx, audioPath)
-	}
-	return g.transcribeChunked(ctx, audioPath)
+	return c
 }
 
 func joinText(segments []Segment, fallback string) string {
