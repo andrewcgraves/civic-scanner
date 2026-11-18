@@ -30,6 +30,8 @@ func seedMeeting(t *testing.T, pool *pgxpool.Pool, slug string) uuid.UUID {
 	t.Cleanup(func() {
 		bg := context.WithoutCancel(ctx)
 		_, _ = pool.Exec(bg, `DELETE FROM meeting_events WHERE meeting_id = $1`, m.ID)
+		_, _ = pool.Exec(bg, `DELETE FROM transcripts WHERE recording_id IN (SELECT id FROM recordings WHERE meeting_id = $1)`, m.ID)
+		_, _ = pool.Exec(bg, `DELETE FROM recordings WHERE meeting_id = $1`, m.ID)
 		_, _ = pool.Exec(bg, `DELETE FROM agenda_versions WHERE meeting_id = $1`, m.ID)
 	})
 	return m.ID
