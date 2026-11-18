@@ -11,4 +11,5 @@ import (
 var adapters = map[string]sources.Constructor{
 	"la-metro":  legistar.Constructor(legistar.LAMetro),
 	"metrolink": granicus.Constructor(granicus.Metrolink),
+	"octa":      legistar.Constructor(legistar.OCTA),
 }
