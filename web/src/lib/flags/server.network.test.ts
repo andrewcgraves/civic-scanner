@@ -4,7 +4,7 @@ vi.mock("next/server", () => ({ connection: () => Promise.resolve() }));
 
 function hangingFetch() {
   return vi.fn(
-    (_url: string, init?: RequestInit) =>
+    (_input: RequestInfo | URL, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
           reject(new DOMException("aborted", "AbortError"));
