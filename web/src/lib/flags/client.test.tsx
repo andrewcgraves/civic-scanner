@@ -19,7 +19,20 @@ const posthog = vi.hoisted(() => {
   };
 });
 
-vi.mock("posthog-js", () => ({ default: posthog }));
+const loaded = vi.hoisted(() => ({
+  posthogJs: vi.fn(),
+  webProvider: vi.fn(),
+}));
+
+vi.mock("posthog-js", () => {
+  loaded.posthogJs();
+  return { default: posthog };
+});
+
+vi.mock("@posthog/openfeature-web-provider", async (importOriginal) => {
+  loaded.webProvider();
+  return importOriginal();
+});
 
 async function renderFlag(
   flag: string,
@@ -45,6 +58,20 @@ async function renderFlag(
 describe("useFlag with in-memory flags", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it("does not load PostHog code", async () => {
+    loaded.posthogJs.mockClear();
+    loaded.webProvider.mockClear();
+
+    await renderFlag("new-search", {
+      NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
+    });
+
+    expect(screen.getByText("on")).toBeInTheDocument();
+    expect(loaded.posthogJs).not.toHaveBeenCalled();
+    expect(loaded.webProvider).not.toHaveBeenCalled();
   });
 
   it("is on for a listed flag", async () => {
@@ -106,17 +133,31 @@ describe("useFlag with PostHog", () => {
   it("starts PostHog for flags only, without analytics", async () => {
     await renderFlag("new-search", { NEXT_PUBLIC_POSTHOG_KEY: "phc_test" });
 
-    expect(posthog.init).toHaveBeenCalledWith(
+    await vi.waitFor(() => {
+      expect(posthog.init).toHaveBeenCalledOnce();
+    });
+    expect(posthog.init.mock.calls[0]).toStrictEqual([
       "phc_test",
-      expect.objectContaining({
+      {
         api_host: "https://us.i.posthog.com",
+        persistence: "memory",
+        disable_external_dependency_loading: true,
+        advanced_disable_feature_flags_on_first_load: true,
         autocapture: false,
         capture_pageview: false,
         capture_pageleave: false,
         capture_performance: false,
+        capture_heatmaps: false,
+        capture_dead_clicks: false,
+        capture_exceptions: false,
+        rageclick: false,
         disable_session_recording: true,
-      }),
-    );
+        disable_surveys: true,
+        disable_product_tours: true,
+        disable_conversations: true,
+        disable_web_experiments: true,
+      },
+    ]);
   });
 
   it("is off for a flag PostHog does not know", async () => {
@@ -141,6 +182,28 @@ describe("useFlag with PostHog", () => {
       expect(posthog.getFeatureFlagResult).toHaveBeenCalled();
     });
     expect(screen.getByText("off")).toBeInTheDocument();
+  });
+
+  it("stays off and reports it when PostHog cannot load", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const failure = new Error("chunk failed to load");
+    vi.doMock("posthog-js", () => {
+      throw failure;
+    });
+
+    await renderFlag("new-search", { NEXT_PUBLIC_POSTHOG_KEY: "phc_test" });
+
+    await vi.waitFor(() => {
+      expect(consoleError).toHaveBeenCalledWith(
+        "Feature flags could not start PostHog",
+        expect.objectContaining({ cause: failure }),
+      );
+    });
+    expect(screen.getByText("off")).toBeInTheDocument();
+    vi.doMock("posthog-js", () => ({ default: posthog }));
+    consoleError.mockRestore();
   });
 
   it("renders flags off on the server without starting PostHog", async () => {

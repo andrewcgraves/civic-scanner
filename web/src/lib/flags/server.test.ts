@@ -6,6 +6,12 @@ const posthog = vi.hoisted(() => ({
   reloadFeatureFlags: vi.fn<() => Promise<void>>(),
 }));
 
+const nextServer = vi.hoisted(() => ({
+  connection: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("next/server", () => ({ connection: nextServer.connection }));
+
 vi.mock("posthog-node", () => ({
   PostHog: class {
     constructor(key: string, options: unknown) {
@@ -68,16 +74,30 @@ describe("isFlagEnabled with in-memory flags", () => {
     expect(await isFlagEnabled("new-search")).toBe(true);
     expect(await isFlagEnabled("anything-at-all")).toBe(true);
   });
+
+  it("leaves the page free to render statically", async () => {
+    nextServer.connection.mockClear();
+    const { isFlagEnabled } = await loadServerFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
+    });
+
+    await isFlagEnabled("new-search");
+
+    expect(nextServer.connection).not.toHaveBeenCalled();
+  });
 });
 
 describe("isFlagEnabled with PostHog", () => {
   beforeEach(() => {
+    nextServer.connection.mockClear();
     posthog.created.mockReset();
     posthog.getFeatureFlagResult.mockReset();
     posthog.reloadFeatureFlags.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllEnvs();
   });
 
@@ -95,12 +115,55 @@ describe("isFlagEnabled with PostHog", () => {
     expect(await isFlagEnabled("new-search")).toBe(true);
     expect(posthog.created).toHaveBeenCalledWith("phc_test", {
       host: "https://eu.i.posthog.com",
+      featureFlagsRequestTimeoutMs: 500,
+      featureFlagsRequestMaxRetries: 0,
     });
     expect(posthog.getFeatureFlagResult).toHaveBeenCalledWith(
       "new-search",
       expect.any(String),
       expect.objectContaining({ sendFeatureFlagEvents: false }),
     );
+  });
+
+  it("renders the page per request, before asking PostHog", async () => {
+    posthog.getFeatureFlagResult.mockResolvedValue({
+      key: "new-search",
+      enabled: true,
+    });
+    const { isFlagEnabled } = await loadServerFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
+    });
+
+    await isFlagEnabled("new-search");
+
+    expect(nextServer.connection).toHaveBeenCalledOnce();
+    const [connected] = nextServer.connection.mock.invocationCallOrder;
+    const [asked] = posthog.getFeatureFlagResult.mock.invocationCallOrder;
+    expect(connected).toBeLessThan(asked ?? 0);
+  });
+
+  it("asks PostHog about each flag at most once every 30 seconds", async () => {
+    vi.useFakeTimers();
+    posthog.getFeatureFlagResult.mockResolvedValue({
+      key: "new-search",
+      enabled: true,
+    });
+    const { isFlagEnabled } = await loadServerFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
+    });
+
+    expect(await isFlagEnabled("new-search")).toBe(true);
+    expect(await isFlagEnabled("new-search")).toBe(true);
+    vi.advanceTimersByTime(29_999);
+    expect(await isFlagEnabled("new-search")).toBe(true);
+    expect(posthog.getFeatureFlagResult).toHaveBeenCalledTimes(1);
+
+    await isFlagEnabled("meeting-alerts");
+    expect(posthog.getFeatureFlagResult).toHaveBeenCalledTimes(2);
+
+    vi.advanceTimersByTime(1);
+    await isFlagEnabled("new-search");
+    expect(posthog.getFeatureFlagResult).toHaveBeenCalledTimes(3);
   });
 
   it("uses the PostHog US host and ignores the in-memory list", async () => {
@@ -117,6 +180,8 @@ describe("isFlagEnabled with PostHog", () => {
     expect(await isFlagEnabled("new-search")).toBe(false);
     expect(posthog.created).toHaveBeenCalledWith("phc_test", {
       host: "https://us.i.posthog.com",
+      featureFlagsRequestTimeoutMs: 500,
+      featureFlagsRequestMaxRetries: 0,
     });
   });
 
