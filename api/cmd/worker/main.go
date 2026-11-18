@@ -55,10 +55,9 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	plain := fetch.NewPlain(cfg.Fetch)
 	firecrawl := fetch.NewFirecrawl(cfg.Fetch)
-	fetcher := fetch.NewFallback(plain, firecrawl)
-	audio := media.NewDownloader(cfg.Audio, plain, cfg.Fetch.UserAgent)
+	fetcher := fetch.NewFallback(fetch.NewPlain(cfg.Fetch), firecrawl)
+	audio := media.NewDownloader(cfg.Audio, cfg.Fetch.UserAgent)
 	pdfExtractor := extract.NewSubprocess(cfg.Extract)
 	registry := sources.NewRegistry(sources.Deps{Fetcher: fetcher, Clock: sources.SystemClock{}, Logger: logger}, adapters)
 	client, err := jobs.NewClient(pool, logger, jobs.Config{
@@ -87,6 +86,15 @@ func run(ctx context.Context) error {
 	if _, err := os.Stat(audio.Tool.Limit); err != nil {
 		logger.WarnContext(ctx, "audio limit binary not found: recording downloads will be cancelled; build it next to the worker or set AUDIO_LIMIT_BINARY",
 			"audio_limit", audio.Tool.Limit, "error", err)
+	}
+	if !cfg.Storage.Configured() {
+		logger.WarnContext(ctx, "object storage not configured: download_audio jobs will be cancelled; set the STORAGE_* variables before turning on the flag",
+			"flag", jobs.FlagDownloadAudio, "flag_on_now", featureflags.Enabled(ctx, jobs.FlagDownloadAudio))
+	}
+	if removed, err := jobs.SweepAudioTemp("", cfg.Audio.Timeout+time.Hour, time.Now()); err != nil {
+		logger.WarnContext(ctx, "stale audio temp directories not swept", "error", err)
+	} else if removed > 0 {
+		logger.InfoContext(ctx, "stale audio temp directories removed", "count", removed)
 	}
 
 	<-ctx.Done()

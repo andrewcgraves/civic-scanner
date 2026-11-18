@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,33 +17,44 @@ import (
 	"time"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
-	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/limit"
 )
 
 const (
-	maxStderrBytes     = 4096
-	maxURLOutputBytes  = 64 << 10
-	waitDelay          = 5 * time.Second
-	youtubeTimeout     = 2 * time.Minute
-	readTimeoutMicros  = "30000000"
-	protocolWhitelist  = "http,https,tls,tcp,hls,crypto"
-	formatWhitelist    = "hls,mpegts,mov,mp4,m4a,3gp,3g2,mj2,mp3,aac,matroska,webm,ogg,wav,flv,webvtt"
-	defaultTimeout     = time.Hour
-	defaultMaxDuration = 12 * time.Hour
-	defaultMaxMemory   = 1 << 30
-	defaultMaxBytes    = 256 << 20
+	maxDetailBytes      = 4096
+	maxImportantLines   = 20
+	maxURLOutputBytes   = 64 << 10
+	maxProbeOutputBytes = 1024
+	waitDelay           = 5 * time.Second
+	youtubeTimeout      = 2 * time.Minute
+	probeTimeout        = 2 * time.Minute
+	readTimeoutMicros   = "30000000"
+	protocolWhitelist   = "http,https,tls,tcp,hls,crypto,httpproxy"
+	formatWhitelist     = "hls,mpegts,mov,mp4,m4a,3gp,3g2,mj2,mp3,aac,matroska,webm,ogg,wav,flv,webvtt"
+	defaultTimeout      = time.Hour
+	defaultMaxDuration  = 12 * time.Hour
+	defaultMaxMemory    = 1 << 30
+	defaultMaxBytes     = 256 << 20
+	probeRequestBudget  = 200
+	fileRequestBudget   = 2000
+	durationSlack       = 2 * time.Second
+	durationSlackRatio  = 0.001
 )
+
+var statusPattern = regexp.MustCompile(`(?i)(?:http error|server returned) ([1-5][0-9][0-9]|[45]xx)`)
 
 type Tool struct {
 	Limit       string
 	FFmpeg      string
+	FFprobe     string
 	YTDLP       string
 	Timeout     time.Duration
 	MaxDuration time.Duration
 	MaxMemory   int64
 	MaxBytes    int64
 	UserAgent   string
+	Hosts       []string
+	Guard       Guard
 	Env         []string
 }
 
@@ -49,20 +62,26 @@ func NewTool(cfg config.Audio, userAgent string) Tool {
 	return Tool{
 		Limit:       ResolveLimitBinary(cfg.LimitBinary),
 		FFmpeg:      cfg.FFmpegBinary,
+		FFprobe:     cfg.FFprobeBinary,
 		YTDLP:       cfg.YTDLPBinary,
 		Timeout:     cfg.Timeout,
 		MaxDuration: cfg.MaxDuration,
 		MaxMemory:   cfg.MaxMemory,
 		MaxBytes:    cfg.MaxBytes,
 		UserAgent:   userAgent,
+		Hosts:       DefaultHosts.Media,
 	}
 }
 
-func NewDownloader(cfg config.Audio, fetcher fetch.Fetcher, userAgent string) Downloader {
+func NewDownloader(cfg config.Audio, userAgent string) Downloader {
 	tool := NewTool(cfg, userAgent)
 	return Downloader{
-		Resolver: Resolver{Fetcher: fetcher, YouTube: tool.YouTubeAudioURL, Hosts: DefaultHosts},
-		Tool:     tool,
+		Resolver: Resolver{
+			Fetcher: PageFetcher{Hosts: DefaultHosts.Players, UserAgent: userAgent},
+			YouTube: tool.YouTubeAudioURL,
+			Hosts:   DefaultHosts,
+		},
+		Tool: tool,
 	}
 }
 
@@ -80,6 +99,9 @@ func ResolveLimitBinary(configured string) string {
 func (t Tool) withDefaults() Tool {
 	if t.FFmpeg == "" {
 		t.FFmpeg = "ffmpeg"
+	}
+	if t.FFprobe == "" {
+		t.FFprobe = "ffprobe"
 	}
 	if t.YTDLP == "" {
 		t.YTDLP = "yt-dlp"
@@ -99,25 +121,29 @@ func (t Tool) withDefaults() Tool {
 	return t
 }
 
-func (t Tool) ExtractAudio(ctx context.Context, srcURL, dst string) error {
-	t = t.withDefaults()
+func (t Tool) networkArgs(proxy *Proxy, srcURL string) []string {
 	args := []string{
-		t.FFmpeg,
-		"-nostdin", "-hide_banner", "-loglevel", "error", "-y",
 		"-protocol_whitelist", protocolWhitelist,
 		"-format_whitelist", formatWhitelist,
 		"-rw_timeout", readTimeoutMicros,
+		"-http_proxy", proxy.URL(),
+	}
+	if strings.HasPrefix(strings.ToLower(srcURL), "https:") {
+		args = append(args, "-tls_verify", "1")
 	}
 	if t.UserAgent != "" {
 		args = append(args, "-user_agent", t.UserAgent)
 	}
-	args = append(args,
-		"-i", srcURL,
-		"-map", "0:a:0", "-vn", "-sn", "-dn",
-		"-t", strconv.FormatFloat(t.MaxDuration.Seconds(), 'f', 0, 64),
-		"-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
-		"-f", "mp3", dst)
-	_, err := t.run(ctx, t.Timeout, 0, args)
+	return args
+}
+
+func proxyEnv(proxy *Proxy) []string {
+	return []string{"http_proxy=" + proxy.URL(), "HTTP_PROXY=" + proxy.URL(), "https_proxy=", "HTTPS_PROXY=", "no_proxy=", "NO_PROXY="}
+}
+
+func (t Tool) ExtractAudio(ctx context.Context, srcURL, dst string) error {
+	t = t.withDefaults()
+	err := t.extract(ctx, srcURL, dst)
 	if err != nil {
 		_ = os.Remove(dst)
 		return fmt.Errorf("extract audio: %w", err)
@@ -125,13 +151,121 @@ func (t Tool) ExtractAudio(ctx context.Context, srcURL, dst string) error {
 	return nil
 }
 
+func (t Tool) extract(ctx context.Context, srcURL, dst string) error {
+	if t.Limit == "" {
+		return fmt.Errorf("%w: no limit binary configured, set AUDIO_LIMIT_BINARY", ErrUnavailable)
+	}
+	expected, budget, err := t.expectedDuration(ctx, srcURL)
+	if err != nil {
+		return err
+	}
+	if expected > t.MaxDuration {
+		return fmt.Errorf("%w: recording lasts %s, longer than %s", ErrLimitExceeded, expected.Round(time.Second), t.MaxDuration)
+	}
+	proxy, err := StartProxy(t.Hosts, t.Guard, budget)
+	if err != nil {
+		return err
+	}
+	defer proxy.Close()
+
+	args := append([]string{t.FFmpeg, "-nostdin", "-hide_banner", "-loglevel", "warning", "-y"}, t.networkArgs(proxy, srcURL)...)
+	args = append(args,
+		"-i", srcURL,
+		"-map", "0:a:0", "-vn", "-sn", "-dn",
+		"-t", strconv.FormatFloat(t.MaxDuration.Seconds(), 'f', 0, 64),
+		"-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
+		"-f", "mp3", dst)
+	_, log, err := t.run(ctx, t.Timeout, 0, args, proxyEnv(proxy))
+	if perr := proxy.Err(); perr != nil {
+		return perr
+	}
+	if err != nil {
+		return err
+	}
+	if err := log.segmentError(); err != nil {
+		return err
+	}
+	got, err := t.localDuration(ctx, dst)
+	if err != nil {
+		return err
+	}
+	return t.checkComplete(expected, got)
+}
+
+func (t Tool) checkComplete(expected, got time.Duration) error {
+	if expected <= 0 {
+		if got >= t.MaxDuration-time.Second {
+			return fmt.Errorf("%w: audio of unknown length reached the %s cap", ErrLimitExceeded, t.MaxDuration)
+		}
+		return nil
+	}
+	slack := durationSlack + time.Duration(float64(expected)*durationSlackRatio)
+	if got+slack < expected {
+		return fmt.Errorf("%w: %s of audio from a %s recording", ErrIncomplete, got.Round(time.Second), expected.Round(time.Second))
+	}
+	return nil
+}
+
+func (t Tool) expectedDuration(ctx context.Context, srcURL string) (time.Duration, int64, error) {
+	if isHLS(srcURL) {
+		pages := PageFetcher{Hosts: t.Hosts, Guard: t.Guard, UserAgent: t.UserAgent}
+		playlist, err := InspectPlaylist(ctx, pages, t.Hosts, srcURL)
+		if err != nil {
+			return 0, 0, err
+		}
+		return playlist.Duration, int64(2*playlist.Entries + 2*playlist.Playlists + 20), nil
+	}
+	proxy, err := StartProxy(t.Hosts, t.Guard, probeRequestBudget)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer proxy.Close()
+	args := append([]string{t.FFprobe, "-v", "error"}, t.networkArgs(proxy, srcURL)...)
+	args = append(args, "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "--", srcURL)
+	out, _, err := t.run(ctx, min(t.Timeout, probeTimeout), maxProbeOutputBytes, args, proxyEnv(proxy))
+	if perr := proxy.Err(); perr != nil {
+		return 0, 0, perr
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("probe media: %w", err)
+	}
+	return parseSeconds(out), fileRequestBudget, nil
+}
+
+func (t Tool) localDuration(ctx context.Context, path string) (time.Duration, error) {
+	out, _, err := t.run(ctx, probeTimeout, maxProbeOutputBytes, []string{
+		t.FFprobe, "-v", "error", "-protocol_whitelist", "file",
+		"-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "--", path,
+	}, nil)
+	if err != nil {
+		return 0, fmt.Errorf("probe audio: %w", err)
+	}
+	d := parseSeconds(out)
+	if d <= 0 {
+		return 0, fmt.Errorf("%w: output has no duration", ErrNoAudio)
+	}
+	return d, nil
+}
+
+func parseSeconds(out string) time.Duration {
+	secs, err := strconv.ParseFloat(strings.TrimSpace(out), 64)
+	if err != nil || secs <= 0 || math.IsInf(secs, 0) || math.IsNaN(secs) {
+		return 0
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
 func (t Tool) YouTubeAudioURL(ctx context.Context, pageURL string) (string, error) {
 	t = t.withDefaults()
-	out, err := t.run(ctx, min(t.Timeout, youtubeTimeout), maxURLOutputBytes, []string{
+	if t.Limit == "" {
+		return "", fmt.Errorf("%w: no limit binary configured, set AUDIO_LIMIT_BINARY", ErrUnavailable)
+	}
+	out, _, err := t.run(ctx, min(t.Timeout, youtubeTimeout), maxURLOutputBytes, []string{
 		t.YTDLP,
 		"--ignore-config", "--no-playlist", "--no-cache-dir", "--no-warnings", "--no-progress",
+		"--use-extractors", "youtube",
 		"-f", "bestaudio", "--get-url", "--", pageURL,
-	})
+	}, nil)
 	if err != nil {
 		return "", fmt.Errorf("resolve youtube audio: %w", err)
 	}
@@ -142,18 +276,18 @@ func (t Tool) YouTubeAudioURL(ctx context.Context, pageURL string) (string, erro
 	return strings.TrimSpace(line), nil
 }
 
-func (t Tool) run(ctx context.Context, timeout time.Duration, maxStdout int, command []string) (string, error) {
+func (t Tool) run(ctx context.Context, timeout time.Duration, maxStdout int, command, env []string) (string, *stderrLog, error) {
 	if t.Limit == "" {
-		return "", fmt.Errorf("%w: no limit binary configured, set AUDIO_LIMIT_BINARY", ErrUnavailable)
+		return "", nil, fmt.Errorf("%w: no limit binary configured, set AUDIO_LIMIT_BINARY", ErrUnavailable)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	stdout := &capped{max: maxStdout, onOverflow: cancel}
-	stderr := &capped{max: maxStderrBytes, truncate: true}
+	stderr := &stderrLog{}
 	args := append(limit.Limits{MaxMemory: t.MaxMemory, MaxFileBytes: t.MaxBytes}.Args(), command...)
 	cmd := exec.CommandContext(runCtx, t.Limit, args...) //nolint:gosec
-	cmd.Env = append(append(os.Environ(), "MALLOC_ARENA_MAX=2"), t.Env...)
+	cmd.Env = append(append(append(os.Environ(), "MALLOC_ARENA_MAX=2"), env...), t.Env...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -161,35 +295,36 @@ func (t Tool) run(ctx context.Context, timeout time.Duration, maxStdout int, com
 	cmd.WaitDelay = waitDelay
 	err := cmd.Run()
 
-	detail := strings.TrimSpace(stderr.String())
+	name := filepath.Base(command[0])
+	detail := stderr.detail()
 	switch {
 	case ctx.Err() != nil:
-		return "", ctx.Err()
+		return "", stderr, ctx.Err()
 	case stdout.overflowed():
-		return "", fmt.Errorf("%w: %s printed more than %d bytes", ErrLimitExceeded, filepath.Base(command[0]), maxStdout)
+		return "", stderr, fmt.Errorf("%w: %s printed more than %d bytes", ErrLimitExceeded, name, maxStdout)
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
-		return "", fmt.Errorf("%w: %s took longer than %s", ErrLimitExceeded, filepath.Base(command[0]), timeout)
+		return "", stderr, fmt.Errorf("%w: %s took longer than %s", ErrLimitExceeded, name, timeout)
 	case err == nil:
-		return stdout.String(), nil
+		return stdout.String(), stderr, nil
 	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
-		return "", fmt.Errorf("%w: run %s: %w", ErrUnavailable, t.Limit, err)
+		return "", stderr, fmt.Errorf("%w: run %s: %w", ErrUnavailable, t.Limit, err)
 	}
 	if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 		switch status.Signal() {
 		case syscall.SIGXFSZ:
-			return "", fmt.Errorf("%w: output passed %d bytes", ErrLimitExceeded, t.MaxBytes)
+			return "", stderr, fmt.Errorf("%w: output passed %d bytes", ErrLimitExceeded, t.MaxBytes)
 		case syscall.SIGKILL:
-			return "", fmt.Errorf("%w: %s killed: %s", ErrLimitExceeded, filepath.Base(command[0]), detail)
+			return "", stderr, fmt.Errorf("%w: %s killed: %s", ErrLimitExceeded, name, detail)
 		}
-		return "", fmt.Errorf("%w: %s crashed with %s: %s", ErrMalformed, filepath.Base(command[0]), status.Signal(), detail)
+		return "", stderr, fmt.Errorf("%w: %s crashed with %s: %s", ErrMalformed, name, status.Signal(), detail)
 	}
 	switch exitErr.ExitCode() {
 	case limit.ExitUsage, limit.ExitLimits, limit.ExitExec:
-		return "", fmt.Errorf("%w: %s", ErrUnavailable, detail)
+		return "", stderr, fmt.Errorf("%w: %s", ErrUnavailable, detail)
 	}
-	return "", fmt.Errorf("%w: %s", classify(detail), detail)
+	return "", stderr, fmt.Errorf("%w: %s", classify(detail), detail)
 }
 
 func classify(detail string) error {
@@ -207,7 +342,7 @@ func classify(detail string) error {
 		return ErrLimitExceeded
 	case has("not a bot", "confirm you're not a robot"):
 		return ErrBlocked
-	case has("server returned 5", "server returned 429", "server returned 408", "http error 5", "http error 429",
+	case has("server returned 5", "server returned 429", "server returned 408", "http error 5", "http error 429", "http error 408",
 		"connection timed out", "timed out", "connection refused", "connection reset", "network is unreachable",
 		"temporary failure in name resolution", "i/o error", "broken pipe"):
 		return ErrNetwork
@@ -220,11 +355,107 @@ func classify(detail string) error {
 	return ErrMalformed
 }
 
+type stderrLog struct {
+	mu            sync.Mutex
+	partial       []byte
+	head          bytes.Buffer
+	important     []string
+	segmentFailed bool
+	statuses      []string
+	timedOut      bool
+}
+
+func (s *stderrLog) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.partial = append(s.partial, p...)
+	for {
+		i := bytes.IndexByte(s.partial, '\n')
+		if i < 0 {
+			break
+		}
+		s.line(string(s.partial[:i]))
+		s.partial = s.partial[i+1:]
+	}
+	if len(s.partial) > maxDetailBytes {
+		s.line(string(s.partial))
+		s.partial = s.partial[:0]
+	}
+	return len(p), nil
+}
+
+func (s *stderrLog) line(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if s.head.Len()+len(line)+1 <= maxDetailBytes {
+		s.head.WriteString(line + "\n")
+	}
+	lower := strings.ToLower(line)
+	marker := false
+	if strings.Contains(lower, "failed to open segment") || strings.Contains(lower, "failed too many times, skipping") {
+		s.segmentFailed, marker = true, true
+	}
+	if m := statusPattern.FindStringSubmatch(line); m != nil {
+		s.statuses, marker = append(s.statuses, strings.ToLower(m[1])), true
+	}
+	if strings.Contains(lower, "timed out") || strings.Contains(lower, "connection reset") {
+		s.timedOut, marker = true, true
+	}
+	if marker && len(s.important) < maxImportantLines {
+		s.important = append(s.important, line)
+	}
+}
+
+func (s *stderrLog) detail() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.partial) > 0 {
+		s.line(string(s.partial))
+		s.partial = nil
+	}
+	text := strings.TrimSpace(s.head.String())
+	for _, l := range s.important {
+		if !strings.Contains(text, l) {
+			text += "\n" + l
+		}
+	}
+	return text
+}
+
+func (s *stderrLog) segmentError() error {
+	detail := s.detail()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.segmentFailed {
+		return nil
+	}
+	transient, refused := s.timedOut, false
+	for _, code := range s.statuses {
+		switch {
+		case code == "408" || code == "429" || strings.HasPrefix(code, "5"):
+			transient = true
+		case strings.HasPrefix(code, "4"):
+			refused = true
+		}
+	}
+	switch {
+	case transient:
+		return fmt.Errorf("%w: a segment failed: %s", ErrNetwork, detail)
+	case refused:
+		return fmt.Errorf("%w: a segment was refused: %s", ErrRefused, detail)
+	}
+	return fmt.Errorf("%w: a segment was skipped: %s", ErrIncomplete, detail)
+}
+
 type capped struct {
 	mu         sync.Mutex
 	buf        bytes.Buffer
 	max        int
-	truncate   bool
 	over       bool
 	onOverflow func()
 }
@@ -234,10 +465,6 @@ func (c *capped) Write(p []byte) (int, error) {
 	defer c.mu.Unlock()
 	if c.buf.Len()+len(p) <= c.max {
 		return c.buf.Write(p)
-	}
-	if c.truncate {
-		c.buf.Write(p[:c.max-c.buf.Len()])
-		return len(p), nil
 	}
 	c.over = true
 	if c.onOverflow != nil {

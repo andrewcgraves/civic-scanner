@@ -4,3 +4,4 @@
 Dockerfile
 .dockerignore
 .golangci.yml
+Dockerfile.worker

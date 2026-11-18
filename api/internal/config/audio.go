@@ -6,13 +6,14 @@ import (
 )
 
 type Audio struct {
-	LimitBinary  string
-	FFmpegBinary string
-	YTDLPBinary  string
-	Timeout      time.Duration
-	MaxDuration  time.Duration
-	MaxMemory    int64
-	MaxBytes     int64
+	LimitBinary   string
+	FFmpegBinary  string
+	FFprobeBinary string
+	YTDLPBinary   string
+	Timeout       time.Duration
+	MaxDuration   time.Duration
+	MaxMemory     int64
+	MaxBytes      int64
 }
 
 func loadAudio() (Audio, error) {
@@ -33,12 +34,13 @@ func loadAudio() (Audio, error) {
 		return Audio{}, err
 	}
 	return Audio{
-		LimitBinary:  os.Getenv("AUDIO_LIMIT_BINARY"),
-		FFmpegBinary: envOr("AUDIO_FFMPEG_BINARY", "ffmpeg"),
-		YTDLPBinary:  envOr("AUDIO_YTDLP_BINARY", "yt-dlp"),
-		Timeout:      timeout,
-		MaxDuration:  maxDuration,
-		MaxMemory:    maxMemory,
-		MaxBytes:     maxBytes,
+		LimitBinary:   os.Getenv("AUDIO_LIMIT_BINARY"),
+		FFmpegBinary:  envOr("AUDIO_FFMPEG_BINARY", "ffmpeg"),
+		FFprobeBinary: envOr("AUDIO_FFPROBE_BINARY", "ffprobe"),
+		YTDLPBinary:   envOr("AUDIO_YTDLP_BINARY", "yt-dlp"),
+		Timeout:       timeout,
+		MaxDuration:   maxDuration,
+		MaxMemory:     maxMemory,
+		MaxBytes:      maxBytes,
 	}, nil
 }

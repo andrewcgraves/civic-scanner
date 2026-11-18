@@ -13,6 +13,8 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/testbin"
 )
 
+const fileURL = "https://archive-video.granicus.com/metrolink/clip.mp4"
+
 func limitBinary(t *testing.T) string {
 	t.Helper()
 	return testbin.BuildPackage(t, "../../cmd/limit")
@@ -27,36 +29,52 @@ func script(t *testing.T, body string) string {
 	return path
 }
 
-func TestExtractAudioPassesLimitsAndSafeOptionsToFFmpeg(t *testing.T) {
-	argsFile := filepath.Join(t.TempDir(), "args")
-	tool := Tool{
-		Limit:       limitBinary(t),
-		FFmpeg:      script(t, `printf '%s\n' "$@" > "$ARGS_FILE"; printf 'ID3' > "$(eval echo \${$#})"`),
-		Timeout:     10 * time.Second,
-		MaxDuration: 90 * time.Minute,
-		UserAgent:   "CivicScanner/1.0 (+https://example.test)",
-		Env:         []string{"ARGS_FILE=" + argsFile},
+func fakeTool(t *testing.T, bin, ffmpeg string) Tool {
+	t.Helper()
+	return Tool{
+		Limit:   bin,
+		FFmpeg:  script(t, ffmpeg),
+		FFprobe: script(t, `echo 12.000000`),
+		Timeout: 10 * time.Second,
+		Hosts:   DefaultHosts.Media,
 	}
+}
+
+const writeOutput = `printf 'ID3' > "$(eval echo \${$#})"`
+
+func TestExtractAudioRunsFFmpegThroughTheProxyWithSafeOptions(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args")
+	tool := fakeTool(t, limitBinary(t), `printf '%s\n' "$@" > "$ARGS_FILE"; printf '%s\n' "$http_proxy" >> "$ARGS_FILE"; `+writeOutput)
+	tool.MaxDuration = 90 * time.Minute
+	tool.UserAgent = "CivicScanner/1.0 (+https://example.test)"
+	tool.Env = []string{"ARGS_FILE=" + argsFile}
 	dst := filepath.Join(t.TempDir(), "audio.mp3")
-	if err := tool.ExtractAudio(t.Context(), streamURL, dst); err != nil {
+	if err := tool.ExtractAudio(t.Context(), fileURL, dst); err != nil {
 		t.Fatalf("ExtractAudio: %v", err)
 	}
 	raw, err := os.ReadFile(argsFile) //nolint:gosec
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := strings.Join(strings.Split(strings.TrimSpace(string(raw)), "\n"), " ")
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	args := strings.Join(lines, " ")
 	for _, want := range []string{
+		"-loglevel warning",
 		"-protocol_whitelist " + protocolWhitelist,
 		"-format_whitelist " + formatWhitelist,
+		"-http_proxy http://127.0.0.1:",
+		"-tls_verify 1",
 		"-user_agent CivicScanner/1.0 (+https://example.test)",
-		"-i " + streamURL,
+		"-i " + fileURL,
 		"-map 0:a:0 -vn -sn -dn -t 5400",
 		"-ac 1 -ar 16000 -c:a libmp3lame -b:a 32k -f mp3 " + dst,
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("ffmpeg args %q lack %q", args, want)
 		}
+	}
+	if env := lines[len(lines)-1]; !strings.HasPrefix(env, "http://127.0.0.1:") {
+		t.Errorf("http_proxy = %q, want the local proxy", env)
 	}
 }
 
@@ -67,22 +85,34 @@ func TestExtractAudioClassifiesFailures(t *testing.T) {
 		want      error
 		retryable bool
 	}{
-		"server error":    {`echo "Server returned 503 Service Unavailable" >&2; exit 1`, ErrNetwork, true},
-		"read timeout":    {`echo "Connection timed out" >&2; exit 1`, ErrNetwork, true},
-		"forbidden":       {`echo "Server returned 403 Forbidden (access denied)" >&2; exit 1`, ErrRefused, false},
-		"html page":       {`echo "Invalid data found when processing input" >&2; exit 1`, ErrMalformed, false},
-		"video only":      {`echo "Stream map '0:a:0' matches no streams." >&2; exit 1`, ErrNoAudio, false},
-		"out of memory":   {`echo "Cannot allocate memory" >&2; exit 1`, ErrLimitExceeded, false},
-		"too much output": {`exec head -c 9000 /dev/zero > "$(eval echo \${$#})"`, ErrLimitExceeded, false},
-		"crash":           {`kill -SEGV $$`, ErrMalformed, false},
-		"killed":          {`kill -KILL $$`, ErrLimitExceeded, false},
-		"stdout":          {`echo surprise`, ErrLimitExceeded, false},
+		"server error":      {`echo "Server returned 503 Service Unavailable" >&2; exit 1`, ErrNetwork, true},
+		"read timeout":      {`echo "Connection timed out" >&2; exit 1`, ErrNetwork, true},
+		"forbidden":         {`echo "Server returned 403 Forbidden (access denied)" >&2; exit 1`, ErrRefused, false},
+		"html page":         {`echo "Invalid data found when processing input" >&2; exit 1`, ErrMalformed, false},
+		"video only":        {`echo "Stream map '0:a:0' matches no streams." >&2; exit 1`, ErrNoAudio, false},
+		"out of memory":     {`echo "Cannot allocate memory" >&2; exit 1`, ErrLimitExceeded, false},
+		"too much output":   {`exec head -c 9000 /dev/zero > "$(eval echo \${$#})"`, ErrLimitExceeded, false},
+		"crash":             {`kill -SEGV $$`, ErrMalformed, false},
+		"killed":            {`kill -KILL $$`, ErrLimitExceeded, false},
+		"stdout":            {`echo surprise`, ErrLimitExceeded, false},
+		"segment 404":       {`echo "[http @ 0x1] HTTP error 404 Not Found" >&2; echo "[hls @ 0x2] Failed to open segment 1 of playlist 0" >&2; ` + writeOutput, ErrRefused, false},
+		"segment 503":       {`echo "[http @ 0x1] HTTP error 503 Service Unavailable" >&2; echo "[hls @ 0x2] Segment 1 of playlist 0 failed too many times, skipping" >&2; ` + writeOutput, ErrNetwork, true},
+		"segment timeout":   {`echo "[tcp @ 0x1] Connection timed out" >&2; echo "[hls @ 0x2] Failed to open segment 3 of playlist 0" >&2; ` + writeOutput, ErrNetwork, true},
+		"segment skipped":   {`echo "[hls @ 0x2] Failed to open segment 3 of playlist 0" >&2; ` + writeOutput, ErrIncomplete, true},
+		"harmless warnings": {`echo "[mp3 @ 0x1] Estimating duration from bitrate" >&2; ` + writeOutput, nil, false},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			tool := Tool{Limit: bin, FFmpeg: script(t, tc.body), Timeout: 10 * time.Second, MaxBytes: 4096}
+			tool := fakeTool(t, bin, tc.body)
+			tool.MaxBytes = 4096
 			dst := filepath.Join(t.TempDir(), "audio.mp3")
-			err := tool.ExtractAudio(t.Context(), streamURL, dst)
+			err := tool.ExtractAudio(t.Context(), fileURL, dst)
+			if tc.want == nil {
+				if err != nil {
+					t.Errorf("ExtractAudio = %v", err)
+				}
+				return
+			}
 			if !errors.Is(err, tc.want) || IsRetryable(err) != tc.retryable {
 				t.Errorf("ExtractAudio = %v, want %v (retryable %v)", err, tc.want, tc.retryable)
 			}
@@ -93,11 +123,43 @@ func TestExtractAudioClassifiesFailures(t *testing.T) {
 	}
 }
 
+func TestExtractAudioChecksTheLengthOfTheResult(t *testing.T) {
+	bin := limitBinary(t)
+	probe := func(source, output string) string {
+		return `case "$(eval echo \${$#})" in *.mp3) echo ` + output + `;; *) echo ` + source + `;; esac`
+	}
+	cases := map[string]struct {
+		source, output string
+		maxDuration    time.Duration
+		want           error
+	}{
+		"complete":                  {"600.0", "599.9", time.Hour, nil},
+		"short":                     {"600.0", "540.0", time.Hour, ErrIncomplete},
+		"longer than the cap":       {"7200.0", "3600.0", time.Hour, ErrLimitExceeded},
+		"unknown length within cap": {"N/A", "1200.0", time.Hour, nil},
+		"unknown length at the cap": {"N/A", "3600.0", time.Hour, ErrLimitExceeded},
+		"no output length":          {"600.0", "N/A", time.Hour, ErrNoAudio},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			tool := fakeTool(t, bin, writeOutput)
+			tool.FFprobe = script(t, probe(tc.source, tc.output))
+			tool.MaxDuration = tc.maxDuration
+			err := tool.ExtractAudio(t.Context(), fileURL, filepath.Join(t.TempDir(), "audio.mp3"))
+			if !errors.Is(err, tc.want) && (err != nil || tc.want != nil) {
+				t.Errorf("ExtractAudio = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestExtractAudioKillsAHungTool(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "child")
-	tool := Tool{Limit: limitBinary(t), FFmpeg: script(t, `(sleep 30; touch "$MARKER") & sleep 30`), Timeout: 300 * time.Millisecond, Env: []string{"MARKER=" + marker}}
+	tool := fakeTool(t, limitBinary(t), `(sleep 30; touch "$MARKER") & sleep 30`)
+	tool.Timeout = 300 * time.Millisecond
+	tool.Env = []string{"MARKER=" + marker}
 	start := time.Now()
-	err := tool.ExtractAudio(t.Context(), streamURL, filepath.Join(t.TempDir(), "a.mp3"))
+	err := tool.ExtractAudio(t.Context(), fileURL, filepath.Join(t.TempDir(), "a.mp3"))
 	if !errors.Is(err, ErrLimitExceeded) || IsRetryable(err) {
 		t.Errorf("ExtractAudio = %v, want a permanent ErrLimitExceeded", err)
 	}
@@ -109,8 +171,9 @@ func TestExtractAudioKillsAHungTool(t *testing.T) {
 func TestExtractAudioReturnsTheJobsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	time.AfterFunc(200*time.Millisecond, cancel)
-	tool := Tool{Limit: limitBinary(t), FFmpeg: script(t, `sleep 30`), Timeout: time.Minute}
-	err := tool.ExtractAudio(ctx, streamURL, filepath.Join(t.TempDir(), "a.mp3"))
+	tool := fakeTool(t, limitBinary(t), `sleep 30`)
+	tool.Timeout = time.Minute
+	err := tool.ExtractAudio(ctx, fileURL, filepath.Join(t.TempDir(), "a.mp3"))
 	if !errors.Is(err, context.Canceled) || !IsRetryable(err) {
 		t.Errorf("ExtractAudio = %v, want a retryable context.Canceled", err)
 	}
@@ -121,15 +184,20 @@ func TestExtractAudioUnavailableTools(t *testing.T) {
 	cases := map[string]Tool{
 		"no limit binary":      {FFmpeg: "ffmpeg"},
 		"missing limit binary": {Limit: "/nonexistent/limit"},
-		"missing ffmpeg":       {Limit: bin, FFmpeg: "/nonexistent/ffmpeg"},
+		"missing ffprobe":      {Limit: bin, FFprobe: "/nonexistent/ffprobe"},
 	}
 	for name, tool := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := tool.ExtractAudio(t.Context(), streamURL, filepath.Join(t.TempDir(), "a.mp3"))
+			err := tool.ExtractAudio(t.Context(), fileURL, filepath.Join(t.TempDir(), "a.mp3"))
 			if !errors.Is(err, ErrUnavailable) || IsRetryable(err) {
 				t.Errorf("ExtractAudio = %v, want a permanent ErrUnavailable", err)
 			}
 		})
+	}
+	tool := fakeTool(t, bin, "")
+	tool.FFmpeg = "/nonexistent/ffmpeg"
+	if err := tool.ExtractAudio(t.Context(), fileURL, filepath.Join(t.TempDir(), "a.mp3")); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("ExtractAudio with a missing ffmpeg = %v, want ErrUnavailable", err)
 	}
 }
 
@@ -146,23 +214,26 @@ func TestYouTubeAudioURL(t *testing.T) {
 		t.Errorf("YouTubeAudioURL = %q, %v", got, err)
 	}
 	raw, _ := os.ReadFile(argsFile) //nolint:gosec
-	if args := strings.ReplaceAll(string(raw), "\n", " "); !strings.Contains(args, "-f bestaudio --get-url -- "+youtubeURL) || !strings.Contains(args, "--ignore-config") {
-		t.Errorf("yt-dlp args = %q", args)
+	args := strings.ReplaceAll(string(raw), "\n", " ")
+	for _, want := range []string{"--ignore-config", "--use-extractors youtube", "-f bestaudio --get-url -- " + youtubeURL} {
+		if !strings.Contains(args, want) {
+			t.Errorf("yt-dlp args %q lack %q", args, want)
+		}
 	}
 
 	cases := map[string]struct {
-		body string
+		tool Tool
 		want error
 	}{
-		"bot check":   {`echo "ERROR: [youtube] abc123: Sign in to confirm you're not a bot" >&2; exit 1`, ErrBlocked},
-		"unavailable": {`echo "ERROR: [youtube] abc123: Video unavailable" >&2; exit 1`, ErrNoAudio},
-		"no output":   {`exit 0`, ErrNoMedia},
-		"flood":       {`head -c 100000 /dev/zero | tr '\0' a`, ErrLimitExceeded},
+		"bot check":   {Tool{Limit: bin, YTDLP: script(t, `echo "ERROR: [youtube] abc123: Sign in to confirm you're not a bot" >&2; exit 1`)}, ErrBlocked},
+		"unavailable": {Tool{Limit: bin, YTDLP: script(t, `echo "ERROR: [youtube] abc123: Video unavailable" >&2; exit 1`)}, ErrNoAudio},
+		"no output":   {Tool{Limit: bin, YTDLP: script(t, `exit 0`)}, ErrNoMedia},
+		"flood":       {Tool{Limit: bin, YTDLP: script(t, `head -c 100000 /dev/zero | tr '\0' a`)}, ErrLimitExceeded},
+		"no limit":    {Tool{}, ErrUnavailable},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			tool := Tool{Limit: bin, YTDLP: script(t, tc.body)}
-			if _, err := tool.YouTubeAudioURL(t.Context(), youtubeURL); !errors.Is(err, tc.want) {
+			if _, err := tc.tool.YouTubeAudioURL(t.Context(), youtubeURL); !errors.Is(err, tc.want) {
 				t.Errorf("YouTubeAudioURL = %v, want %v", err, tc.want)
 			}
 		})
@@ -170,20 +241,21 @@ func TestYouTubeAudioURL(t *testing.T) {
 }
 
 func TestNewDownloaderUsesConfigAndDefaultHosts(t *testing.T) {
-	cfg := config.Audio{LimitBinary: "/opt/limit", FFmpegBinary: "/usr/bin/ffmpeg", YTDLPBinary: "/usr/bin/yt-dlp", Timeout: time.Minute, MaxDuration: time.Hour, MaxMemory: 1, MaxBytes: 2}
-	d := NewDownloader(cfg, nil, "ua")
-	want := Tool{Limit: "/opt/limit", FFmpeg: "/usr/bin/ffmpeg", YTDLP: "/usr/bin/yt-dlp", Timeout: time.Minute, MaxDuration: time.Hour, MaxMemory: 1, MaxBytes: 2, UserAgent: "ua"}
-	if d.Tool.Limit != want.Limit || d.Tool.FFmpeg != want.FFmpeg || d.Tool.MaxBytes != 2 || d.Tool.UserAgent != "ua" || d.Resolver.YouTube == nil {
+	cfg := config.Audio{LimitBinary: "/opt/limit", FFmpegBinary: "/usr/bin/ffmpeg", FFprobeBinary: "/usr/bin/ffprobe", YTDLPBinary: "/usr/bin/yt-dlp", Timeout: time.Minute, MaxDuration: time.Hour, MaxMemory: 1, MaxBytes: 2}
+	d := NewDownloader(cfg, "ua")
+	if d.Tool.Limit != "/opt/limit" || d.Tool.FFmpeg != "/usr/bin/ffmpeg" || d.Tool.FFprobe != "/usr/bin/ffprobe" || d.Tool.MaxBytes != 2 ||
+		d.Tool.UserAgent != "ua" || d.Resolver.YouTube == nil || len(d.Tool.Hosts) != len(DefaultHosts.Media) {
 		t.Errorf("NewDownloader = %+v", d)
 	}
-	if len(d.Resolver.Hosts.Media) != len(DefaultHosts.Media) {
-		t.Errorf("hosts = %+v", d.Resolver.Hosts)
+	pages, ok := d.Resolver.Fetcher.(PageFetcher)
+	if !ok || pages.UserAgent != "ua" || len(pages.Hosts) != len(DefaultHosts.Players) || pages.Guard.AllowAddress != nil {
+		t.Errorf("player page fetcher = %#v", d.Resolver.Fetcher)
 	}
 	if got := ResolveLimitBinary(""); filepath.Base(got) != "limit" {
 		t.Errorf("ResolveLimitBinary = %q", got)
 	}
 	defaults := Tool{}.withDefaults()
-	if defaults.FFmpeg != "ffmpeg" || defaults.YTDLP != "yt-dlp" || defaults.Timeout != time.Hour || defaults.MaxBytes != 256<<20 {
+	if defaults.FFmpeg != "ffmpeg" || defaults.FFprobe != "ffprobe" || defaults.YTDLP != "yt-dlp" || defaults.Timeout != time.Hour || defaults.MaxBytes != 256<<20 {
 		t.Errorf("defaults = %+v", defaults)
 	}
 }
@@ -213,5 +285,28 @@ func TestCheckMP3(t *testing.T) {
 	}
 	if _, err := CheckMP3(id3, 1000); !errors.Is(err, ErrNoAudio) {
 		t.Errorf("CheckMP3(short) = %v, want ErrNoAudio", err)
+	}
+}
+
+func TestFailureKind(t *testing.T) {
+	cases := map[error]string{
+		ErrUnsupported:      KindUnsupported,
+		ErrForbiddenHost:    KindUnsupported,
+		ErrForbiddenAddress: KindUnsupported,
+		ErrNoMedia:          KindNoMedia,
+		ErrNoAudio:          KindNoAudio,
+		ErrMalformed:        KindMalformed,
+		ErrRefused:          KindRefused,
+		ErrLimitExceeded:    KindLimit,
+		ErrUnavailable:      KindUnavailable,
+		ErrIncomplete:       KindIncomplete,
+		ErrNetwork:          KindTransient,
+		ErrBlocked:          KindTransient,
+		errors.New("other"): KindMalformed,
+	}
+	for err, want := range cases {
+		if got := FailureKind(err); got != want {
+			t.Errorf("FailureKind(%v) = %q, want %q", err, got, want)
+		}
 	}
 }

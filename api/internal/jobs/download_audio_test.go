@@ -3,6 +3,9 @@ package jobs
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,42 +69,99 @@ func TestDownloadAudioWithFlagOffDoesNothing(t *testing.T) {
 	}
 }
 
-func TestDownloadAudioWithoutDependenciesIsCancelled(t *testing.T) {
-	cases := map[string]struct {
-		w    *DownloadAudioWorker
-		want error
-	}{
-		"no storage":    {&DownloadAudioWorker{logger: discard, enabled: audioFlag(true), downloader: unusedDownloader{t}}, ErrNoStorage},
-		"no downloader": {&DownloadAudioWorker{logger: discard, enabled: audioFlag(true), storage: storagetest.New()}, ErrNoDownloader},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			if err := tc.w.Work(t.Context(), audioJob()); !isCancel(err) || !errors.Is(err, tc.want) {
-				t.Errorf("Work = %v, want a cancelled %v", err, tc.want)
-			}
-		})
+func TestDownloadAudioWithoutDownloaderIsCancelled(t *testing.T) {
+	w := &DownloadAudioWorker{logger: discard, enabled: audioFlag(true), storage: storagetest.New()}
+	if err := w.Work(t.Context(), audioJob()); !isCancel(err) || !errors.Is(err, ErrNoDownloader) {
+		t.Errorf("Work = %v, want a cancelled ErrNoDownloader", err)
 	}
 }
 
-func TestMediaAndStorageErrorsRetryOnlyTransientFailures(t *testing.T) {
-	cases := []struct {
-		name   string
-		err    error
-		cancel bool
-	}{
-		{"network", media.ErrNetwork, false},
-		{"blocked player", media.ErrBlocked, false},
-		{"job timeout", context.DeadlineExceeded, false},
-		{"refused", media.ErrRefused, true},
-		{"no media", media.ErrNoMedia, true},
-		{"too long", media.ErrLimitExceeded, true},
-		{"no tools", media.ErrUnavailable, true},
+func TestConfigDefaultsToAnUnconfiguredBucket(t *testing.T) {
+	cfg := Config{}.withDefaults(store.New(nil))
+	if _, err := cfg.Storage.Stat(t.Context(), "k"); !errors.Is(err, storage.ErrNotConfigured) {
+		t.Errorf("default storage Stat = %v, want ErrNotConfigured", err)
 	}
-	for _, tc := range cases {
-		if err := mediaError("https://x.test/r", tc.err); isCancel(err) != tc.cancel || !errors.Is(err, tc.err) {
-			t.Errorf("%s: mediaError = %v, cancel = %v", tc.name, err, tc.cancel)
+}
+
+func TestFailurePolicy(t *testing.T) {
+	now := time.Date(2026, 11, 18, 13, 5, 0, 0, time.UTC)
+	cases := map[string]struct {
+		permanent bool
+		wait      time.Duration
+	}{
+		media.KindUnsupported: {true, 0},
+		media.KindNoMedia:     {true, 0},
+		media.KindNoAudio:     {true, 0},
+		media.KindMalformed:   {true, 0},
+		media.KindRefused:     {false, 156 * time.Hour},
+		media.KindLimit:       {false, 156 * time.Hour},
+		media.KindUnavailable: {false, 12 * time.Hour},
+		media.KindIncomplete:  {false, 12 * time.Hour},
+		media.KindTransient:   {false, 12 * time.Hour},
+	}
+	for kind, tc := range cases {
+		if got := PermanentFailure(kind); got != tc.permanent {
+			t.Errorf("PermanentFailure(%s) = %v", kind, got)
+		}
+		at := retryAfter(kind, now)
+		if tc.permanent != (at == nil) || at != nil && at.Sub(now) != tc.wait {
+			t.Errorf("retryAfter(%s) = %v, want +%s", kind, at, tc.wait)
 		}
 	}
+
+	later := now.Add(time.Hour)
+	if _, wait := waiting(store.Recording{Download: store.DownloadState{Failure: media.KindRefused, RetryAfter: &later}}, now); !wait {
+		t.Error("waiting before retry_after = false")
+	}
+	if _, wait := waiting(store.Recording{Download: store.DownloadState{Failure: media.KindRefused, RetryAfter: &now}}, later); wait {
+		t.Error("waiting after retry_after = true")
+	}
+	if _, wait := waiting(store.Recording{Download: store.DownloadState{Failure: media.KindNoMedia}}, later); !wait {
+		t.Error("waiting after a permanent failure = false")
+	}
+	if _, wait := waiting(store.Recording{}, now); wait {
+		t.Error("waiting with no failure = true")
+	}
+}
+
+func TestSweepAudioTempRemovesOnlyOldAudioDirectories(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	old := now.Add(-3 * time.Hour)
+	for _, name := range []string{AudioTempPrefix + "old", AudioTempPrefix + "new", "other-old"} {
+		if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, AudioTempPrefix+"file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{AudioTempPrefix + "old", "other-old", AudioTempPrefix + "file"} {
+		if err := os.Chtimes(filepath.Join(dir, name), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := SweepAudioTemp(dir, 2*time.Hour, now)
+	if err != nil || removed != 1 {
+		t.Fatalf("SweepAudioTemp = %d, %v; want 1", removed, err)
+	}
+	entries, _ := os.ReadDir(dir)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != AudioTempPrefix+"file,"+AudioTempPrefix+"new,other-old" {
+		t.Errorf("left %v", names)
+	}
+	if _, err := SweepAudioTemp(filepath.Join(dir, "missing"), time.Hour, now); err == nil {
+		t.Error("SweepAudioTemp on a missing directory returned no error")
+	}
+	if _, err := SweepAudioTemp("", 24*365*time.Hour, now); err != nil {
+		t.Errorf("SweepAudioTemp on the default directory = %v", err)
+	}
+}
+
+func TestStorageErrorsRetryOnlyTransientFailures(t *testing.T) {
 	if err := storageError("k", storage.ErrNotConfigured); !isCancel(err) {
 		t.Errorf("storageError(not configured) = %v, want cancelled", err)
 	}

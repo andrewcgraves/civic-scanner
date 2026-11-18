@@ -22,12 +22,51 @@ var (
 	ErrUnavailable   = errors.New("media: tool unavailable")
 	ErrRefused       = errors.New("media: media host refused the request")
 	ErrNetwork       = errors.New("media: network error reading media")
+	ErrIncomplete    = errors.New("media: audio is shorter than the recording")
 )
+
+const (
+	KindUnsupported = "unsupported"
+	KindNoMedia     = "no_media"
+	KindNoAudio     = "no_audio"
+	KindMalformed   = "malformed"
+	KindRefused     = "refused"
+	KindLimit       = "limit"
+	KindUnavailable = "unavailable"
+	KindIncomplete  = "incomplete"
+	KindTransient   = "transient"
+)
+
+func FailureKind(err error) string {
+	var fetchErr *fetch.Error
+	switch {
+	case errors.Is(err, ErrUnsupported), errors.Is(err, ErrForbiddenHost), errors.Is(err, ErrForbiddenAddress),
+		errors.Is(err, fetch.ErrInvalidURL):
+		return KindUnsupported
+	case errors.Is(err, ErrNoMedia):
+		return KindNoMedia
+	case errors.Is(err, ErrNoAudio):
+		return KindNoAudio
+	case errors.Is(err, ErrLimitExceeded), errors.Is(err, fetch.ErrTooLarge):
+		return KindLimit
+	case errors.Is(err, ErrRefused), errors.Is(err, fetch.ErrTooManyRedirects):
+		return KindRefused
+	case errors.Is(err, ErrUnavailable), errors.Is(err, fetch.ErrNotConfigured):
+		return KindUnavailable
+	case errors.Is(err, ErrIncomplete):
+		return KindIncomplete
+	case IsRetryable(err):
+		return KindTransient
+	case errors.As(err, &fetchErr) && fetchErr.StatusCode >= 400:
+		return KindRefused
+	}
+	return KindMalformed
+}
 
 const DefaultMinBytes = 40_000
 
 func IsRetryable(err error) bool {
-	return errors.Is(err, ErrNetwork) || errors.Is(err, ErrBlocked) || fetch.IsRetryable(err) ||
+	return errors.Is(err, ErrNetwork) || errors.Is(err, ErrBlocked) || errors.Is(err, ErrIncomplete) || fetch.IsRetryable(err) ||
 		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 

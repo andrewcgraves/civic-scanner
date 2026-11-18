@@ -57,11 +57,14 @@ func (c Config) withDefaults(st *store.Store) Config {
 	if c.FollowUp == nil {
 		c.FollowUp = FollowUps{
 			EnqueueProcessAgenda{Queue: c.Queue},
-			EnqueueDownloadAudio{Queue: c.AudioQueue, Store: st, Enabled: c.Enabled},
+			EnqueueDownloadAudio{Queue: c.AudioQueue, Store: st, Clock: c.Clock, Enabled: c.Enabled},
 		}
 	}
 	if c.AudioTimeout <= 0 {
 		c.AudioTimeout = defaultAudioTimeout
+	}
+	if c.Storage == nil {
+		c.Storage = unconfiguredStorage()
 	}
 	if c.AudioFollowUp == nil {
 		c.AudioFollowUp = NoAudioFollowUp{}
@@ -134,8 +137,12 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 			cfg.Queue:      {MaxWorkers: 10},
 			cfg.AudioQueue: {MaxWorkers: audioQueueWorkers},
 		},
-		Workers:              workers,
-		PeriodicJobs:         periodic,
-		RescueStuckJobsAfter: max(rescueStuckJobsAfter, 2*(cfg.AudioTimeout+audioTimeoutHeadroom)),
+		Workers:      workers,
+		PeriodicJobs: periodic,
 	})
+}
+
+func unconfiguredStorage() storage.Store {
+	store, _ := storage.New(config.Storage{})
+	return store
 }

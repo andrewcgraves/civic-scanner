@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,17 +28,16 @@ const (
 	audioRetentionMonths  = 6
 	defaultAudioTimeout   = time.Hour
 	audioTimeoutHeadroom  = 15 * time.Minute
-	rescueStuckJobsAfter  = 3 * time.Hour
-	audioTempPattern      = "civic-audio-*"
+	AudioTempPrefix       = "civic-audio-"
 	audioTempFileName     = "audio.mp3"
 	audioKeyPrefix        = "recordings/"
 	audioKeyFileExtension = ".mp3"
+	dailyRetry            = 12 * time.Hour
+	weeklyRetry           = 6*24*time.Hour + 12*time.Hour
+	failureWriteTimeout   = 10 * time.Second
 )
 
-var (
-	ErrNoStorage    = errors.New("jobs: no object storage configured")
-	ErrNoDownloader = errors.New("jobs: no audio downloader configured")
-)
+var ErrNoDownloader = errors.New("jobs: no audio downloader configured")
 
 type DownloadAudioArgs struct {
 	RecordingID uuid.UUID `json:"recording_id"`
@@ -56,6 +56,38 @@ func AudioKey(recordingID uuid.UUID) string {
 	return audioKeyPrefix + recordingID.String() + audioKeyFileExtension
 }
 
+func PermanentFailure(kind string) bool {
+	switch kind {
+	case media.KindUnsupported, media.KindNoMedia, media.KindNoAudio, media.KindMalformed:
+		return true
+	}
+	return false
+}
+
+func retryAfter(kind string, now time.Time) *time.Time {
+	var wait time.Duration
+	switch {
+	case PermanentFailure(kind):
+		return nil
+	case kind == media.KindRefused || kind == media.KindLimit:
+		wait = weeklyRetry
+	default:
+		wait = dailyRetry
+	}
+	at := now.Add(wait)
+	return &at
+}
+
+func waiting(rec store.Recording, now time.Time) (string, bool) {
+	switch {
+	case PermanentFailure(rec.Download.Failure):
+		return "permanent failure " + rec.Download.Failure, true
+	case rec.Download.RetryAfter != nil && now.Before(*rec.Download.RetryAfter):
+		return "backing off after " + rec.Download.Failure, true
+	}
+	return "", false
+}
+
 type AudioDownloader interface {
 	DownloadAudio(ctx context.Context, recordingURL, dst string) (media.Audio, error)
 }
@@ -71,6 +103,7 @@ func (NoAudioFollowUp) AudioStored(context.Context, pgx.Tx, store.Recording) err
 type EnqueueDownloadAudio struct {
 	Queue   string
 	Store   *store.Store
+	Clock   sources.Clock
 	Enabled func(ctx context.Context, flag string) bool
 }
 
@@ -88,6 +121,9 @@ func (e EnqueueDownloadAudio) MeetingUpserted(ctx context.Context, tx pgx.Tx, m 
 	if rec.Audio != nil || rec.AudioDeletedAt != nil {
 		return nil
 	}
+	if _, wait := waiting(rec, e.now()); wait {
+		return nil
+	}
 	client, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return err
@@ -96,6 +132,13 @@ func (e EnqueueDownloadAudio) MeetingUpserted(ctx context.Context, tx pgx.Tx, m 
 		return fmt.Errorf("enqueue download audio: %w", err)
 	}
 	return nil
+}
+
+func (e EnqueueDownloadAudio) now() time.Time {
+	if e.Clock == nil {
+		return time.Now()
+	}
+	return e.Clock.Now()
 }
 
 type FollowUps []FollowUp
@@ -107,6 +150,31 @@ func (f FollowUps) MeetingUpserted(ctx context.Context, tx pgx.Tx, m UpsertedMee
 		}
 	}
 	return nil
+}
+
+func SweepAudioTemp(dir string, olderThan time.Duration, now time.Time) (int, error) {
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("sweep audio temp: %w", err)
+	}
+	removed := 0
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), AudioTempPrefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) < olderThan {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, entry.Name())); err != nil {
+			return removed, fmt.Errorf("sweep audio temp: %w", err)
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 type DownloadAudioWorker struct {
@@ -134,9 +202,6 @@ func (w *DownloadAudioWorker) Work(ctx context.Context, job *river.Job[DownloadA
 		logger.InfoContext(ctx, "download audio skipped: flag off", "flag", FlagDownloadAudio)
 		return nil
 	}
-	if w.storage == nil {
-		return river.JobCancel(ErrNoStorage)
-	}
 	if w.downloader == nil {
 		return river.JobCancel(ErrNoDownloader)
 	}
@@ -148,7 +213,7 @@ func (w *DownloadAudioWorker) Work(ctx context.Context, job *river.Job[DownloadA
 		return err
 	}
 	logger = logger.With("recording_url", rec.SourceURL)
-	if done := w.skip(ctx, logger, rec); done {
+	if w.skip(ctx, logger, rec) {
 		return nil
 	}
 
@@ -159,19 +224,24 @@ func (w *DownloadAudioWorker) Work(ctx context.Context, job *river.Job[DownloadA
 	}
 	if uploaded {
 		logger.InfoContext(ctx, "audio already in the bucket, recording it", "key", key)
-	} else if err := w.download(ctx, logger, rec, key); err != nil {
+	} else if err := w.download(ctx, logger, job, rec, key); err != nil {
 		return err
 	}
 	return w.record(ctx, logger, rec.ID, key)
 }
 
 func (w *DownloadAudioWorker) skip(ctx context.Context, logger *slog.Logger, rec store.Recording) bool {
-	switch {
-	case rec.Audio != nil:
+	if rec.Audio != nil {
 		logger.InfoContext(ctx, "download audio skipped: audio already stored", "key", rec.Audio.Key)
 		return true
-	case rec.AudioDeletedAt != nil:
+	}
+	if rec.AudioDeletedAt != nil {
 		logger.InfoContext(ctx, "download audio skipped: audio was deleted by retention", "deleted_at", rec.AudioDeletedAt)
+		return true
+	}
+	if reason, wait := waiting(rec, w.clock.Now()); wait {
+		logger.InfoContext(ctx, "download audio skipped: "+reason, "retry_after", rec.Download.RetryAfter,
+			"attempts", rec.Download.Attempts)
 		return true
 	}
 	return false
@@ -188,8 +258,8 @@ func (w *DownloadAudioWorker) uploaded(ctx context.Context, key string) (bool, e
 	return info.Size > 0, nil
 }
 
-func (w *DownloadAudioWorker) download(ctx context.Context, logger *slog.Logger, rec store.Recording, key string) error {
-	dir, err := os.MkdirTemp(w.tempDir, audioTempPattern)
+func (w *DownloadAudioWorker) download(ctx context.Context, logger *slog.Logger, job *river.Job[DownloadAudioArgs], rec store.Recording, key string) error {
+	dir, err := os.MkdirTemp(w.tempDir, AudioTempPrefix+"*")
 	if err != nil {
 		return fmt.Errorf("audio temp dir: %w", err)
 	}
@@ -198,8 +268,7 @@ func (w *DownloadAudioWorker) download(ctx context.Context, logger *slog.Logger,
 	dst := filepath.Join(dir, audioTempFileName)
 	audio, err := w.downloader.DownloadAudio(ctx, rec.SourceURL, dst)
 	if err != nil {
-		logger.InfoContext(ctx, "audio not downloaded", "error", err)
-		return mediaError(rec.SourceURL, err)
+		return w.failed(ctx, logger, job, rec, err)
 	}
 	f, err := os.Open(dst) //nolint:gosec
 	if err != nil {
@@ -211,6 +280,26 @@ func (w *DownloadAudioWorker) download(ctx context.Context, logger *slog.Logger,
 	}
 	logger.InfoContext(ctx, "audio uploaded", "key", key, "bytes", audio.Bytes, "via", audio.Via, "media_url", audio.MediaURL)
 	return nil
+}
+
+func (w *DownloadAudioWorker) failed(ctx context.Context, logger *slog.Logger, job *river.Job[DownloadAudioArgs], rec store.Recording, err error) error {
+	kind := media.FailureKind(err)
+	err = fmt.Errorf("recording %s: %w", rec.SourceURL, err)
+	retryable := media.IsRetryable(err)
+	logger.InfoContext(ctx, "audio not downloaded", "error", err, "kind", kind, "retryable", retryable)
+	if retryable && job.Attempt < job.MaxAttempts {
+		return err
+	}
+	failure := store.DownloadFailure{Kind: kind, RetryAfter: retryAfter(kind, w.clock.Now())}
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), failureWriteTimeout)
+	defer cancel()
+	if _, recErr := w.store.RecordDownloadFailure(writeCtx, rec.ID, failure); recErr != nil {
+		logger.WarnContext(ctx, "download failure not recorded", "error", recErr)
+	}
+	if retryable {
+		return err
+	}
+	return river.JobCancel(err)
 }
 
 func (w *DownloadAudioWorker) record(ctx context.Context, logger *slog.Logger, recordingID uuid.UUID, key string) error {
@@ -251,14 +340,6 @@ func (w *DownloadAudioWorker) resolveConflict(ctx context.Context, logger *slog.
 	}
 	logger.InfoContext(ctx, "audio deleted by retention while downloading; removed the upload", "key", key)
 	return nil
-}
-
-func mediaError(recordingURL string, err error) error {
-	err = fmt.Errorf("recording %s: %w", recordingURL, err)
-	if media.IsRetryable(err) {
-		return err
-	}
-	return river.JobCancel(err)
 }
 
 func storageError(key string, err error) error {

@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	ErrInvalidAudio = errors.New("invalid audio")
-	ErrAudioChanged = errors.New("recording audio changed")
-	ErrInvalidLimit = errors.New("invalid limit")
+	ErrInvalidAudio   = errors.New("invalid audio")
+	ErrAudioChanged   = errors.New("recording audio changed")
+	ErrInvalidLimit   = errors.New("invalid limit")
+	ErrInvalidFailure = errors.New("invalid download failure")
 )
 
 type RecordingInput struct {
@@ -26,26 +27,50 @@ type RecordingAudio struct {
 	ExpiresAt time.Time
 }
 
+type DownloadState struct {
+	Attempts   int64
+	Failure    string
+	FailedAt   *time.Time
+	RetryAfter *time.Time
+}
+
+type DownloadFailure struct {
+	Kind       string
+	RetryAfter *time.Time
+}
+
 type Recording struct {
 	ID             uuid.UUID
 	MeetingID      uuid.UUID
 	SourceURL      string
 	Audio          *RecordingAudio
 	AudioDeletedAt *time.Time
+	Download       DownloadState
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }
 
-const recordingColumns = `id, meeting_id, source_url, audio_key, audio_expires_at, audio_deleted_at, created_at, updated_at`
+var downloadFailureKinds = map[string]bool{
+	"unsupported": true, "no_media": true, "no_audio": true, "malformed": true, "refused": true,
+	"limit": true, "unavailable": true, "incomplete": true, "transient": true,
+}
+
+const recordingColumns = `id, meeting_id, source_url, audio_key, audio_expires_at, audio_deleted_at,
+download_attempts, download_failure, download_failed_at, download_retry_after, created_at, updated_at`
 
 func scanRecording(row pgx.Row) (Recording, error) {
 	var (
 		r         Recording
 		key       *string
 		expiresAt *time.Time
+		failure   *string
 	)
-	if err := row.Scan(&r.ID, &r.MeetingID, &r.SourceURL, &key, &expiresAt, &r.AudioDeletedAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := row.Scan(&r.ID, &r.MeetingID, &r.SourceURL, &key, &expiresAt, &r.AudioDeletedAt,
+		&r.Download.Attempts, &failure, &r.Download.FailedAt, &r.Download.RetryAfter, &r.CreatedAt, &r.UpdatedAt); err != nil {
 		return Recording{}, err
+	}
+	if failure != nil {
+		r.Download.Failure = *failure
 	}
 	if key != nil && expiresAt != nil {
 		r.Audio = &RecordingAudio{Key: *key, ExpiresAt: *expiresAt}
@@ -191,7 +216,8 @@ func setRecordingAudio(ctx context.Context, q querier, recordingID uuid.UUID, au
 }
 
 const addRecordingAudioSQL = `
-UPDATE recordings SET audio_key = $2, audio_expires_at = $3, updated_at = clock_timestamp()
+UPDATE recordings SET audio_key = $2, audio_expires_at = $3,
+    download_failure = NULL, download_failed_at = NULL, download_retry_after = NULL, updated_at = clock_timestamp()
 WHERE id = $1 AND audio_key IS NULL AND audio_deleted_at IS NULL
 RETURNING ` + recordingColumns
 
@@ -221,6 +247,24 @@ func addRecordingAudio(ctx context.Context, q querier, recordingID uuid.UUID, au
 		return Recording{}, fmt.Errorf("add recording audio: recording %s: %w", recordingID, err)
 	}
 	return Recording{}, fmt.Errorf("add recording audio: recording %s already has audio or had it deleted: %w", recordingID, ErrAudioChanged)
+}
+
+func (s *Store) RecordDownloadFailure(ctx context.Context, recordingID uuid.UUID, failure DownloadFailure) (Recording, error) {
+	if !downloadFailureKinds[failure.Kind] {
+		return Recording{}, fmt.Errorf("record download failure: kind %q: %w", failure.Kind, ErrInvalidFailure)
+	}
+	r, err := scanRecording(s.pool.QueryRow(ctx, `
+UPDATE recordings SET download_attempts = download_attempts + 1, download_failure = $2,
+    download_failed_at = clock_timestamp(), download_retry_after = $3, updated_at = clock_timestamp()
+WHERE id = $1
+RETURNING `+recordingColumns, recordingID, failure.Kind, failure.RetryAfter))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Recording{}, fmt.Errorf("record download failure: recording %s: %w", recordingID, ErrNotFound)
+	}
+	if err != nil {
+		return Recording{}, fmt.Errorf("record download failure: %w", err)
+	}
+	return r, nil
 }
 
 func (s *Store) MarkRecordingAudioDeleted(ctx context.Context, recordingID uuid.UUID, key string) (Recording, error) {

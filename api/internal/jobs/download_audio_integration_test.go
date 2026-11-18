@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,7 @@ type fakeDownloader struct {
 	mu     sync.Mutex
 	urls   []string
 	err    error
+	errFor map[string]error
 	before func(ctx context.Context)
 }
 
@@ -53,6 +55,9 @@ func (d *fakeDownloader) DownloadAudio(ctx context.Context, recordingURL, dst st
 	d.mu.Lock()
 	d.urls = append(d.urls, recordingURL)
 	err, before := d.err, d.before
+	if e, ok := d.errFor[recordingURL]; ok {
+		err = e
+	}
 	d.mu.Unlock()
 	if before != nil {
 		before(ctx)
@@ -285,19 +290,24 @@ func TestCheckWithTheAudioFlagOffAddsNoRecordings(t *testing.T) {
 func TestDownloadAudioFailures(t *testing.T) {
 	pool := testdb.Pool(t)
 	agencyID := seedAgency(t, pool, "jobs-test-audio-fail-"+randomSuffix(t), "live")
+	weekly := fixedNow.Add(6*24*time.Hour + 12*time.Hour)
 	cases := map[string]struct {
-		storage   storage.Store
-		err       error
-		state     string
-		downloads int
+		storage    storage.Store
+		err        error
+		state      string
+		downloads  int
+		failure    string
+		retryAfter *time.Time
 	}{
-		"no media in the player":   {storagetest.New(), media.ErrNoMedia, "cancelled", 1},
-		"bot check on the player":  {storagetest.New(), media.ErrBlocked, "retryable", 1},
-		"media host refused":       {storagetest.New(), media.ErrRefused, "cancelled", 1},
-		"network failure":          {storagetest.New(), media.ErrNetwork, "retryable", 1},
-		"storage not configured":   {storagetest.Failing(storage.ErrNotConfigured), nil, "cancelled", 0},
-		"storage refuses":          {storagetest.Failing(&minioLikeError{}), nil, "cancelled", 0},
-		"upload failed in transit": {&failingPut{Fake: storagetest.New(), err: context.DeadlineExceeded}, nil, "retryable", 1},
+		"no media in the player":   {storagetest.New(), media.ErrNoMedia, "cancelled", 1, media.KindNoMedia, nil},
+		"host not allowed":         {storagetest.New(), media.ErrForbiddenHost, "cancelled", 1, media.KindUnsupported, nil},
+		"bot check on the player":  {storagetest.New(), media.ErrBlocked, "retryable", 1, "", nil},
+		"media host refused":       {storagetest.New(), media.ErrRefused, "cancelled", 1, media.KindRefused, &weekly},
+		"too long":                 {storagetest.New(), media.ErrLimitExceeded, "cancelled", 1, media.KindLimit, &weekly},
+		"network failure":          {storagetest.New(), media.ErrNetwork, "retryable", 1, "", nil},
+		"storage not configured":   {storagetest.Failing(storage.ErrNotConfigured), nil, "cancelled", 0, "", nil},
+		"storage refuses":          {storagetest.Failing(&minioLikeError{}), nil, "cancelled", 0, "", nil},
+		"upload failed in transit": {&failingPut{Fake: storagetest.New(), err: context.DeadlineExceeded}, nil, "retryable", 1, "", nil},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -315,10 +325,166 @@ func TestDownloadAudioFailures(t *testing.T) {
 			if calls := downloader.calls(); len(calls) != tc.downloads {
 				t.Errorf("downloads = %d, want %d", len(calls), tc.downloads)
 			}
-			if got, _ := store.New(pool).GetRecording(t.Context(), rec.ID); got.Audio != nil {
+			got, _ := store.New(pool).GetRecording(t.Context(), rec.ID)
+			if got.Audio != nil {
 				t.Errorf("audio recorded after a failure: %+v", got.Audio)
 			}
+			if got.Download.Failure != tc.failure || (got.Download.RetryAfter == nil) != (tc.retryAfter == nil) ||
+				tc.retryAfter != nil && !got.Download.RetryAfter.Equal(*tc.retryAfter) {
+				t.Errorf("download state = %+v, want failure %q retry after %v", got.Download, tc.failure, tc.retryAfter)
+			}
+			if wantAttempts := map[bool]int64{true: 1, false: 0}[tc.failure != ""]; got.Download.Attempts != wantAttempts {
+				t.Errorf("attempts = %d, want %d", got.Download.Attempts, wantAttempts)
+			}
 		})
+	}
+}
+
+func TestDownloadAudioRecordsATransientFailureOnTheLastAttempt(t *testing.T) {
+	pool := testdb.Pool(t)
+	agencyID := seedAgency(t, pool, "jobs-test-audio-last-"+randomSuffix(t), "live")
+	rec := seedRecording(t, pool, agencyID, "last")
+	h := start(t, pool, jobs.Config{Storage: storagetest.New(), Audio: &fakeDownloader{err: media.ErrNetwork}})
+	res, err := h.client.Insert(t.Context(), jobs.DownloadAudioArgs{RecordingID: rec.ID}, &river.InsertOpts{Queue: h.audioQueue, MaxAttempts: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testdb.WaitForJobState(t, pool, res.Job.ID, "discarded")
+	got, _ := store.New(pool).GetRecording(t.Context(), rec.ID)
+	if got.Download.Failure != media.KindTransient || got.Download.RetryAfter == nil || !got.Download.RetryAfter.Equal(fixedNow.Add(12*time.Hour)) {
+		t.Errorf("download state = %+v", got.Download)
+	}
+}
+
+func TestFailedDownloadsAreRetriedOnTheirOwnSchedule(t *testing.T) {
+	pool := testdb.Pool(t)
+	slug := "jobs-test-audio-backoff-" + randomSuffix(t)
+	agencyID := seedAgency(t, pool, slug, "live")
+	refused, noMedia := heldWithRecording("refused"), heldWithRecording("no-media")
+	clock := sourcestest.NewClock(fixedNow)
+	downloader := &fakeDownloader{}
+	downloader.errFor = map[string]error{refused.RecordingURL: media.ErrRefused, noMedia.RecordingURL: media.ErrNoMedia}
+	h := start(t, pool, jobs.Config{
+		Registry: registry(map[string]sources.Adapter{slug: sourcestest.Returning(refused, noMedia)}),
+		Clock:    clock,
+		Storage:  storagetest.New(),
+		Audio:    downloader,
+	})
+
+	waitForDownloads := func(want int) {
+		t.Helper()
+		for _, job := range h.downloadJobs() {
+			if job.State != rivertype.JobStateCancelled && job.State != rivertype.JobStateCompleted {
+				testdb.WaitForJobState(t, pool, job.ID, "cancelled")
+			}
+		}
+		if got := len(h.downloadJobs()); got != want {
+			t.Fatalf("download jobs = %d, want %d", got, want)
+		}
+	}
+
+	h.checkAndWait(slug, day(9), "completed")
+	waitForDownloads(2)
+
+	clock.Set(fixedNow.Add(24 * time.Hour))
+	h.checkAndWait(slug, day(8), "completed")
+	waitForDownloads(2)
+
+	clock.Set(fixedNow.Add(7 * 24 * time.Hour))
+	h.checkAndWait(slug, day(7), "completed")
+	waitForDownloads(3)
+
+	recs := recordingsOf(t, pool, meetingsOf(t, pool, agencyID)["refused"].ID)
+	if len(recs) != 1 || recs[0].Download.Attempts != 2 || recs[0].Download.Failure != media.KindRefused {
+		t.Errorf("refused recording = %+v", recs)
+	}
+	recs = recordingsOf(t, pool, meetingsOf(t, pool, agencyID)["no-media"].ID)
+	if len(recs) != 1 || recs[0].Download.Attempts != 1 || recs[0].Download.Failure != media.KindNoMedia {
+		t.Errorf("no-media recording = %+v", recs)
+	}
+	if calls := downloader.calls(); len(calls) != 3 {
+		t.Errorf("downloads = %d, want 3", len(calls))
+	}
+
+	downloader.mu.Lock()
+	downloader.errFor = nil
+	downloader.mu.Unlock()
+	clock.Set(fixedNow.Add(14 * 24 * time.Hour))
+	h.checkAndWait(slug, day(6), "completed")
+	for _, job := range h.downloadJobs() {
+		if job.State != rivertype.JobStateCancelled {
+			testdb.WaitForJobState(t, pool, job.ID, "completed")
+		}
+	}
+	recs = recordingsOf(t, pool, meetingsOf(t, pool, agencyID)["refused"].ID)
+	if recs[0].Audio == nil || recs[0].Download.Failure != "" || recs[0].Download.RetryAfter != nil || recs[0].Download.Attempts != 2 {
+		t.Errorf("refused recording after access was granted = %+v", recs[0])
+	}
+}
+
+func TestDownloadAudioSkipsARecordingThatIsBackingOff(t *testing.T) {
+	pool := testdb.Pool(t)
+	agencyID := seedAgency(t, pool, "jobs-test-audio-skip-"+randomSuffix(t), "live")
+	rec := seedRecording(t, pool, agencyID, "skip")
+	later := fixedNow.Add(time.Hour)
+	if _, err := store.New(pool).RecordDownloadFailure(t.Context(), rec.ID, store.DownloadFailure{Kind: media.KindRefused, RetryAfter: &later}); err != nil {
+		t.Fatal(err)
+	}
+	downloader := &fakeDownloader{}
+	h := start(t, pool, jobs.Config{Storage: storagetest.New(), Audio: downloader})
+	testdb.WaitForJobState(t, pool, h.downloadAudio(rec.ID, day(0)), "completed")
+	if calls := downloader.calls(); len(calls) != 0 {
+		t.Errorf("downloads while backing off = %d", len(calls))
+	}
+}
+
+func TestRescuerLeavesARunningDownloadAloneWhileRescuingOtherJobs(t *testing.T) {
+	pool := testdb.Pool(t)
+	agencyID := seedAgency(t, pool, "jobs-test-audio-rescue-"+randomSuffix(t), "live")
+	rec := seedRecording(t, pool, agencyID, "rescue")
+	h := start(t, pool, jobs.Config{Storage: storagetest.New(), Audio: &fakeDownloader{}})
+	future := time.Now().Add(24 * time.Hour)
+	download, err := h.client.Insert(t.Context(), jobs.DownloadAudioArgs{RecordingID: rec.ID}, &river.InsertOpts{Queue: h.audioQueue, ScheduledAt: future})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check, err := h.client.Insert(t.Context(), jobs.CheckAgencyArgs{AgencySlug: "rescue-" + randomSuffix(t)}, &river.InsertOpts{Queue: h.queue, ScheduledAt: future})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{download.Job.ID, check.Job.ID} {
+		if _, err := pool.Exec(t.Context(),
+			`UPDATE river_job SET state = 'running', attempt = 1, attempted_at = now() - interval '65 minutes' WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.WithoutCancel(t.Context()), `DELETE FROM river_job WHERE id = ANY($1)`, []int64{download.Job.ID, check.Job.ID})
+	})
+
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		if err := pool.QueryRow(t.Context(), `SELECT state FROM river_job WHERE id = $1`, check.Job.ID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state != "running" {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	var checkState, downloadState string
+	if err := pool.QueryRow(t.Context(), `SELECT state FROM river_job WHERE id = $1`, check.Job.ID).Scan(&checkState); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(t.Context(), `SELECT state FROM river_job WHERE id = $1`, download.Job.ID).Scan(&downloadState); err != nil {
+		t.Fatal(err)
+	}
+	if checkState == "running" {
+		t.Fatalf("check_agency running for 65 minutes was not rescued within 90 s")
+	}
+	if downloadState != "running" {
+		t.Errorf("download_audio running for 65 minutes, inside its 75-minute timeout, was rescued: state %s", downloadState)
 	}
 }
 
@@ -476,6 +642,8 @@ func TestDownloadAudioFromAGranicusStyleHLSStreamIntoTheBucket(t *testing.T) {
 			Timeout:   time.Minute,
 			UserAgent: "CivicScanner-test",
 			Env:       testbin.CoverEnv(),
+			Hosts:     []string{"127.0.0.1"},
+			Guard:     media.Guard{AllowAddress: func(netip.Addr) bool { return true }},
 		},
 	}
 
