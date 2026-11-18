@@ -17,7 +17,7 @@ type built struct {
 	Link    string `json:"link"`
 	Title   any    `json:"title"`
 	Content any    `json:"content"`
-	Meta    any    `json:"meta"`
+	Meta    any    `json:"meta,omitempty"`
 	Types   []int  `json:"meeting_type"`
 }
 
@@ -138,6 +138,11 @@ func TestMissingOrUnreadableTimeUsesTheConfiguredStart(t *testing.T) {
 	body := posts(t,
 		commission(1, "December 2026", "2026-12-04", "", ""),
 		commission(2, "January 2027", "2027-01-08", "morning", ""),
+		func() built {
+			b := commission(3, "January 2027", "2027-01-15", "", "")
+			b.Meta = map[string]any{"_meeting_date": "2027-01-15", "_meeting_time": 900}
+			return b
+		}(),
 	)
 	a, logs := logged(t, vctc.VCTC, serving(body, nil), now)
 	got, err := a.Meetings(t.Context(), checkWindow(now))
@@ -151,6 +156,7 @@ func TestMissingOrUnreadableTimeUsesTheConfiguredStart(t *testing.T) {
 	for _, want := range []string{
 		`level=INFO msg="vctc: board meeting post has no start time; using the configured start time" host=www.goventura.org post=1`,
 		`level=WARN msg="vctc: board meeting post has an unreadable start time; using the configured start time" host=www.goventura.org post=2 time=morning`,
+		`level=WARN msg="vctc: board meeting post has an unreadable start time; using the configured start time" host=www.goventura.org post=3 time=""`,
 	} {
 		if !strings.Contains(logs.String(), want) {
 			t.Errorf("missing log %q in:\n%s", want, logs)
@@ -278,6 +284,12 @@ func TestAgendaLinkUnderTheCurrentAgendaHeading(t *testing.T) {
 		{"no heading", `<div class="wp-block-file"><a href="` + uploads + `x.pdf">Agenda</a></div>`, ""},
 		{"heading last", `<h3>Current Agenda</h3><p>To be posted.</p>`, ""},
 		{"supporting first", `<h3>SUPPORTING DOCUMENTS</h3><a href="` + uploads + `s.pdf">S</a><h3> Current  agenda </h3><a href="` + uploads + `a.pdf">Agenda</a>`, uploads + "a.pdf"},
+		{"trailing colon", `<h3>Current agenda:</h3><a href="` + uploads + `a.pdf">Agenda</a>`, uploads + "a.pdf"},
+		{"agenda alone in capitals", `<h4>AGENDA</h4><a href="` + uploads + `a.pdf">Agenda</a>`, uploads + "a.pdf"},
+		{"amended agenda", `<h3>Amended Agenda –</h3><a href="` + uploads + `a.pdf">Agenda</a>`, uploads + "a.pdf"},
+		{"id of the real markup", `<h3 id="current-agenda" class="wp-block-heading">Agenda &amp; Notice</h3><a href="` + uploads + `a.pdf">Agenda</a>`, uploads + "a.pdf"},
+		{"another heading with agenda in it", `<h3>Agenda Item Attachments</h3><a href="` + uploads + `a.pdf">A</a>`, ""},
+		{"empty agenda section then one with a link", `<h3>Current agenda</h3><h3>Amended agenda</h3><a href="` + uploads + `b.pdf">Agenda</a>`, uploads + "b.pdf"},
 	}
 	for _, c := range cases {
 		got := meetingsOf(t, vctc.VCTC, posts(t, p.content(c.content)), nil, now)
@@ -416,5 +428,119 @@ func TestRecordingMatchingRules(t *testing.T) {
 				t.Errorf("%s: meeting %s = %s %q, want %s %q", c.name, id, m.Status, m.RecordingURL, wantStatus, wantURL)
 			}
 		}
+	}
+}
+
+func TestMissingAgendaIsLoggedWhenTheMeetingIsNearOrPast(t *testing.T) {
+	cases := []struct {
+		name  string
+		post  built
+		now   time.Time
+		warns bool
+	}{
+		{"two weeks ahead", commission(1, "December 2026", "2026-12-04", "09:00", ""), time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC), false},
+		{"two days ahead", commission(1, "December 2026", "2026-12-04", "09:00", ""), time.Date(2026, 12, 2, 12, 0, 0, 0, time.UTC), true},
+		{"past", commission(1, "December 2026", "2026-12-04", "09:00", ""), time.Date(2026, 12, 10, 12, 0, 0, 0, time.UTC), true},
+		{"past with an agenda", commission(1, "December 2026", "2026-12-04", "09:00", uploads+"a.pdf"), time.Date(2026, 12, 10, 12, 0, 0, 0, time.UTC), false},
+		{"cancelled", commission(1, "December 2026", "2026-12-04", "09:00", "").titled("Commission Meeting – December 2026 (Cancelled)"), time.Date(2026, 12, 10, 12, 0, 0, 0, time.UTC), false},
+		{"heading the adapter cannot read", commission(1, "December 2026", "2026-12-04", "09:00", "").content(`<h3>Agenda for the meeting</h3><a href="` + uploads + `a.pdf">Agenda</a>`), time.Date(2026, 12, 2, 12, 0, 0, 0, time.UTC), true},
+	}
+	for _, c := range cases {
+		a, logs := logged(t, vctc.VCTC, serving(posts(t, c.post), nil), c.now)
+		if _, err := a.Meetings(t.Context(), checkWindow(c.now)); err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(logs.String(), `level=WARN msg="vctc: board meeting post has no agenda link though the meeting is near or past"`); got != c.warns {
+			t.Errorf("%s: warned %v, want %v:\n%s", c.name, got, c.warns, logs)
+		}
+	}
+}
+
+func TestPresentationsAfterAPastMeetingMeanHeld(t *testing.T) {
+	withPresentations := func(b built) built {
+		return b.content(agendaSection(uploads+"a.pdf") + `<h3 id="presentations">PRESENTATIONS</h3><a href="` + uploads + `2026/12/2026.12.04_PPT_Item-7.pdf">PPT</a>`)
+	}
+	cases := []struct {
+		name string
+		post built
+		now  time.Time
+		want sources.Status
+	}{
+		{"past with presentations", withPresentations(commission(1, "December 2026", "2026-12-04", "09:00", "")), time.Date(2026, 12, 5, 12, 0, 0, 0, time.UTC), sources.StatusHeld},
+		{"presentations before the start", withPresentations(commission(1, "December 2026", "2026-12-04", "09:00", "")), time.Date(2026, 12, 4, 16, 0, 0, 0, time.UTC), sources.StatusScheduled},
+		{"cancelled with presentations", withPresentations(commission(1, "December 2026", "2026-12-04", "09:00", "")).titled("Commission Meeting – December 2026 (Cancelled)"), time.Date(2026, 12, 5, 12, 0, 0, 0, time.UTC), sources.StatusCancelled},
+		{"past without presentations", commission(1, "December 2026", "2026-12-04", "09:00", uploads+"a.pdf"), time.Date(2026, 12, 5, 12, 0, 0, 0, time.UTC), sources.StatusScheduled},
+		{"empty presentations heading", commission(1, "December 2026", "2026-12-04", "09:00", "").content(agendaSection(uploads+"a.pdf") + `<h3>Presentations</h3>`), time.Date(2026, 12, 5, 12, 0, 0, 0, time.UTC), sources.StatusScheduled},
+	}
+	for _, c := range cases {
+		got := meetingsOf(t, vctc.VCTC, posts(t, c.post), nil, c.now)
+		if len(got) != 1 || got[0].Status != c.want || got[0].RecordingURL != "" {
+			t.Errorf("%s: got %+v, want %s with no recording", c.name, got, c.want)
+		}
+	}
+}
+
+func TestPostWithoutAMeetingDateIsDatedFromItsAgendaLink(t *testing.T) {
+	november := commission(24950, "November 2026", "2026-11-06", "09:00", uploads+"2026/10/AGENDA-COMMISSION-11.6.26.pdf")
+	undated := commission(25100, "December 2026", "", "", "")
+	datedByAgenda := commission(25100, "December 2026", "", "", uploads+"2026/11/AGENDA-COMMISSION-12.4.26.pdf")
+	inconsistent := commission(25100, "December 2026", "", "", uploads+"2026/11/AGENDA-COMMISSION-11.6.26.pdf")
+	twoDates := commission(25100, "December 2026", "", "", uploads+"2026/11/AGENDA-12.4.26-revised-12.11.26.pdf")
+	badDate := commission(25100, "December 2026", "2026-12-xx", "10:30", uploads+"2026/11/AGENDA-COMMISSION-12.4.26.pdf")
+
+	stage1 := time.Date(2026, 11, 28, 13, 0, 0, 0, time.UTC)
+	stage2 := time.Date(2026, 12, 8, 13, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name  string
+		now   time.Time
+		posts []any
+		want  []string
+		warn  string
+	}{
+		{"stage 1: undated beside a dated post", stage1, []any{undated, november}, []string{"24950"}, `level=WARN msg="vctc: skipped a board meeting post" host=www.goventura.org post=25100`},
+		{"stage 2: undated alone in the window", stage2, []any{undated, november}, nil, `level=WARN msg="vctc: skipped a board meeting post" host=www.goventura.org post=25100`},
+		{"stage 1 with a date in the agenda", stage1, []any{datedByAgenda, november}, []string{"24950", "25100"}, `level=WARN msg="vctc: board meeting post has no meeting date; using the date in its agenda link at the configured start time" host=www.goventura.org post=25100 title="Commission Meeting – December 2026" meeting_date="" source=https://www.goventura.org/wp-content/uploads/2026/11/AGENDA-COMMISSION-12.4.26.pdf date=2026-12-04 start_time=09:00`},
+		{"stage 2 with a date in the agenda", stage2, []any{datedByAgenda, november}, []string{"25100"}, "date=2026-12-04"},
+		{"agenda date of another month", stage2, []any{inconsistent, november}, nil, `level=WARN msg="vctc: skipped a board meeting post" host=www.goventura.org post=25100`},
+		{"two dates of the month", stage2, []any{twoDates, november}, nil, `level=WARN msg="vctc: skipped a board meeting post" host=www.goventura.org post=25100`},
+		{"unparseable meta date", stage2, []any{badDate, november}, []string{"25100"}, `meeting_date=2026-12-xx`},
+	}
+	for _, c := range cases {
+		a, logs := logged(t, vctc.VCTC, serving(posts(t, c.posts...), nil), c.now)
+		got, err := a.Meetings(t.Context(), checkWindow(c.now))
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		var ids []string
+		for _, m := range got {
+			ids = append(ids, m.SourceID)
+			if m.SourceID == "25100" && !m.StartsAt.Equal(time.Date(2026, 12, 4, 17, 0, 0, 0, time.UTC)) {
+				t.Errorf("%s: 25100 starts at %s, want 09:00 local on 2026-12-04", c.name, m.StartsAt)
+			}
+		}
+		if !slices.Equal(ids, c.want) {
+			t.Errorf("%s: meetings %v, want %v", c.name, ids, c.want)
+		}
+		if !strings.Contains(logs.String(), c.warn) {
+			t.Errorf("%s: missing %q in:\n%s", c.name, c.warn, logs)
+		}
+	}
+}
+
+func TestBoardPostWithACommitteeAgendaIsDropped(t *testing.T) {
+	now := time.Date(2021, 12, 10, 12, 0, 0, 0, time.UTC)
+	transcom := commission(1126, "December 2021", "", "", uploads+"2021/12/AGENDA-PACKET-December-8-2021-TRANSCOM.pdf").titled("Commission Meeting – December 2021 (2)")
+	regular := commission(1127, "December 2021", "", "", uploads+"2021/12/VCTC-AGENDA-REPORTS-DECEMBER-3-2021.pdf")
+	a, logs := logged(t, vctc.VCTC, serving(posts(t, transcom, regular), nil), now)
+	got, err := a.Meetings(t.Context(), checkWindow(now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].SourceID != "1127" || !got[0].StartsAt.Equal(time.Date(2021, 12, 3, 17, 0, 0, 0, time.UTC)) {
+		t.Errorf("got %+v, want the December 3 commission meeting alone", got)
+	}
+	if !strings.Contains(logs.String(), `level=WARN msg="vctc: dropped a board meeting post whose agenda names a committee" host=www.goventura.org post=1126`) {
+		t.Errorf("logs:\n%s", logs)
 	}
 }

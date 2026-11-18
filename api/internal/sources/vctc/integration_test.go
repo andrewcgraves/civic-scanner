@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,7 +37,7 @@ type harness struct {
 	slug     string
 }
 
-func newHarness(t *testing.T, cfg vctc.Config, fetcher fetch.Fetcher) *harness {
+func newHarness(t *testing.T, cfg vctc.Config, fetcher fetch.Fetcher, followUp jobs.FollowUp) *harness {
 	t.Helper()
 	ctx := context.WithoutCancel(t.Context())
 	pool := testdb.Pool(t)
@@ -65,7 +66,7 @@ func newHarness(t *testing.T, cfg vctc.Config, fetcher fetch.Fetcher) *harness {
 		Enabled:        func(context.Context, string) bool { return true },
 		Queue:          h.queue,
 		NoPeriodicJobs: true,
-		FollowUp:       jobs.NoFollowUp{},
+		FollowUp:       followUp,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +108,7 @@ func (h *harness) meetings() map[string]store.Meeting {
 
 func TestCheckAgencyStoresVCTCCommissionMeetingsFromRecordedResponses(t *testing.T) {
 	fake := serving(fixture(t, "vctc_commission_meetings.json"), fixture(t, "vctc_youtube_feed.xml"))
-	h := newHarness(t, withYouTube(), fake)
+	h := newHarness(t, withYouTube(), fake, jobs.NoFollowUp{})
 	h.check(recordedAt)
 
 	stored := h.meetings()
@@ -132,7 +133,7 @@ func TestUpcomingPostBecomesHeldInOneRow(t *testing.T) {
 		s := current.Load()
 		return serving(s.posts, s.feed).Fetch(context.Background(), req)
 	}}
-	h := newHarness(t, withYouTube(), fetcher)
+	h := newHarness(t, withYouTube(), fetcher, jobs.NoFollowUp{})
 
 	h.check(time.Date(2026, 11, 2, 13, 0, 0, 0, time.UTC))
 	before, ok := h.meetings()["24950"]
@@ -149,5 +150,39 @@ func TestUpcomingPostBecomesHeldInOneRow(t *testing.T) {
 	after := stored["24950"]
 	if len(stored) != 1 || after.ID != before.ID || after.Status != "held" {
 		t.Errorf("after the meeting: %+v, want the same row, held", stored)
+	}
+}
+
+func TestCheckAgencyWithTheProductionConfigStoresMeetingsAndEnqueuesAgendas(t *testing.T) {
+	recorded := serving(fixture(t, "vctc_commission_meetings.json"), nil)
+	fake := &fetchtest.Fake{Respond: func(req fetch.Request) (fetch.Response, error) {
+		if !strings.HasPrefix(req.URL, "https://www.goventura.org/") {
+			t.Errorf("request to %s; the production config reads goventura.org only", req.URL)
+		}
+		return recorded.Fetch(context.Background(), req)
+	}}
+	h := newHarness(t, vctc.VCTC, fake, nil)
+	h.check(recordedAt)
+
+	stored := h.meetings()
+	m, ok := stored["24950"]
+	if len(stored) != 1 || !ok {
+		t.Fatalf("stored %v, want meeting 24950 alone", stored)
+	}
+	if m.Status != "held" || !m.StartsAt.Equal(time.Date(2026, 11, 6, 17, 0, 0, 0, time.UTC)) ||
+		m.SourceURL != "https://www.goventura.org/meeting/commission-meeting-november-2026/" || m.Title != "Commission Meeting – November 2026" {
+		t.Errorf("meeting 24950 = %+v, want held on its presentations, at 09:00 local", m)
+	}
+	var agendaURL, queue string
+	if err := h.pool.QueryRow(context.WithoutCancel(t.Context()),
+		`SELECT args->>'agenda_url', queue FROM river_job WHERE kind = 'process_agenda' AND args->>'meeting_id' = $1`,
+		m.ID.String()).Scan(&agendaURL, &queue); err != nil {
+		t.Fatalf("process_agenda job for meeting 24950: %v", err)
+	}
+	if agendaURL != uploads+"2026/10/AGENDA-COMMISSION-11.6.26.pdf" || queue != h.queue {
+		t.Errorf("process_agenda args agenda_url %s on queue %s", agendaURL, queue)
+	}
+	if calls := fake.Calls(); len(calls) != 1 || calls[0].URL != postsURL {
+		t.Errorf("requests = %+v, want one GET of %s", calls, postsURL)
 	}
 }

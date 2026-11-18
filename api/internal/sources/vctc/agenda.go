@@ -1,6 +1,7 @@
 package vctc
 
 import (
+	"regexp"
 	"strings"
 
 	"golang.org/x/net/html"
@@ -12,49 +13,64 @@ type link struct {
 	text string
 }
 
-const agendaHeading = "current agenda"
+type section struct {
+	heading string
+	id      string
+	links   []link
+}
 
-func agendaLinks(content string) []link {
+var (
+	agendaHeading       = regexp.MustCompile(`^((current|amended|revised|updated) )*agenda$`)
+	presentationHeading = regexp.MustCompile(`^presentations?$`)
+	nonLetters          = regexp.MustCompile(`[^a-z]+`)
+)
+
+func headingKey(text string) string {
+	return strings.TrimSpace(nonLetters.ReplaceAllString(strings.ToLower(text), " "))
+}
+
+func (s section) agenda() bool {
+	return s.id == "current-agenda" || agendaHeading.MatchString(s.heading)
+}
+
+func (s section) presentations() bool {
+	return presentationHeading.MatchString(s.heading)
+}
+
+func sections(content string) []section {
 	z := html.NewTokenizer(strings.NewReader(content))
 	var (
-		links     []link
+		out       []section
 		heading   *strings.Builder
+		headingID string
 		anchor    *link
 		anchorTxt strings.Builder
-		inSection bool
 	)
 	for {
 		switch z.Next() {
 		case html.ErrorToken:
-			return links
+			return out
 		case html.StartTagToken:
 			tok := z.Token()
 			switch {
 			case isHeading(tok.DataAtom):
 				heading = &strings.Builder{}
-			case tok.DataAtom == atom.A && inSection && heading == nil:
-				anchor = &link{}
+				headingID = attr(tok, "id")
+			case tok.DataAtom == atom.A && heading == nil && len(out) > 0:
+				anchor = &link{href: strings.TrimSpace(attr(tok, "href"))}
 				anchorTxt.Reset()
-				for _, attr := range tok.Attr {
-					if attr.Key == "href" {
-						anchor.href = strings.TrimSpace(attr.Val)
-					}
-				}
 			}
 		case html.EndTagToken:
 			tok := z.Token()
 			switch {
 			case isHeading(tok.DataAtom) && heading != nil:
-				text := strings.ToLower(normalize(heading.String()))
+				out = append(out, section{heading: headingKey(heading.String()), id: strings.ToLower(strings.TrimSpace(headingID))})
 				heading = nil
-				if inSection {
-					return links
-				}
-				inSection = text == agendaHeading
 			case tok.DataAtom == atom.A && anchor != nil:
 				anchor.text = normalize(anchorTxt.String())
 				if anchor.href != "" {
-					links = append(links, *anchor)
+					last := &out[len(out)-1]
+					last.links = append(last.links, *anchor)
 				}
 				anchor = nil
 			}
@@ -68,6 +84,15 @@ func agendaLinks(content string) []link {
 			}
 		}
 	}
+}
+
+func attr(tok html.Token, key string) string {
+	for _, a := range tok.Attr {
+		if a.Key == key {
+			return a.Val
+		}
+	}
+	return ""
 }
 
 func isHeading(a atom.Atom) bool {

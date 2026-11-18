@@ -32,11 +32,6 @@ var (
 	separator      = regexp.MustCompile(`\s+[-–—]\s+`)
 )
 
-var (
-	monthLayouts = []string{"January 2006", "Jan 2006", "Jan. 2006"}
-	dayLayouts   = []string{"January 2, 2006", "Jan 2, 2006", "Jan. 2, 2006", "January 2 2006"}
-)
-
 func parseTitle(raw string) title {
 	full := normalize(html.UnescapeString(raw))
 	t := title{full: full}
@@ -71,21 +66,6 @@ func parseTitle(raw string) title {
 	return t
 }
 
-func parseTitleDate(s string) (time.Time, datePrecision) {
-	s = normalize(s)
-	for _, layout := range dayLayouts {
-		if d, err := time.Parse(layout, s); err == nil {
-			return d, dayDate
-		}
-	}
-	for _, layout := range monthLayouts {
-		if d, err := time.Parse(layout, s); err == nil {
-			return d, monthDate
-		}
-	}
-	return time.Time{}, noDate
-}
-
 func (t title) agrees(day time.Time) bool {
 	switch t.precision {
 	case dayDate:
@@ -99,7 +79,7 @@ func (t title) agrees(day time.Time) bool {
 
 func (t title) overlaps(window windowDays) bool {
 	if t.precision == noDate {
-		return true
+		return false
 	}
 	first := t.date
 	last := t.date

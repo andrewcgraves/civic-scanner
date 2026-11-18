@@ -8,8 +8,9 @@ var VCTC = Config{
 		{TypeID: 25, Name: "Commission Meeting"},
 		{TypeID: 33, Name: "Special Meeting"},
 	},
-	TimeZone:  "America/Los_Angeles",
-	StartTime: "09:00",
+	CommitteeWords: []string{"TRANSCOM", "TTAC", "CTAC", "SSTAC", "HVPAC", "HVTAC", "CEPAC", "CETAC", "SPBLAC", "CALVANS", "Committee"},
+	TimeZone:       "America/Los_Angeles",
+	StartTime:      "09:00",
 }
 
 var VCTCYouTube = YouTube{

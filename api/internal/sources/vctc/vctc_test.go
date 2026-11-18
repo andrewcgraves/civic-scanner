@@ -100,13 +100,20 @@ func held(m sources.Meeting, videoID string) sources.Meeting {
 	return m
 }
 
+func presented(m sources.Meeting) sources.Meeting {
+	m.Status = sources.StatusHeld
+	return m
+}
+
 func recordedMeetings() []sources.Meeting {
 	return []sources.Meeting{
 		meeting("1116", "Commission Meeting – April 2026", time.Date(2026, 4, 3, 16, 0, 0, 0, time.UTC), "commission-meeting-april-2026", "2026/03/VCTC-APRIL-3-2026-AGENDA.pdf"),
+		meeting("23052", "Commission Meeting – May 2026", time.Date(2026, 5, 1, 16, 0, 0, 0, time.UTC), "commission-meeting-may-2026", "2026/04/VCTC-MAY-1-2026-AGENDA-1.pdf"),
+		meeting("23053", "Commission Meeting – June 2026", time.Date(2026, 6, 5, 16, 0, 0, 0, time.UTC), "commission-meeting-june-2026", "2026/05/VCTC-JUNE-5-2026-AGENDA.pdf"),
 		meeting("22913", "Commission Meeting – July 2026", time.Date(2026, 7, 10, 16, 0, 0, 0, time.UTC), "commission-meeting-july-2026", "2026/07/VCTC-July-10-2026-Agenda-1.pdf"),
-		meeting("23860", "Commission Meeting – September 2026", time.Date(2026, 9, 11, 16, 0, 0, 0, time.UTC), "commission-meeting-september-2026", "2026/09/AGENDA-COMMISSION-9.11.26.pdf"),
-		meeting("24063", "Commission Meeting – October 2026", time.Date(2026, 10, 9, 16, 0, 0, 0, time.UTC), "commission-meeting-october-2026", "2026/10/AMENDED-AGENDA-COMMISSION-10.9.26.pdf"),
-		meeting("24950", "Commission Meeting – November 2026", time.Date(2026, 11, 6, 17, 0, 0, 0, time.UTC), "commission-meeting-november-2026", "2026/10/AGENDA-COMMISSION-11.6.26.pdf"),
+		presented(meeting("23860", "Commission Meeting – September 2026", time.Date(2026, 9, 11, 16, 0, 0, 0, time.UTC), "commission-meeting-september-2026", "2026/09/AGENDA-COMMISSION-9.11.26.pdf")),
+		presented(meeting("24063", "Commission Meeting – October 2026", time.Date(2026, 10, 9, 16, 0, 0, 0, time.UTC), "commission-meeting-october-2026", "2026/10/AMENDED-AGENDA-COMMISSION-10.9.26.pdf")),
+		presented(meeting("24950", "Commission Meeting – November 2026", time.Date(2026, 11, 6, 17, 0, 0, 0, time.UTC), "commission-meeting-november-2026", "2026/10/AGENDA-COMMISSION-11.6.26.pdf")),
 	}
 }
 
@@ -139,7 +146,7 @@ func TestCommissionMeetingsFromRecordedResponse(t *testing.T) {
 		t.Errorf("requests = %+v, want one GET of %s", calls, postsURL)
 	}
 	for _, post := range []string{"post=23053", "post=23052"} {
-		if !strings.Contains(logs.String(), "level=WARN msg=\"vctc: skipped an unreadable board meeting post\" host=www.goventura.org "+post) {
+		if !strings.Contains(logs.String(), "level=WARN msg=\"vctc: board meeting post has no meeting date; using the date in its agenda link at the configured start time\" host=www.goventura.org "+post) {
 			t.Errorf("no warning for %s, the posts without a meeting date in the window:\n%s", post, logs)
 		}
 	}
@@ -150,7 +157,7 @@ func TestDailyCheckWindowOnTheRecordingDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMeetings(t, got, recordedMeetings()[4:])
+	assertMeetings(t, got, recordedMeetings()[6:])
 }
 
 func TestRecordingsFromRecordedYouTubeFeed(t *testing.T) {
@@ -162,10 +169,10 @@ func TestRecordingsFromRecordedYouTubeFeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := recordedMeetings()
-	want[1] = held(want[1], "D9kOyNeb8Tc")
-	want[2] = held(want[2], "PzRWxVqFYbA")
-	want[3] = held(want[3], "5PUS3Zwz4Ek")
-	want[4] = held(want[4], "3WbJq9XWnNs")
+	want[3] = held(want[3], "D9kOyNeb8Tc")
+	want[4] = held(want[4], "PzRWxVqFYbA")
+	want[5] = held(want[5], "5PUS3Zwz4Ek")
+	want[6] = held(want[6], "3WbJq9XWnNs")
 	assertMeetings(t, got, want)
 	if calls := fake.Calls(); len(calls) != 2 || calls[1].URL != feedURL {
 		t.Errorf("requests = %+v, want the posts and then %s", calls, feedURL)
@@ -178,6 +185,7 @@ func TestRecordingsFromRecordedYouTubeFeed(t *testing.T) {
 func TestUpcomingPostFromRecordedResponse(t *testing.T) {
 	cfg := vctc.VCTC
 	cfg.Boards = []vctc.Board{{TypeID: 28, Name: "TTAC"}}
+	cfg.CommitteeWords = nil
 	capturedAt := time.Date(2026, 11, 18, 20, 43, 0, 0, time.UTC)
 
 	got, err := adapter(t, cfg, serving(fixture(t, "vctc_mixed_types_upcoming.json"), nil), capturedAt).Meetings(t.Context(), checkWindow(capturedAt))
@@ -194,10 +202,10 @@ func TestCommitteesInTheResponseAreDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMeetings(t, got, []sources.Meeting{held(recordedMeetings()[4], "3WbJq9XWnNs")})
+	assertMeetings(t, got, []sources.Meeting{held(recordedMeetings()[6], "3WbJq9XWnNs")})
 }
 
-func TestRecordedSpecialMeetingsWithoutMeetingDates(t *testing.T) {
+func TestRecordedSpecialMeetingDatedFromItsAgendaLink(t *testing.T) {
 	body := fixture(t, "vctc_special_meetings.json")
 	got, err := adapter(t, vctc.VCTC, serving(body, nil), recordedAt).Meetings(t.Context(), checkWindow(recordedAt))
 	if err != nil || len(got) != 0 {
@@ -205,10 +213,13 @@ func TestRecordedSpecialMeetingsWithoutMeetingDates(t *testing.T) {
 	}
 
 	nov2023 := sources.Window{From: time.Date(2023, 10, 15, 0, 0, 0, 0, time.UTC), To: time.Date(2023, 12, 15, 0, 0, 0, 0, time.UTC)}
-	_, err = adapter(t, vctc.VCTC, serving(body, nil), recordedAt).Meetings(t.Context(), nov2023)
-	if err == nil || !strings.Contains(err.Error(), "all 1 board meeting posts in the window are unreadable") {
-		t.Errorf("Meetings in November 2023 err = %v, want the malformed error for special meeting 1454", err)
+	got, err = adapter(t, vctc.VCTC, serving(body, nil), recordedAt).Meetings(t.Context(), nov2023)
+	if err != nil {
+		t.Fatal(err)
 	}
+	assertMeetings(t, got, []sources.Meeting{
+		meeting("1454", "Special Meeting – November 2023", time.Date(2023, 11, 3, 16, 0, 0, 0, time.UTC), "special-meeting-november-2023", "2023/11/Special-Meeting-Agenda-for-11.3.2023_For-Posting-GCO.pdf"),
+	})
 }
 
 func TestConstructorRegistersTheAdapter(t *testing.T) {
