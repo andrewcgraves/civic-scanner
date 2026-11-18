@@ -23,7 +23,7 @@ A Go API and a Next.js front end in one repo, both generated from a shared OpenA
 
 ```sh
 make install          # web dependencies
-make dev-db           # Postgres 17 on localhost:5432 (db, user, password: civic)
+make dev-db           # Postgres 17 on localhost:5432 (db, user, password: civic) and an S3-compatible store on localhost:9090
 make migrate          # apply migrations
 make test             # unit tests
 make ci               # everything CI runs
@@ -102,7 +102,7 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | --- | --- |
 | `openapi-lint` | Redocly lint of `openapi/*.yaml` |
 | `api` | build, vet, golangci-lint, unit tests with `-race` and coverage, codegen drift |
-| `api-integration` | unit and integration tests with `-race` and coverage, against a Postgres 17 container; fails below the coverage minimum |
+| `api-integration` | unit and integration tests with `-race` and coverage, against Postgres 17 and S3Mock containers; fails below the coverage minimum |
 | `migrations-lint` | Squawk on changed migrations |
 | `web` | lint, format, typecheck, tests with coverage, codegen drift, build |
 | `coverage-comment` | posts or updates the coverage comment on the pull request; not part of `ci-ok` |
@@ -180,6 +180,35 @@ When a reply is truncated, filtered or empty, `Complete` returns the error toget
 A River job's own timeout (one minute unless the worker overrides `Timeout`) also cancels the call, so a worker that calls the gateway should set a `Timeout` longer than `LLM_TIMEOUT`.
 
 Tests never call the gateway. `internal/llm/llmtest` provides `llmtest.Fake`, an `llm.Client` for other packages' tests: `llmtest.Returning(text)` answers every call with `text` and finish reason `stop`, `llmtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. A zero `Fake` replies `fake reply`. `Calls()` returns the requests received. Like the real client, the fake rejects an unknown tier, returns a retryable `*llm.Error` for a canceled context, and runs `llm.CheckReply` on the responses `Respond` builds. The client's own tests run against an `httptest` server.
+
+## Object storage
+
+`internal/storage` stores the audio track of meeting recordings in a [Railway bucket](https://docs.railway.com/storage-buckets), which speaks the S3 API. `storage.New(cfg.Storage)` returns a `storage.Store` with five methods: `Put` (streams from an `io.Reader`), `Get` (returns a streaming `io.ReadCloser`), `Delete` (a missing key is not an error), `Stat` (key, size, last modified) and `ListOlderThan` (keys last modified before a time, for the retention job). Keys are chosen by the caller. Nothing calls the store yet.
+
+It uses [`minio-go`](https://github.com/minio/minio-go) rather than the AWS SDK for Go v2: it takes any S3-compatible endpoint, streams an unsized `io.Reader` as a multipart upload without a seekable body, switches between path-style and virtual-hosted-style addressing with one option, and pulls in far fewer dependencies.
+
+Errors:
+
+- `storage.ErrNotFound` marks a missing key (from `Get` and `Stat`); test with `errors.Is`.
+- `storage.ErrNotConfigured` comes from every method when none of the variables below is set. The binaries still start.
+- `storage.IsRetryable(err)` is true for network errors, cancelled contexts, HTTP 408, 429 and 5xx, so a River job can return the error and retry. Everything else (bad credentials, missing bucket) is permanent. The client itself retries a failed request twice.
+
+Tests of code that uses a store use `storage/storagetest`: `storagetest.New()` is an in-memory store with a settable clock (`Now`), and `storagetest.Failing(err)` fails every operation with `err`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `STORAGE_ENDPOINT` | | S3 endpoint as `http(s)://host[:port]`, no path. Unset (with the rest) means not configured. |
+| `STORAGE_REGION` | `auto` | Signing region. Railway buckets use `auto`. |
+| `STORAGE_BUCKET` | | Bucket name for the S3 API (Railway's `BUCKET`, not `RAILWAY_BUCKET_NAME`) |
+| `STORAGE_ACCESS_KEY_ID` | | Access key |
+| `STORAGE_SECRET_ACCESS_KEY` | | Secret key |
+| `STORAGE_PATH_STYLE` | `false` | Use path-style URLs. Railway buckets use virtual-hosted-style, except ones created long ago, whose Credentials tab says so. |
+
+Setting any of the variables without a valid endpoint, bucket, access key and secret makes `storage.New` fail.
+
+In production the `audio` bucket is defined in `.railway/railway.ts` and the API service's `STORAGE_*` variables reference it. Objects are meant to be deleted after about six months; the retention job that does it is not built yet, and Railway buckets have no lifecycle rules.
+
+Locally, `make dev-db` also starts [Adobe S3Mock](https://github.com/adobe/S3Mock) on `localhost:9090` with a `civic-audio` bucket (the image is small, needs no start arguments so it works as a CI service container, and accepts any credentials). The Makefile exports matching `STORAGE_*` defaults, which `make test-integration` and `make coverage` use. The `api-integration` CI job runs the same image as a service container.
 
 ## Fetching
 
