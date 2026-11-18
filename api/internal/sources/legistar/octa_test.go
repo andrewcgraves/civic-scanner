@@ -410,7 +410,7 @@ func TestOneUnreadableBoardEventIsSkippedAndLogged(t *testing.T) {
 			if len(got) != 1 || got[0].SourceID != "2906" {
 				t.Errorf("meetings = %+v, want only 2906", got)
 			}
-			if !strings.Contains(logs.String(), "skipped an unreadable board event") {
+			if !strings.Contains(logs.String(), `level=WARN msg="legistar: skipped an`) {
 				t.Errorf("skipped event was not logged:\n%s", logs.String())
 			}
 		})
@@ -442,14 +442,85 @@ func TestHiddenAndNonBoardEventsDoNotCountAsUnreadable(t *testing.T) {
 	}
 }
 
-func TestAFullPageOfUndecodableEventsIsMalformed(t *testing.T) {
-	cfg := legistar.OCTA
-	cfg.PageSize = 1
-	a, err := legistar.New(cfg, sources.Deps{Fetcher: serving([]byte(`[{"EventId":"x"}]`)), Clock: sourcestest.NewClock(recordedAt)})
+func TestAFullPageWithoutReadableIDsIsMalformedAndSaysSo(t *testing.T) {
+	for _, body := range []string{`[{"EventId":"x"}]`, `[{"EventId":0,"EventBodyId":138}]`} {
+		t.Run(body, func(t *testing.T) {
+			cfg := legistar.OCTA
+			cfg.PageSize = 1
+			a, err := legistar.New(cfg, sources.Deps{Fetcher: serving([]byte(body)), Clock: sourcestest.NewClock(recordedAt)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = a.Meetings(t.Context(), wideWindow())
+			if !errors.Is(err, legistar.ErrMalformed) || !strings.Contains(err.Error(), "page at offset 0 has no event with a readable id") {
+				t.Errorf("err = %v, want ErrMalformed for a page without readable ids", err)
+			}
+		})
+	}
+}
+
+func TestAResponseInWhichNoEventDecodesIsMalformed(t *testing.T) {
+	_, err := octa(t, serving([]byte(`[{"EventId":"x"},{"EventDate":7}]`)), recordedAt, nil).Meetings(t.Context(), wideWindow())
+	if !errors.Is(err, legistar.ErrMalformed) || !strings.Contains(err.Error(), "none of the 2 events in the window decode") {
+		t.Errorf("err = %v, want ErrMalformed saying no event decodes", err)
+	}
+}
+
+func TestHiddenEventsAndOneUndecodableItemAreNotMalformed(t *testing.T) {
+	hidden := recordedOCTAEvents(t, "octa_board_history.json")[2536]
+	body, err := json.Marshal([]any{hidden, json.RawMessage(`{"EventId":"2907"}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Meetings(t.Context(), wideWindow()); !errors.Is(err, legistar.ErrMalformed) {
-		t.Errorf("err = %v, want ErrMalformed", err)
+	var logs bytes.Buffer
+	got := octaMeetings(t, octa(t, serving(body), recordedAt, &logs), wideWindow())
+	if len(got) != 0 {
+		t.Errorf("meetings = %+v, want none", got)
+	}
+	if !strings.Contains(logs.String(), "level=WARN msg=\"legistar: skipped an event that does not decode\"") {
+		t.Errorf("undecodable item was not logged as a warning:\n%s", logs.String())
+	}
+}
+
+func TestOCTACancellationFromEveryRecordedCommentValue(t *testing.T) {
+	nov9 := recordedOCTAEvents(t, "octa_board_events.json")[2906]
+	tests := []struct {
+		comment string
+		want    sources.Status
+	}{
+		{"CANCELLED", sources.StatusCancelled},
+		{"REVISED", sources.StatusHeld},
+		{"Revised", sources.StatusHeld},
+		{"SPECIAL", sources.StatusHeld},
+		{"SPECIAL MEETING", sources.StatusHeld},
+		{"For Training Only", sources.StatusHeld},
+		{"GRANICUS TESTING", sources.StatusHeld},
+		{"Jordan's Agenda for Training", sources.StatusHeld},
+		{" canceled ", sources.StatusCancelled},
+		{"Cancelled - rescheduled to November 16", sources.StatusCancelled},
+		{"Item 5 cancelled", sources.StatusHeld},
+	}
+	for _, tc := range tests {
+		t.Run(tc.comment, func(t *testing.T) {
+			got := octaMeetings(t, octa(t, serving(encode(t, nov9.with("EventComment", tc.comment))), recordedAt, nil), wideWindow())
+			if len(got) != 1 || got[0].Status != tc.want {
+				t.Errorf("meetings = %+v, want one %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLAMetroCommentsNeverCancelAMeeting(t *testing.T) {
+	prose := "Members of the public may address the Board on agenda items.\r\n\r\n" +
+		"Closed Session item 3 has been cancelled.\r\n\r\n" +
+		"Live public comment can be given by telephone at 202.735.3323, English access code 5647249#."
+	past := boardEvent(1, "2026-10-22", "10:00 AM").with("EventMedia", "4309")
+	for _, comment := range []string{prose, "CANCELLED"} {
+		t.Run(comment[:9], func(t *testing.T) {
+			m := onlyMeeting(t, past.with("EventComment", comment))
+			if m.Status != sources.StatusHeld || m.RecordingURL != metroClip("4309") {
+				t.Errorf("meeting = %+v, want held with its recording", m)
+			}
+		})
 	}
 }

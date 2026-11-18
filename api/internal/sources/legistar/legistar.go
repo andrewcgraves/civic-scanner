@@ -33,6 +33,7 @@ type Config struct {
 	TimeZone             string
 	Granicus             Granicus
 	FinalMinutesMeanHeld bool
+	CancelledInComment   bool
 	BaseURL              string
 	PageSize             int
 }
@@ -122,7 +123,8 @@ type event struct {
 
 type item struct {
 	event
-	err error
+	decoded bool
+	err     error
 }
 
 func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]sources.Meeting, error) {
@@ -132,9 +134,15 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 	}
 	now := a.clock.Now()
 	meetings := make([]sources.Meeting, 0, len(items))
-	unreadable := 0
+	decoded, undecodable, unreadable := 0, 0, 0
 	for _, it := range items {
-		if it.err == nil && !a.board(ctx, it.event) {
+		if !it.decoded {
+			undecodable++
+			a.logger.WarnContext(ctx, "legistar: skipped an event that does not decode", "client", a.cfg.Client, "error", it.err)
+			continue
+		}
+		decoded++
+		if !a.board(ctx, it.event) {
 			continue
 		}
 		m, err := sources.Meeting{}, it.err
@@ -148,7 +156,10 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 		}
 		meetings = append(meetings, m)
 	}
-	if unreadable > 0 && len(meetings) == 0 {
+	switch {
+	case undecodable > 0 && decoded == 0:
+		return nil, fmt.Errorf("%w: %s: none of the %d events in the window decode", ErrMalformed, a.cfg.Client, undecodable)
+	case unreadable > 0 && len(meetings) == 0:
 		return nil, fmt.Errorf("%w: %s: all %d board events in the window are unreadable", ErrMalformed, a.cfg.Client, unreadable)
 	}
 	return meetings, nil
@@ -176,12 +187,13 @@ func (a *Adapter) items(ctx context.Context, window sources.Window) ([]item, err
 		if err != nil {
 			return nil, err
 		}
-		added := 0
+		identified, added := 0, 0
 		for _, it := range page {
 			if it.err != nil {
 				all = append(all, it)
 				continue
 			}
+			identified++
 			if seen[it.EventID] {
 				continue
 			}
@@ -189,10 +201,12 @@ func (a *Adapter) items(ctx context.Context, window sources.Window) ([]item, err
 			all = append(all, it)
 			added++
 		}
-		if len(page) < a.cfg.PageSize {
+		switch {
+		case len(page) < a.cfg.PageSize:
 			return all, nil
-		}
-		if added == 0 {
+		case identified == 0:
+			return nil, fmt.Errorf("%w: page at offset %d has no event with a readable id", ErrMalformed, skip)
+		case added == 0:
 			return nil, fmt.Errorf("%w: page at offset %d repeats earlier events", ErrMalformed, skip)
 		}
 	}
@@ -211,9 +225,9 @@ func (a *Adapter) page(ctx context.Context, window sources.Window, skip int) ([]
 	page := make([]item, len(raws))
 	for i, raw := range raws {
 		var it item
-		if err := json.Unmarshal(raw, &it.event); err != nil {
-			it.err = err
-		} else if it.EventID <= 0 {
+		it.err = json.Unmarshal(raw, &it.event)
+		it.decoded = it.err == nil
+		if it.decoded && it.EventID <= 0 {
 			it.err = errors.New("event without an id")
 		}
 		page[i] = it
@@ -259,7 +273,7 @@ func (a *Adapter) meeting(ctx context.Context, e event, now time.Time) (sources.
 	if err != nil {
 		return sources.Meeting{}, err
 	}
-	cancelled := cancelled(e)
+	cancelled := a.cancelled(e)
 	if cancelled || startsAt.After(now) {
 		recordingURL = ""
 	}
@@ -326,9 +340,15 @@ func (a *Adapter) recordingURL(e event) (string, error) {
 	return fmt.Sprintf("https://%s/MediaPlayer.php?view_id=%d&clip_id=%s", a.cfg.Granicus.Host, a.cfg.Granicus.ViewID, url.QueryEscape(clip)), nil
 }
 
-func cancelled(e event) bool {
-	return strings.Contains(strings.ToLower(text(e.EventAgendaStatusName)), "cancel") ||
-		strings.Contains(strings.ToLower(text(e.EventComment)), "cancel")
+func (a *Adapter) cancelled(e event) bool {
+	if strings.Contains(strings.ToLower(text(e.EventAgendaStatusName)), "cancel") {
+		return true
+	}
+	if !a.cfg.CancelledInComment {
+		return false
+	}
+	comment := strings.ToUpper(text(e.EventComment))
+	return strings.HasPrefix(comment, "CANCELLED") || strings.HasPrefix(comment, "CANCELED")
 }
 
 func (a *Adapter) status(e event, cancelled bool, startsAt, now time.Time) sources.Status {

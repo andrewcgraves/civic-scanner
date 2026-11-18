@@ -9,8 +9,9 @@ var LAMetro = Config{
 }
 
 var OCTA = Config{
-	Client:   "octa",
-	BodyIDs:  []int{138},
-	TimeZone: "America/Los_Angeles",
-	Granicus: Granicus{Host: "octa.granicus.com", ViewID: 2},
+	Client:             "octa",
+	BodyIDs:            []int{138},
+	TimeZone:           "America/Los_Angeles",
+	Granicus:           Granicus{Host: "octa.granicus.com", ViewID: 2},
+	CancelledInComment: true,
 }
