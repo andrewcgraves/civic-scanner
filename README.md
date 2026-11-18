@@ -168,20 +168,20 @@ The provider depends on the environment:
 
 | Variable | Meaning |
 | --- | --- |
-| `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project API key. When set, PostHog serves flags and `NEXT_PUBLIC_FEATURE_FLAGS` is ignored. |
+| `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project API key. When set, PostHog serves flags and `NEXT_PUBLIC_FEATURE_FLAGS` is ignored, and the browser sends [analytics](#analytics). |
 | `NEXT_PUBLIC_POSTHOG_HOST` | PostHog API host. Defaults to `https://us.i.posthog.com`. |
 | `NEXT_PUBLIC_FEATURE_FLAGS` | Used when there is no PostHog key: a comma-separated list of flags that are on, or `*` for every registered flag. Unset or empty means all off. For local development, tests, and preview deploys. |
 
 Notes:
 
 - **Swapping vendors:** `createProvider` in `web/src/lib/flags/server.ts` is the only place a provider is chosen, and it is registered with OpenFeature once per process. Moving to another vendor, such as LaunchDarkly, means returning that vendor's OpenFeature server provider from `createProvider`. Callers, the registry and `client.tsx` do not change.
-- `NEXT_PUBLIC_` values are inlined at `next build`, so changing one needs a new build. On Vercel, set them per environment: the PostHog key for Production, and `NEXT_PUBLIC_FEATURE_FLAGS` for Preview. Only server code reads them.
-- The PostHog provider is ours, `PostHogProvider` in `web/src/lib/flags/posthog.ts`, a thin OpenFeature provider over `posthog-node`. It does not use PostHog's `@posthog/openfeature-node-provider`, which sends one `/flags` request per flag and caches nothing. Ours asks `evaluateFlags` once for every flag of the identity, keeps the answer for 30 seconds per process, and serves each boolean evaluation from it. So the layout and any number of `isFlagEnabled` calls cost at most one PostHog request per process every 30 seconds, and a change in PostHog can take that long to show. The request times out after 500 ms and is not retried. If it fails, every flag is off until the cache entry expires, and the error is logged as `Feature flags could not be evaluated`. Nothing else is sent to PostHog: no `$feature_flag_called` events, page views, or other analytics. Analytics is a separate change.
+- `NEXT_PUBLIC_` values are inlined at `next build`, so changing one needs a new build. On Vercel, set them per environment: the PostHog key for Production, and `NEXT_PUBLIC_FEATURE_FLAGS` for Preview. Only server code reads them; the root layout passes the PostHog key and host to the analytics client component as props.
+- The PostHog provider is ours, `PostHogProvider` in `web/src/lib/flags/posthog.ts`, a thin OpenFeature provider over `posthog-node`. It does not use PostHog's `@posthog/openfeature-node-provider`, which sends one `/flags` request per flag and caches nothing. Ours asks `evaluateFlags` once for every flag of the identity, keeps the answer for 30 seconds per process, and serves each boolean evaluation from it. So the layout and any number of `isFlagEnabled` calls cost at most one PostHog request per process every 30 seconds, and a change in PostHog can take that long to show. The request times out after 500 ms and is not retried. If it fails, every flag is off until the cache entry expires, and the error is logged as `Feature flags could not be evaluated`. The flags code sends PostHog nothing else: no `$feature_flag_called` events. Page views and web vitals come from the browser; see [Analytics](#analytics).
 - The in-memory list is an OpenFeature provider too (`web/src/lib/flags/memory.ts`), so both modes go through the same OpenFeature client.
 - Within one request, `getFlagsOn` is memoised with React's `cache`, so the layout, server components and client components see the same values even if the 30-second entry expires mid-render.
 - Rendering: in PostHog mode `getFlagsOn` calls `connection()` before asking PostHog, and the root layout calls `getFlagsOn`, so every page is rendered on each request, including pages that check no flag. That is the price of client components getting PostHog values in their first render, and it keeps a change in PostHog live without a deploy. It adds a server render per page view, not a PostHog request. In in-memory mode `getFlagsOn` does not call `connection()`, so pages stay static.
 - Identity: there is no sign-in yet, and the app stores no visitor identifier, so the server evaluates every flag for one anonymous distinct ID, `anonymous`, and the browser uses the server's values. Both sides always agree, but a percentage rollout or person targeting is on or off for everyone. Per-user flags later mean evaluating for the user's distinct ID per request instead of reading the shared cache, and passing the result through the same `FlagsProvider`; callers do not change.
-- The browser loads no PostHog or OpenFeature code and makes no `/flags` request. The layout sends the registered keys that are on, and only those, in the page payload, so anyone can read them in the page source: a flag key must not be secret.
+- The browser loads no OpenFeature code and makes no `/flags` request. The only PostHog code in the browser is the analytics client, fetched only when a PostHog key is set, with flags turned off. The layout sends the registered keys that are on, and only those, in the page payload, so anyone can read them in the page source: a flag key must not be secret.
 - Navigating between pages in the browser does not render the root layout again, so client components keep the values from the last full page load, while server components on the new page read current values. After a flag changes in PostHog, the two can disagree until the visitor reloads.
 - The flags module picks its provider once, when it loads. A test sets `NEXT_PUBLIC_FEATURE_FLAGS` with `vi.stubEnv`, calls `vi.resetModules()`, and imports the module again; see `web/src/lib/flags/*.test.*` and `web/src/app/layout.test.tsx`. Tests never call PostHog: the PostHog cases stub `fetch`, which `posthog-node` uses.
 
@@ -209,6 +209,62 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 - Not done: PostHog local evaluation, where the client downloads flag definitions and evaluates them in process. It needs a personal API key, a secret that can read the whole project, in every binary. The cache gets the call volume down without one.
 - The PostHog provider (`internal/featureflags/posthog.go`) is a thin layer over the official `posthog-go` client, because no maintained OpenFeature Go provider for PostHog exists. Another vendor means another provider in that package; callers do not change.
 - OpenFeature's provider is process-wide. A test that calls `featureflags.Init` with `config.FeatureFlags{On: ...}` must not run in parallel with other flag tests. Parallel tests can register OpenFeature's `openfeature/testing` provider instead, which keys flags by test.
+
+## Analytics
+
+We track anonymous page-path counts and web vitals, nothing else: no visitor identity beyond one page load, no search params, referrers, campaign data, location or device details, and nothing stored in the browser.
+
+The web app sends these to PostHog from the browser. `web/src/lib/analytics/` holds it: `client.ts` starts PostHog and sends events, `payload.ts` decides what may leave the browser, `analytics.tsx` is the client component the root layout renders.
+
+It uses the same `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST` as the flags (see [Feature flags](#web)), read in one place, `web/src/lib/posthog/config.ts`. There is no separate switch and no feature flag: without a key the layout does not render `Analytics`, so the PostHog chunk is never fetched and nothing is sent. The `Analytics` component and `next/web-vitals` (about 4 KB gzipped) are still in every page's JavaScript, unused. That covers local development, tests and preview deploys. Setting the key in a Vercel environment turns analytics on there with the next build.
+
+### What is sent
+
+Two events, to `NEXT_PUBLIC_POSTHOG_HOST` at `/e/`, and no other request:
+
+| Event | When |
+| --- | --- |
+| `$pageview` | the first render of a page and every client-side navigation to a different path. A navigation that only changes search params or the hash is not a page view. |
+| `$web_vitals` | TTFB, FCP, LCP, CLS and INP, each once per full page load. |
+
+Every property PostHog would send is dropped except these, by the `before_send` hook `onlyAllowed` in `payload.ts`, which rebuilds each event from an allow-list. Any other event (for example `$identify` or PostHog's own warning events) is dropped entirely. A PostHog upgrade that adds properties therefore cannot send them without a change to `payload.ts`.
+
+| Property | Events | Why |
+| --- | --- | --- |
+| `token` | both | the project key; PostHog needs it to accept the event |
+| `distinct_id` | both | random per page load (see below); PostHog needs one |
+| `$process_person_profile` | both | always `false`, so PostHog creates no person |
+| `$lib`, `$lib_version` | both | which SDK sent the event |
+| `$current_url` | both | origin and path only |
+| `$pathname` | both | the path |
+| `$geoip_disable` | both | always `true`, so PostHog does not look up a location from the IP |
+| `metric_name`, `metric_value`, `metric_rating` | `$web_vitals` | the metric, its value and `good`, `needs-improvement` or `poor` |
+| `$web_vitals_<NAME>_value`, `$web_vitals_<NAME>_event` | `$web_vitals` | the shape PostHog's own web vitals capture uses; the event object holds `id`, `name`, `value`, `delta`, `rating` and `navigationType` |
+
+Each event also carries its `uuid`, `event` name and `timestamp`. `$set` and `$set_once` are dropped. That means none of PostHog's usual browser properties (browser, OS, screen, viewport, language, time zone), no `$session_id`, no `$referrer` or `$referring_domain`, and none of the `$session_entry_*` properties (entry URL, referrer, UTM parameters and ad click IDs), which PostHog adds regardless of `save_referrer` and `save_campaign_params`.
+
+Search params: `ALLOWED_SEARCH_PARAMS` in `payload.ts` is the list of search params that may appear in `$current_url`. It is empty, since no route reads search params. A future route that needs one in analytics adds its name there; a param on the list is part of the page, so changing it counts as a page view. The hash is never sent.
+
+### Privacy settings
+
+- **No cookies or storage:** `persistence: "memory"`. The distinct ID lives only as long as the page; a full reload, a new tab or a return visit is a new anonymous visitor, so visitor and retention numbers count page loads, not people. When it starts, PostHog checks whether `localStorage` works by writing and removing one constant key, `__mplssupport__`; it stores nothing and sets no cookie. Relaxing persistence to `localStorage` or `cookie` would need a consent decision first.
+- **No person profiles:** `person_profiles: "identified_only"` and nothing calls `identify`, so every event is sent with `$process_person_profile: false`. When sign-in arrives (CIV-16), identifying the user means calling `posthog.identify` after sign-in and `posthog.reset()` on sign-out from `client.ts`, and allowing `$identify` and the properties it needs in `payload.ts`.
+- **Do Not Track and Global Privacy Control:** checked before PostHog is loaded (`navigator.globalPrivacyControl`, `navigator.doNotTrack`, `window.doNotTrack`, `navigator.msDoNotTrack`). A visitor who sends either gets no PostHog code and no requests. `respect_dnt` is also on inside PostHog.
+- **Nothing captured automatically:** autocapture, PostHog's own page view and page leave capture, session recording, heatmaps, dead clicks, exceptions, surveys, product tours, conversations and web experiments are all off. The browser makes no `/flags` request (`advanced_disable_flags`), since flags are evaluated on the server.
+- **No third-party scripts:** the bundle is `posthog-js/dist/module.slim.no-external`, which has no code to inject scripts, and `disable_external_dependency_loading` is set as well.
+- **Location:** `$geoip_disable: true` on every event stops PostHog's GeoIP enrichment for these events. Disabling the GeoIP transformation in the project's data pipeline settings stops it for the whole project.
+- **IP addresses:** PostHog still receives the request IP and records it as `$ip` unless the project's "Discard client IP data" setting is on. Turn it on when the project is created; it cannot be set from the client.
+
+### How it is wired
+
+- The root layout renders `<Analytics project={…} />` only when there is a key. `Analytics` starts PostHog in an effect, after hydration, with a dynamic `import()`, so PostHog is a separate chunk (about 52 KB gzipped) that is not part of any page's first-load JavaScript and is never fetched without a key or under Do Not Track.
+- Page views: a child component reads `usePathname()` and `useSearchParams()` inside a `<Suspense fallback={null}>` boundary, as Next requires for `useSearchParams` on statically rendered pages, and calls `trackPageview` in an effect when either changes. `trackPageview` reduces the URL to origin, path and allowed params and skips a URL equal to the last one sent, so a change to other search params, and React strict mode's double effects in development, send nothing.
+- Web vitals: `useReportWebVitals` with one module-level callback, so the reference never changes, as the Next docs require. Next asks `web-vitals` for soft-navigation metrics too; those (`navigationType: "soft-navigation"`) are dropped. FCP, LCP and TTFB are final when reported and are sent at once. CLS and INP can be reported again under the same `id` with a new value when the page is hidden and shown again, so they are held, latest value per `id`, and sent once when the page goes away (`pagehide` and the page becoming hidden, in either order). Each `id` is sent at most once. Web vitals are sent with `sendBeacon`, which survives the page unloading. Each is filed under the page it measured (`navigationURL`), reduced like page view URLs.
+- Caveats: in browsers without soft-navigation support (all but recent Chrome), CLS and INP keep accumulating across client-side navigations and are filed under the first page of the visit. A page that the browser discards in the background without a `pagehide` (common on mobile) loses its CLS and INP.
+- Failure: if the PostHog chunk fails to load, `init` throws or a `capture` throws, analytics goes quiet and rendering and navigation carry on. Events sent while the host is unreachable or blocked are lost; the browser logs the failed requests itself, the app logs nothing. One PostHog client exists in the browser; the server keeps its `posthog-node` client for flags only and sends no analytics.
+- Content-Security-Policy: the app sets none. If one is added, `connect-src` must allow `NEXT_PUBLIC_POSTHOG_HOST`; no `script-src` entry is needed, since the PostHog code is served from our own origin.
+- Reverse proxy: ad blockers commonly block `*.posthog.com`, which loses those visitors' events. A first-party proxy (PostHog's managed proxy, or Next or Vercel rewrites) avoids that; point `NEXT_PUBLIC_POSTHOG_HOST` at it. The server-side flags use the same host, so the proxy must forward `/flags/` as well as `/e/`. Not set up yet.
+- Tests: `client.test.ts` and `analytics.test.tsx` mock `posthog-js/dist/module.slim.no-external`, `next/navigation` and `next/web-vitals`. `real-posthog.test.ts` runs the real PostHog client under jsdom with `fetch`, `XMLHttpRequest` and `sendBeacon` stubbed, and checks the decoded payloads: the exact property set of each event, no search params, hash or referrer anywhere, `/e/` as the only endpoint, no script element, no cookie and nothing left in storage. `client.ts` keeps its state in the module, so each test calls `vi.resetModules()` and imports it again.
 
 ## CI
 
