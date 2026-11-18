@@ -28,7 +28,9 @@ func seedMeeting(t *testing.T, pool *pgxpool.Pool, slug string) uuid.UUID {
 		t.Fatalf("UpsertMeeting: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.WithoutCancel(ctx), `DELETE FROM agenda_versions WHERE meeting_id = $1`, m.ID)
+		bg := context.WithoutCancel(ctx)
+		_, _ = pool.Exec(bg, `DELETE FROM meeting_events WHERE meeting_id = $1`, m.ID)
+		_, _ = pool.Exec(bg, `DELETE FROM agenda_versions WHERE meeting_id = $1`, m.ID)
 	})
 	return m.ID
 }
@@ -243,6 +245,35 @@ func TestAddAgendaVersionConcurrentAddsGetDistinctNumbers(t *testing.T) {
 			t.Errorf("versions[%d].Version = %d, want %d", i, v.Version, want)
 		}
 	}
+	assertOneEventPerVersion(t, s, meetingID, versions)
+}
+
+func assertOneEventPerVersion(t *testing.T, s *store.Store, meetingID uuid.UUID, versions []store.AgendaVersion) {
+	t.Helper()
+	events, err := s.ListMeetingEvents(t.Context(), meetingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != len(versions) {
+		t.Errorf("recorded %d events for %d versions", len(events), len(versions))
+	}
+	byVersionID := map[uuid.UUID]store.AgendaVersion{}
+	for _, v := range versions {
+		byVersionID[v.ID] = v
+	}
+	seen := map[uuid.UUID]bool{}
+	for _, e := range events {
+		p := agendaPayload(t, e)
+		v, ok := byVersionID[p.AgendaVersionID]
+		wantType := store.EventAgendaChanged
+		if v.Version == 1 {
+			wantType = store.EventAgendaPublished
+		}
+		if !ok || seen[v.ID] || p.Version != v.Version || e.Type != wantType {
+			t.Errorf("event %+v (payload %+v) does not match exactly one version", e, p)
+		}
+		seen[v.ID] = true
+	}
 }
 
 func TestAddAgendaVersionConcurrentSameContentAddsOnce(t *testing.T) {
@@ -283,6 +314,12 @@ func TestAddAgendaVersionConcurrentSameContentAddsOnce(t *testing.T) {
 	if created != 1 || len(ids) != 1 {
 		t.Errorf("created %d versions with %d distinct ids, want 1 and 1", created, len(ids))
 	}
+
+	versions, err := s.ListAgendaVersions(ctx, meetingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertOneEventPerVersion(t, s, meetingID, versions)
 }
 
 func TestAddAgendaVersionFailsOnClosedPool(t *testing.T) {
