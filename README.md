@@ -414,7 +414,7 @@ A meeting's agenda is kept as numbered versions in `agenda_versions` (migration 
 
 | Function | Does |
 | --- | --- |
-| `AddAgendaVersion(ctx, in)`, `AddAgendaVersionTx(ctx, tx, in)` | Adds a version from `AgendaVersionInput{MeetingID, SourceURL, Text, ContentHash}`. When the meeting's latest version has the same hash, it adds nothing and returns that version with `created` false; otherwise it inserts the next number and returns `created` true. A missing meeting is `ErrNotFound`. |
+| `AddAgendaVersion(ctx, in)`, `AddAgendaVersionTx(ctx, tx, in)` | Adds a version from `AgendaVersionInput{MeetingID, SourceURL, Text, ContentHash}`. When the meeting's latest version has the same hash, it adds nothing and returns that version with `created` false; otherwise it inserts the next number, records an `agenda_published` (version 1) or `agenda_changed` (later versions) meeting event in the same transaction (see "Meeting events"), and returns `created` true. A missing meeting is `ErrNotFound`. |
 | `LatestAgendaVersion(ctx, meetingID)` | The highest-numbered version, or `ErrNotFound` when the meeting has none. |
 | `ListAgendaVersions(ctx, meetingID)` | Every version, newest first. Empty for a meeting with none. |
 | `SetAgendaSummary`, `SetAgendaChangeNote` (and `...Tx`) | Sets the field on one version by id and returns the updated version. A missing version is `ErrNotFound`. |
@@ -426,6 +426,27 @@ The `...Tx` variants run in the caller's transaction, so a job can add a version
 **Concurrency.** Two jobs may add a version for the same meeting at once. `AddAgendaVersion` locks the meeting row with `SELECT ... FOR NO KEY UPDATE` before it reads the latest version, then inserts. Adds for one meeting run one at a time; adds for different meetings never wait for each other. `FOR NO KEY UPDATE` does not block inserts elsewhere that only reference the meeting by foreign key. The lock is held until the transaction ends, which for the `...Tx` variants is when the caller commits or rolls back, so keep that transaction short. It also waits on a concurrent `UpsertMeetingTx` of the same meeting. The `...Tx` variants need the transaction at `READ COMMITTED`, Postgres's default and what `pool.Begin` gives: under `REPEATABLE READ` the waiting transaction would not see the version committed ahead of it, and the unique constraint on `(meeting_id, version)` would reject its insert instead of silently duplicating a number. `TestAddAgendaVersionConcurrentAddsGetDistinctNumbers` runs concurrent adds, through both variants, and checks the numbers are 1 to N with none lost; without the lock it fails with unique violations.
 
 The migration's down half drops the table. `api/migrations/down_integration_test.go` applies every migration in a throwaway schema, rolls back to `00003`, checks the table is gone, and applies it again, without touching the shared tables other tests use.
+
+## Meeting events
+
+`meeting_events` (migration `00006`) is the outbox between the pipeline and delivery: RSS feeds and webhooks read what happened to a meeting from here and nowhere else. Each row has a unique `id` (uuid), a `type`, the `meeting_id`, a JSON object `payload`, and `occurred_at` (`clock_timestamp()` at insert, so events written in one transaction keep their order). Events are only inserted; nothing updates them. Deleting a meeting deletes its events (`ON DELETE CASCADE`).
+
+| Type | Recorded by | Payload |
+| --- | --- | --- |
+| `agenda_published` | `AddAgendaVersion` / `AddAgendaVersionTx`, when it creates version 1 | `{"agenda_version_id": "<uuid>", "version": 1}` (`store.AgendaEventPayload`) |
+| `agenda_changed` | `AddAgendaVersion` / `AddAgendaVersionTx`, when it creates version 2 or later | `{"agenda_version_id": "<uuid>", "version": n}` |
+| `transcript_ready` | the job that finishes a transcript, through `RecordMeetingEventTx` | chosen by that job; it must be self-contained, since the outbox does not reference a transcripts table |
+
+An event is written in the same transaction as the change it describes, so a consumer never sees an event for a change that rolled back, and a committed change always has its event. An unchanged agenda adds no version and so no event.
+
+`internal/store/events.go`:
+
+| Function | Does |
+| --- | --- |
+| `RecordMeetingEventTx(ctx, tx, in)` | Inserts an event from `MeetingEventInput{Type, MeetingID, Payload}` in the caller's transaction and returns it. `Payload` is marshalled to JSON and must be an object (a struct or map); `nil` stores `{}`. An unknown type is `ErrUnknownEventType` and a non-object payload `ErrInvalidPayload`, both before the database is touched. A missing meeting is `ErrNotFound`. There is no variant without a transaction, because an event must commit with its change. |
+| `ListMeetingEvents(ctx, meetingID)` | A meeting's events, oldest first (`occurred_at`, then `id`). Empty for a meeting with none. |
+
+The table's check constraints accept only the three types and only a JSON object payload. Indexes on `(occurred_at, id)` and `(meeting_id, occurred_at, id)` serve readers of all events and of one meeting's events. How consumers page through the outbox and track what they have delivered belongs to the RSS and webhook stories.
 
 ## Transcription
 
