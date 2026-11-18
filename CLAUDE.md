@@ -46,6 +46,12 @@ Run `make prepush` before every `git push` and fix everything it reports. Do not
 
 Run `make ci` as well when the change touches migrations, the store, jobs or anything else covered by integration tests. It runs everything CI runs and needs Docker.
 
+## Pull requests
+
+Pull requests are public. Follow `.github/pull_request_template.md`: a short `## Summary` of what changed, then the checklist. `gh pr create --body` bypasses the template, so write its sections into the body.
+
+Keep the description to the change itself, plus anything the story requires in the pull request and any merge-order constraint. Leave out how the work was produced, review findings, test logs, and risk or caveat notes; report those to the user instead.
+
 ## Migrations
 
 Migrations follow expand and contract. An ordinary migration only adds structures that old code ignores; Squawk fails CI on destructive or locking changes. A destructive change goes in a separate, later migration containing the line `-- migration: contract`. For such a file `.github/scripts/lint-migrations.sh` excludes the `ban-drop-column` and `ban-drop-table` rules and still checks everything else. Only the `-- +goose Up` half of a file is linted.
