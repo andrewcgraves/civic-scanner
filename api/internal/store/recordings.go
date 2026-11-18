@@ -38,13 +38,14 @@ type Recording struct {
 
 const recordingColumns = `id, meeting_id, source_url, audio_key, audio_expires_at, audio_deleted_at, created_at, updated_at`
 
-func scanRecording(row pgx.Row) (Recording, error) {
+func scanRecording(row pgx.Row, extra ...any) (Recording, error) {
 	var (
 		r         Recording
 		key       *string
 		expiresAt *time.Time
 	)
-	if err := row.Scan(&r.ID, &r.MeetingID, &r.SourceURL, &key, &expiresAt, &r.AudioDeletedAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	dest := append([]any{&r.ID, &r.MeetingID, &r.SourceURL, &key, &expiresAt, &r.AudioDeletedAt, &r.CreatedAt, &r.UpdatedAt}, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return Recording{}, err
 	}
 	if key != nil && expiresAt != nil {

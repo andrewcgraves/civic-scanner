@@ -16,6 +16,8 @@ tags:
     description: Operational endpoints.
   - name: agencies
     description: Tracked public agencies.
+  - name: meetings
+    description: Meetings of tracked agencies.
 paths:
   /healthz:
     get:
@@ -141,6 +143,47 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /meetings/{id}:
+    get:
+      operationId: getMeeting
+      summary: Get a meeting
+      description: >-
+        Returns one meeting of a live agency with its latest agenda version and
+        its recordings, each with its transcript once one exists. The agenda
+        carries the agency's original document URL and each recording the
+        agency's original recording URL. The full agenda text is not returned;
+        the summary and the document link are. An unknown id and a meeting of
+        an agency that is not live both return the same 404; an id that is not
+        a UUID is a 400 (`invalid_parameter`).
+      tags: [meetings]
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The meeting's id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The meeting.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     AgencySlug:
@@ -160,7 +203,9 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: No live agency has this slug.
+      description: >-
+        No live agency has this slug, or no meeting of a live agency has this
+        id.
       content:
         application/json:
           schema:
@@ -251,6 +296,126 @@ components:
           nullable: true
           description: >-
             Pass as `cursor` to get the next page. Null on the last page.
+    MeetingDetail:
+      type: object
+      description: >-
+        A meeting with its agenda and transcripts. New optional fields may be
+        added; clients must ignore fields they do not know.
+      required: [id, agency, title, startsAt, status, agenda, recordings]
+      properties:
+        id:
+          type: string
+          format: uuid
+        agency:
+          $ref: "#/components/schemas/Agency"
+        title:
+          type: string
+        startsAt:
+          type: string
+          format: date-time
+          description: When the meeting starts.
+        status:
+          $ref: "#/components/schemas/MeetingStatus"
+        sourceUrl:
+          type: string
+          format: uri
+          description: >-
+            The agency's own page for the meeting. Absent when the source gave
+            none.
+        agenda:
+          description: The latest agenda version. Null until an agenda is published.
+          type: object
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Agenda"
+        recordings:
+          type: array
+          description: >-
+            The meeting's recordings in the order they were found. Empty until
+            a recording is available; a meeting split into several videos has
+            several.
+          items:
+            $ref: "#/components/schemas/Recording"
+    Agenda:
+      type: object
+      required: [version, documentUrl, summary, changeNote, publishedAt]
+      properties:
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+          description: The version number, 1 for the first agenda published.
+        documentUrl:
+          type: string
+          format: uri
+          description: The agency's original agenda document.
+        summary:
+          type: string
+          nullable: true
+          description: AI summary of the agenda. Null until it is written.
+        changeNote:
+          type: string
+          nullable: true
+          description: >-
+            What changed from the previous version. Null for the first version
+            and until it is written.
+        publishedAt:
+          type: string
+          format: date-time
+          description: When this version was found.
+    Recording:
+      type: object
+      required: [sourceUrl, transcript]
+      properties:
+        sourceUrl:
+          type: string
+          format: uri
+          description: The agency's original recording.
+        transcript:
+          description: The recording's transcript. Null until it is ready.
+          type: object
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/Transcript"
+    Transcript:
+      type: object
+      required: [summary, segments, updatedAt]
+      properties:
+        summary:
+          type: string
+          nullable: true
+          description: AI summary of the transcript. Null until it is written.
+        segments:
+          type: array
+          description: The full transcript as timestamped segments, in order.
+          items:
+            $ref: "#/components/schemas/TranscriptSegment"
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the transcript was last saved or summarized.
+    TranscriptSegment:
+      type: object
+      required: [startMs, endMs, text]
+      properties:
+        startMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Start, in milliseconds from the start of the recording.
+        endMs:
+          type: integer
+          format: int64
+          minimum: 0
+          description: End, in milliseconds from the start of the recording.
+        text:
+          type: string
+        speaker:
+          type: string
+          description: >-
+            Opaque speaker label. Segments with the same label have the same
+            speaker, but two labels may still be the same person. Absent when
+            the speaker is unknown.
     Error:
       type: object
       required: [code, message]

@@ -19,6 +19,7 @@ type Store interface {
 	ListAgencies(ctx context.Context) ([]store.Agency, error)
 	GetLiveAgency(ctx context.Context, slug string) (store.Agency, error)
 	ListMeetings(ctx context.Context, agencyID uuid.UUID, params store.ListMeetingsParams) (store.MeetingPage, error)
+	GetLiveMeetingDetail(ctx context.Context, id uuid.UUID) (store.MeetingDetail, error)
 }
 
 type Handler struct {

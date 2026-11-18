@@ -84,6 +84,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/meetings/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get a meeting
+     * @description Returns one meeting of a live agency with its latest agenda version and its recordings, each with its transcript once one exists. The agenda carries the agency's original document URL and each recording the agency's original recording URL. The full agenda text is not returned; the summary and the document link are. An unknown id and a meeting of an agency that is not live both return the same 404; an id that is not a UUID is a 400 (`invalid_parameter`).
+     */
+    get: operations["getMeeting"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -133,6 +153,84 @@ export interface components {
       /** @description Pass as `cursor` to get the next page. Null on the last page. */
       nextCursor: string | null;
     };
+    /** @description A meeting with its agenda and transcripts. New optional fields may be added; clients must ignore fields they do not know. */
+    MeetingDetail: {
+      /** Format: uuid */
+      id: string;
+      agency: components["schemas"]["Agency"];
+      title: string;
+      /**
+       * Format: date-time
+       * @description When the meeting starts.
+       */
+      startsAt: string;
+      status: components["schemas"]["MeetingStatus"];
+      /**
+       * Format: uri
+       * @description The agency's own page for the meeting. Absent when the source gave none.
+       */
+      sourceUrl?: string;
+      /** @description The latest agenda version. Null until an agenda is published. */
+      agenda: components["schemas"]["Agenda"] | null;
+      /** @description The meeting's recordings in the order they were found. Empty until a recording is available; a meeting split into several videos has several. */
+      recordings: components["schemas"]["Recording"][];
+    };
+    Agenda: {
+      /**
+       * Format: int64
+       * @description The version number, 1 for the first agenda published.
+       */
+      version: number;
+      /**
+       * Format: uri
+       * @description The agency's original agenda document.
+       */
+      documentUrl: string;
+      /** @description AI summary of the agenda. Null until it is written. */
+      summary: string | null;
+      /** @description What changed from the previous version. Null for the first version and until it is written. */
+      changeNote: string | null;
+      /**
+       * Format: date-time
+       * @description When this version was found.
+       */
+      publishedAt: string;
+    };
+    Recording: {
+      /**
+       * Format: uri
+       * @description The agency's original recording.
+       */
+      sourceUrl: string;
+      /** @description The recording's transcript. Null until it is ready. */
+      transcript: components["schemas"]["Transcript"] | null;
+    };
+    Transcript: {
+      /** @description AI summary of the transcript. Null until it is written. */
+      summary: string | null;
+      /** @description The full transcript as timestamped segments, in order. */
+      segments: components["schemas"]["TranscriptSegment"][];
+      /**
+       * Format: date-time
+       * @description When the transcript was last saved or summarized.
+       */
+      updatedAt: string;
+    };
+    TranscriptSegment: {
+      /**
+       * Format: int64
+       * @description Start, in milliseconds from the start of the recording.
+       */
+      startMs: number;
+      /**
+       * Format: int64
+       * @description End, in milliseconds from the start of the recording.
+       */
+      endMs: number;
+      text: string;
+      /** @description Opaque speaker label. Segments with the same label have the same speaker, but two labels may still be the same person. Absent when the speaker is unknown. */
+      speaker?: string;
+    };
     Error: {
       /** @description Stable machine-readable error code. */
       code: string;
@@ -150,7 +248,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description No live agency has this slug. */
+    /** @description No live agency has this slug, or no meeting of a live agency has this id. */
     NotFound: {
       headers: {
         [name: string]: unknown;
@@ -299,6 +397,41 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MeetingList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  getMeeting: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The meeting's id. */
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The meeting. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MeetingDetail"];
         };
       };
       400: components["responses"]["BadRequest"];

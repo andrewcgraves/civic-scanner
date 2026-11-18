@@ -24,6 +24,18 @@ type fakeStore struct {
 	page        store.MeetingPage
 	meetingsErr error
 	listed      *listMeetingsCall
+	meeting     *store.MeetingDetail
+	meetingErr  error
+}
+
+func (f fakeStore) GetLiveMeetingDetail(_ context.Context, id uuid.UUID) (store.MeetingDetail, error) {
+	if f.meetingErr != nil {
+		return store.MeetingDetail{}, f.meetingErr
+	}
+	if f.meeting == nil || f.meeting.Meeting.ID != id {
+		return store.MeetingDetail{}, store.ErrNotFound
+	}
+	return *f.meeting, nil
 }
 
 type listMeetingsCall struct {
