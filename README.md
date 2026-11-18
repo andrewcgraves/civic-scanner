@@ -31,7 +31,7 @@ make ci               # everything CI runs
 
 `make help` lists every target. The Makefile defaults `DATABASE_URL` to the compose database; override it to point at another database.
 
-The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix.
+The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix. The flag variables are described under [Feature flags](#feature-flags).
 
 ## OpenAPI-first workflow
 
@@ -40,6 +40,33 @@ The binaries read configuration from the environment only and do not load `.env`
 3. Commit the spec and the generated code together.
 
 Generated files are committed and never edited by hand. CI regenerates them and fails on any diff.
+
+## Feature flags
+
+The web app evaluates flags through OpenFeature: `@openfeature/server-sdk` on the server and `@openfeature/react-sdk` in the browser. `web/src/lib/flags/` wraps both. Callers import only from there, never from OpenFeature or PostHog, so the provider can change without touching them.
+
+- **Server components:** `await isFlagEnabled("flag-key")` from `@/lib/flags/server`.
+- **Client components:** `useFlag("flag-key")` from `@/lib/flags/client`. The root layout wraps the app in `FlagsProvider`, which supplies it.
+
+Every flag is a boolean and defaults to off. An unknown flag, a provider that fails to start, and an evaluation error all evaluate to off.
+
+The provider depends on the environment:
+
+| Variable | Meaning |
+| --- | --- |
+| `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project API key. When set, PostHog serves flags on both sides and `NEXT_PUBLIC_FEATURE_FLAGS` is ignored. |
+| `NEXT_PUBLIC_POSTHOG_HOST` | PostHog API host. Defaults to `https://us.i.posthog.com`. |
+| `NEXT_PUBLIC_FEATURE_FLAGS` | Used when there is no PostHog key: a comma-separated list of flags that are on, or `*` for all on. Unset or empty means all off. For local development, tests, and preview deploys. |
+
+Notes:
+
+- `NEXT_PUBLIC_` values are inlined at `next build`, so changing one needs a new build. On Vercel, set them per environment: the PostHog key for Production, and `NEXT_PUBLIC_FEATURE_FLAGS` for Preview.
+- PostHog serves flags through its official providers, `@posthog/openfeature-node-provider` (over `posthog-node`) and `@posthog/openfeature-web-provider` (over `posthog-js`). PostHog starts for flags only: no `$feature_flag_called` events, page views, autocapture, session recording, or web vitals. Analytics is a separate change.
+- There is no sign-in yet, so the server evaluates every flag for one anonymous distinct ID. Percentage rollouts and person targeting take effect only in the browser; on the server a flag is on or off for everyone.
+- In the browser, PostHog flags arrive after the page loads. The server-rendered HTML and the first client render show PostHog flags as off, and they switch on when PostHog answers. In-memory flags are the same on both renders.
+- Without a personal API key, `posthog-node` asks PostHog on every server evaluation. If PostHog is unreachable, a render that checks a flag waits for its retry (about 3 seconds) before treating the flag as off.
+- To swap providers, change `createProvider` in `web/src/lib/flags/server.ts` and `web/src/lib/flags/client.tsx`.
+- The flags module picks its provider once, when it loads. A test sets `NEXT_PUBLIC_FEATURE_FLAGS` with `vi.stubEnv`, calls `vi.resetModules()`, and imports the module again; see `web/src/lib/flags/*.test.*`. Tests never call PostHog: the PostHog cases mock `posthog-node` and `posthog-js`.
 
 ## CI
 
