@@ -3,5 +3,4 @@
 !.env.example
 Dockerfile
 .dockerignore
-railway.json
 .golangci.yml

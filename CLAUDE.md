@@ -17,6 +17,7 @@ Do not add a comment to satisfy a linter. The doc-comment lint rules are disable
 - `api/`: Go API. Binaries in `api/cmd/` (`api`, `migrate`, `worker`), goose migrations in `api/migrations/`.
 - `web/`: Next.js front end (pnpm, Node 26).
 - `.github/`: CI workflow, scripts, Dependabot, ruleset for `main`.
+- `.railway/`: Railway infrastructure as code (`railway.ts`). Change Railway settings there and run `railway config plan`; never `railway config apply` without the user's approval.
 
 ## OpenAPI-first workflow
 
