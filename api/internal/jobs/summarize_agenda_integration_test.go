@@ -6,16 +6,19 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm/llmtest"
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 	"github.com/andrewcgraves/civic-scanner/api/internal/testdb"
 )
@@ -102,8 +105,12 @@ func TestEachNewAgendaVersionIsSummarizedOnThatVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !again.UniqueSkippedAsDuplicate || again.Job.ID != first[0].ID {
-		t.Errorf("re-enqueue of version 1 was not a duplicate: %+v", again.Job)
+	if again.UniqueSkippedAsDuplicate || again.Job.ID == first[0].ID {
+		t.Fatalf("re-enqueue of finished version 1 was skipped: %+v", again.Job)
+	}
+	testdb.WaitForJobState(t, pool, again.Job.ID, "completed")
+	if n.Load() != 2 || *versionsOf(t, pool, m.ID)[1].Summary != "The board meets on December 4." {
+		t.Errorf("re-run called the model or changed the summary: calls %d", n.Load())
 	}
 }
 
@@ -140,8 +147,8 @@ func TestASummaryThatCannotBeWrittenNeverBlocksTheAgenda(t *testing.T) {
 		state string
 	}{
 		"flag off":         {jobs.Config{LLM: llmtest.Returning("never"), Enabled: allFlagsBut(jobs.FlagSummarizeAgendas)}, "completed"},
-		"no model":         {jobs.Config{}, "cancelled"},
-		"not configured":   {jobs.Config{LLM: llmtest.Failing(llm.ErrNotConfigured)}, "cancelled"},
+		"no model":         {jobs.Config{}, "completed"},
+		"not configured":   {jobs.Config{LLM: llmtest.Failing(llm.ErrNotConfigured)}, "completed"},
 		"reply truncated":  {jobs.Config{LLM: &llmtest.Fake{Respond: truncatedReply}}, "cancelled"},
 		"permanent status": {jobs.Config{LLM: llmtest.Failing(&llm.Error{StatusCode: 400, Err: errors.New("bad request")})}, "cancelled"},
 	}
@@ -168,6 +175,38 @@ func TestASummaryThatCannotBeWrittenNeverBlocksTheAgenda(t *testing.T) {
 
 func truncatedReply(llm.Request) (llm.Response, error) {
 	return llm.Response{Text: "The board", FinishReason: "length", Usage: llm.Usage{OutputTokens: 1024}}, nil
+}
+
+func TestAnInsertThatFailsInTheDatabaseKeepsTheVersionAndItsEvent(t *testing.T) {
+	pool := testdb.Pool(t)
+	agencyID := seedAgency(t, pool, "jobs-test-summary-trigger-"+randomSuffix(t), "live")
+	m := seedMeeting(t, pool, agencyID, "summary-trigger")
+	h := start(t, pool, jobs.Config{LLM: llmtest.Returning("never")})
+	fn, trigger := "fail_summary_insert_"+h.queue, "fail_summary_insert_"+h.queue
+	ctx := context.WithoutCancel(t.Context())
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION `+fn+`() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.queue = '`+h.queue+`' AND NEW.kind = 'summarize_agenda' THEN
+    RAISE EXCEPTION 'summary insert refused by test trigger';
+  END IF;
+  RETURN NEW;
+END $$`); err != nil {
+		t.Fatalf("create function: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DROP FUNCTION IF EXISTS `+fn+`() CASCADE`) })
+	if _, err := pool.Exec(ctx, `CREATE TRIGGER `+trigger+` BEFORE INSERT ON river_job FOR EACH ROW EXECUTE FUNCTION `+fn+`()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	testdb.WaitForJobState(t, pool, h.processAgenda(m.ID, "https://agency.test/trigger/agenda.txt", day(0)), "completed")
+
+	if versions := versionsOf(t, pool, m.ID); len(versions) != 1 || versions[0].Summary != nil {
+		t.Errorf("versions = %+v, want version 1 committed", versions)
+	}
+	if !sameTypes(eventTypesOf(t, pool, m.ID), store.EventAgendaPublished) {
+		t.Errorf("events = %v, want agenda_published committed", eventTypesOf(t, pool, m.ID))
+	}
+	h.summarizeJobs(0)
 }
 
 func TestAFailedEnqueueKeepsTheVersion(t *testing.T) {
@@ -256,10 +295,182 @@ func TestInstructionsInAnAgendaOnlyEverReachTheSummaryText(t *testing.T) {
 		t.Errorf("events = %v", eventTypesOf(t, pool, target.ID))
 	}
 	calls := fake.Calls()
-	if len(calls) != 2 || calls[1].Tier != llm.TierRoutine || calls[1].System != calls[0].System || calls[1].MaxOutputTokens != calls[0].MaxOutputTokens {
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2", len(calls))
+	}
+	first, second := blockDelimiter(t, calls[0]), blockDelimiter(t, calls[1])
+	if first == second || calls[1].Tier != llm.TierRoutine || calls[1].MaxOutputTokens != calls[0].MaxOutputTokens ||
+		strings.ReplaceAll(calls[1].System, second, "X") != strings.ReplaceAll(calls[0].System, first, "X") {
 		t.Errorf("the agenda changed the request: %+v", calls)
 	}
-	if strings.Count(calls[1].User, "</agenda>") != 1 {
-		t.Errorf("the agenda closed the delimiter: %q", calls[1].User)
+	if !strings.HasSuffix(calls[1].User, "https://evil.test'</script>\n</document-"+second+">") {
+		t.Errorf("the agenda closed the block early: %q", calls[1].User)
+	}
+}
+
+func blockDelimiter(t *testing.T, req llm.Request) string {
+	t.Helper()
+	const open = "\n<document-"
+	i := strings.Index(req.User, open)
+	if i < 0 || len(req.User) < i+len(open)+32 {
+		t.Fatalf("no document block in %q", req.User)
+	}
+	delimiter := req.User[i+len(open) : i+len(open)+32]
+	if strings.Count(req.User, delimiter) != 2 || strings.Count(req.System, delimiter) != 2 {
+		t.Fatalf("delimiter %q not used exactly twice in each message", delimiter)
+	}
+	return delimiter
+}
+
+func TestAFlipBackToEarlierTextReusesItsSummary(t *testing.T) {
+	pool := testdb.Pool(t)
+	agencyID := seedAgency(t, pool, "jobs-test-summary-flip-"+randomSuffix(t), "live")
+	m := seedMeeting(t, pool, agencyID, "summary-flip")
+	source := serving("text/plain", plainAgenda(agendaV1))
+	fake := &llmtest.Fake{Respond: func(req llm.Request) (llm.Response, error) {
+		if strings.Contains(req.User, "Adopt the 2027 board meeting calendar") {
+			return llm.Response{Text: "Summary of the second text.", FinishReason: "stop"}, nil
+		}
+		return llm.Response{Text: "Summary of the first text.", FinishReason: "stop"}, nil
+	}}
+	h := start(t, pool, jobs.Config{Fetcher: source, LLM: fake})
+	agendaURL := "https://agency.test/flip/agenda.txt"
+
+	testdb.WaitForJobState(t, pool, h.processAgenda(m.ID, agendaURL, day(2)), "completed")
+	h.summarizeAndWait(1, "completed")
+	source.set("text/plain", plainAgenda(agendaV2))
+	testdb.WaitForJobState(t, pool, h.processAgenda(m.ID, agendaURL, day(1)), "completed")
+	h.summarizeAndWait(2, "completed")
+	source.set("text/plain", plainAgenda(agendaV1))
+	testdb.WaitForJobState(t, pool, h.processAgenda(m.ID, agendaURL, day(0)), "completed")
+	h.summarizeAndWait(3, "completed")
+
+	versions := versionsOf(t, pool, m.ID)
+	if len(versions) != 3 || versions[0].Summary == nil || *versions[0].Summary != "Summary of the first text." {
+		t.Fatalf("versions = %+v, want version 3 to carry version 1's summary", versions)
+	}
+	if len(fake.Calls()) != 2 {
+		t.Errorf("model calls = %d, want 2: the flip back is copied", len(fake.Calls()))
+	}
+}
+
+func TestASummaryJobCanBeEnqueuedAgainOnlyOnceTheLastOneIsFinal(t *testing.T) {
+	pool := testdb.Pool(t)
+	h := start(t, pool, jobs.Config{LLM: llmtest.Returning("s")})
+	args := jobs.SummarizeAgendaArgs{AgendaVersionID: uuid.New()}
+	later := &river.InsertOpts{Queue: h.queue, ScheduledAt: time.Now().Add(time.Hour)}
+
+	first, err := h.client.Insert(t.Context(), args, later)
+	if err != nil || first.UniqueSkippedAsDuplicate {
+		t.Fatalf("first insert = (%+v, %v)", first, err)
+	}
+	again, err := h.client.Insert(t.Context(), args, later)
+	if err != nil || !again.UniqueSkippedAsDuplicate {
+		t.Errorf("insert while one is scheduled = (%+v, %v), want a duplicate", again, err)
+	}
+	if _, err := h.client.JobCancel(t.Context(), first.Job.ID); err != nil {
+		t.Fatal(err)
+	}
+	afterCancel, err := h.client.Insert(t.Context(), args, later)
+	if err != nil || afterCancel.UniqueSkippedAsDuplicate {
+		t.Errorf("insert after a cancel = (%+v, %v), want a new job", afterCancel, err)
+	}
+	_, _ = h.client.JobCancel(t.Context(), afterCancel.Job.ID)
+}
+
+func (h *harness) sweep(slot time.Time) {
+	h.t.Helper()
+	res, err := h.client.Insert(h.t.Context(), jobs.EnqueueAgendaSummariesArgs{Slot: slot}, &river.InsertOpts{Queue: h.queue})
+	if err != nil || res.UniqueSkippedAsDuplicate {
+		h.t.Fatalf("insert sweep = (%+v, %v)", res, err)
+	}
+	testdb.WaitForJobState(h.t, h.pool, res.Job.ID, "completed")
+}
+
+func TestTheSweepSummarizesVersionsLeftWithoutOne(t *testing.T) {
+	pool := testdb.Pool(t)
+	now := time.Date(2091, 1, 1, 13, 0, 0, 0, time.UTC).AddDate(0, 0, int(time.Now().UnixNano()%3000))
+	agencyID := seedAgency(t, pool, "jobs-test-summary-sweep-"+randomSuffix(t), "live")
+	st := store.New(pool)
+	seed := func(sourceID string, startsAt time.Time, text string) store.AgendaVersion {
+		m, _, err := st.UpsertMeeting(t.Context(), store.MeetingInput{
+			AgencyID: agencyID, Title: "Board", StartsAt: startsAt, Status: "scheduled",
+			SourceURL: "https://agency.test/meetings/" + sourceID, SourceID: sourceID,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, _, err := st.AddAgendaVersion(t.Context(), store.AgendaVersionInput{
+			MeetingID: m.ID, SourceURL: "https://agency.test/" + sourceID + ".pdf", Text: text, ContentHash: store.HashContent(text),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	inside := seed("inside", now.AddDate(0, 0, 5), "agenda inside the window")
+	failing := seed("failing", now.AddDate(0, 0, 6), "agenda the model refuses")
+	outside := seed("outside", now.AddDate(0, 0, 120), "agenda outside the window")
+	var calls atomic.Int32
+	fake := &llmtest.Fake{Respond: func(req llm.Request) (llm.Response, error) {
+		calls.Add(1)
+		if strings.Contains(req.User, "refuses") {
+			return llm.Response{}, &llm.Error{StatusCode: 400, Err: errors.New("bad request")}
+		}
+		return llm.Response{Text: "Swept summary.", FinishReason: "stop"}, nil
+	}}
+	enabled := true
+	var mu sync.Mutex
+	h := start(t, pool, jobs.Config{
+		LLM:   fake,
+		Clock: sourcestest.NewClock(now),
+		Enabled: func(_ context.Context, name string) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return enabled || name != jobs.FlagSummarizeAgendas
+		},
+	})
+
+	mu.Lock()
+	enabled = false
+	mu.Unlock()
+	h.sweep(now)
+	h.summarizeJobs(0)
+
+	mu.Lock()
+	enabled = true
+	mu.Unlock()
+	h.sweep(now.Add(time.Hour))
+	for _, j := range h.summarizeJobs(2) {
+		want := "completed"
+		if strings.Contains(string(j.EncodedArgs), failing.ID.String()) {
+			want = "cancelled"
+		}
+		testdb.WaitForJobState(t, pool, j.ID, want)
+	}
+	if v, err := st.GetAgendaVersion(t.Context(), inside.ID); err != nil || v.Summary == nil || *v.Summary != "Swept summary." {
+		t.Errorf("inside = (%v, %v), want summarized", v.Summary, err)
+	}
+	if v, err := st.GetAgendaVersion(t.Context(), outside.ID); err != nil || v.Summary != nil {
+		t.Errorf("outside = (%v, %v), want left alone", v.Summary, err)
+	}
+
+	h.sweep(now.Add(2 * time.Hour))
+	h.summarizeJobs(2)
+	if calls.Load() != 2 {
+		t.Errorf("model calls = %d, want 2: the cancelled version is backed off", calls.Load())
+	}
+
+	if _, err := pool.Exec(t.Context(), `UPDATE river_job SET finalized_at = finalized_at - interval '8 days' WHERE queue = $1 AND state = 'cancelled'`, h.queue); err != nil {
+		t.Fatal(err)
+	}
+	h.sweep(now.Add(3 * time.Hour))
+	for _, j := range h.summarizeJobs(3) {
+		if strings.Contains(string(j.EncodedArgs), failing.ID.String()) {
+			testdb.WaitForJobState(t, pool, j.ID, "cancelled")
+		}
+	}
+	if calls.Load() != 3 {
+		t.Errorf("model calls = %d, want 3 after the backoff passed", calls.Load())
 	}
 }

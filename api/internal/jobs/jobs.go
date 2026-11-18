@@ -98,6 +98,14 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		llmTimeout: cfg.LLMTimeout,
 		enabled:    cfg.Enabled,
 	})
+	river.AddWorker(workers, &EnqueueAgendaSummariesWorker{
+		logger:  logger,
+		store:   st,
+		clock:   cfg.Clock,
+		llm:     cfg.LLM,
+		enabled: cfg.Enabled,
+		queue:   cfg.Queue,
+	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,
 		store:   st,
@@ -112,13 +120,19 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 			schedule,
 			periodicChecks(schedule, cfg.Clock, cfg.Queue),
 			&river.PeriodicJobOpts{ID: EnqueueAgencyChecksArgs{}.Kind(), RunOnStart: true},
+		), river.NewPeriodicJob(
+			river.PeriodicInterval(summarySweepInterval),
+			periodicSummarySweep(cfg.Clock, cfg.Queue),
+			&river.PeriodicJobOpts{ID: EnqueueAgendaSummariesArgs{}.Kind(), RunOnStart: true},
 		))
 	}
 
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Logger:       logger,
-		Queues:       map[string]river.QueueConfig{cfg.Queue: {MaxWorkers: 10}},
-		Workers:      workers,
-		PeriodicJobs: periodic,
+		Logger:                      logger,
+		CancelledJobRetentionPeriod: summaryFailureBackoff,
+		DiscardedJobRetentionPeriod: summaryFailureBackoff,
+		Queues:                      map[string]river.QueueConfig{cfg.Queue: {MaxWorkers: 10}},
+		Workers:                     workers,
+		PeriodicJobs:                periodic,
 	})
 }

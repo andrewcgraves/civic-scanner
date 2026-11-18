@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
@@ -22,8 +23,6 @@ const (
 	summarizeTimeoutMargin = time.Minute
 )
 
-var ErrNoLLM = errors.New("jobs: no LLM client configured")
-
 type SummarizeAgendaArgs struct {
 	AgendaVersionID uuid.UUID `json:"agenda_version_id"`
 }
@@ -33,7 +32,10 @@ func (SummarizeAgendaArgs) Kind() string { return "summarize_agenda" }
 func (SummarizeAgendaArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		MaxAttempts: checkMaxAttempts,
-		UniqueOpts:  river.UniqueOpts{ByArgs: true, ByQueue: true},
+		UniqueOpts: river.UniqueOpts{ByArgs: true, ByQueue: true, ByState: []rivertype.JobState{
+			rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRetryable,
+			rivertype.JobStateRunning, rivertype.JobStateScheduled,
+		}},
 	}
 }
 
@@ -64,6 +66,7 @@ func (e EnqueueSummarizeAgenda) AgendaVersionAdded(ctx context.Context, tx pgx.T
 type summaryStore interface {
 	GetAgendaVersion(ctx context.Context, versionID uuid.UUID) (store.AgendaVersion, error)
 	LatestAgendaVersion(ctx context.Context, meetingID uuid.UUID) (store.AgendaVersion, error)
+	SummaryOfSameContent(ctx context.Context, v store.AgendaVersion) (string, bool, error)
 	SetAgendaSummaryIfUnset(ctx context.Context, versionID uuid.UUID, summary string) (store.AgendaVersion, bool, error)
 }
 
@@ -90,7 +93,8 @@ func (w *SummarizeAgendaWorker) Work(ctx context.Context, job *river.Job[Summari
 		return nil
 	}
 	if w.llm == nil {
-		return river.JobCancel(ErrNoLLM)
+		logger.InfoContext(ctx, "agenda summary skipped: no LLM configured")
+		return nil
 	}
 
 	v, err := w.store.GetAgendaVersion(ctx, id)
@@ -114,25 +118,38 @@ func (w *SummarizeAgendaWorker) Work(ctx context.Context, job *river.Job[Summari
 		return nil
 	}
 
+	if earlier, ok, err := w.store.SummaryOfSameContent(ctx, v); err != nil {
+		return err
+	} else if ok {
+		return w.write(ctx, logger, v, earlier, "earlier_version_same_text")
+	}
+
 	result, err := summarize.Agenda(ctx, w.llm, w.tier, v.Text)
 	attrs := []any{
 		"tier", w.tier, "model", result.Response.Model, "finish_reason", result.Response.FinishReason,
 		"input_tokens", result.Response.Usage.InputTokens, "output_tokens", result.Response.Usage.OutputTokens,
-		"input_bytes", result.InputBytes, "text_bytes", len(v.Text), "input_truncated", result.InputTruncated,
+		"input_bytes", result.Input.Bytes, "text_bytes", len(v.Text), "input_truncated", result.Input.Truncated,
+	}
+	if errors.Is(err, llm.ErrNotConfigured) {
+		logger.WarnContext(ctx, "agenda summary skipped: LLM not configured", attrs...)
+		return nil
 	}
 	if err != nil {
 		logger.WarnContext(ctx, "agenda not summarized", append(attrs, "error", err)...)
 		return summaryError(err)
 	}
+	return w.write(ctx, logger.With(attrs...), v, result.Summary, "model")
+}
 
-	_, written, err := w.store.SetAgendaSummaryIfUnset(ctx, v.ID, result.Summary)
+func (w *SummarizeAgendaWorker) write(ctx context.Context, logger *slog.Logger, v store.AgendaVersion, summary, source string) error {
+	_, written, err := w.store.SetAgendaSummaryIfUnset(ctx, v.ID, summary)
 	if errors.Is(err, store.ErrNotFound) {
 		return river.JobCancel(err)
 	}
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "agenda summarized", append(attrs, "written", written, "summary_bytes", len(result.Summary))...)
+	logger.InfoContext(ctx, "agenda summary written", "source", source, "written", written, "summary_bytes", len(summary))
 	return nil
 }
 

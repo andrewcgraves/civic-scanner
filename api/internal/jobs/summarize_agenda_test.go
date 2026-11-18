@@ -21,12 +21,14 @@ import (
 const summaryAgendaText = "REGULAR BOARD MEETING\nThursday, December 4, 2026\n1. Call to Order\n2. Adopt the 2027 budget"
 
 type fakeSummaryStore struct {
-	mu       sync.Mutex
-	versions map[uuid.UUID]store.AgendaVersion
-	latest   map[uuid.UUID]uuid.UUID
-	err      error
-	setErr   error
-	writes   int
+	mu        sync.Mutex
+	versions  map[uuid.UUID]store.AgendaVersion
+	latest    map[uuid.UUID]uuid.UUID
+	err       error
+	setErr    error
+	sameErr   error
+	latestErr error
+	writes    int
 }
 
 func newFakeSummaryStore(versions ...store.AgendaVersion) *fakeSummaryStore {
@@ -56,7 +58,28 @@ func (s *fakeSummaryStore) GetAgendaVersion(_ context.Context, id uuid.UUID) (st
 func (s *fakeSummaryStore) LatestAgendaVersion(_ context.Context, meetingID uuid.UUID) (store.AgendaVersion, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.latestErr != nil {
+		return store.AgendaVersion{}, s.latestErr
+	}
 	return s.versions[s.latest[meetingID]], nil
+}
+
+func (s *fakeSummaryStore) SummaryOfSameContent(_ context.Context, v store.AgendaVersion) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sameErr != nil {
+		return "", false, s.sameErr
+	}
+	best := store.AgendaVersion{}
+	for _, other := range s.versions {
+		if other.ID != v.ID && other.MeetingID == v.MeetingID && other.ContentHash == v.ContentHash && other.Summary != nil && other.Version > best.Version {
+			best = other
+		}
+	}
+	if best.Summary == nil {
+		return "", false, nil
+	}
+	return *best.Summary, true, nil
 }
 
 func (s *fakeSummaryStore) SetAgendaSummaryIfUnset(_ context.Context, id uuid.UUID, summary string) (store.AgendaVersion, bool, error) {
@@ -108,6 +131,14 @@ func TestSummarizeAgendaArgs(t *testing.T) {
 	opts := args.InsertOpts()
 	if opts.MaxAttempts != 5 || !opts.UniqueOpts.ByArgs || !opts.UniqueOpts.ByQueue || opts.UniqueOpts.ByPeriod != 0 {
 		t.Errorf("InsertOpts() = %+v", opts)
+	}
+	for _, state := range opts.UniqueOpts.ByState {
+		if state == rivertype.JobStateCompleted || state == rivertype.JobStateCancelled || state == rivertype.JobStateDiscarded {
+			t.Errorf("unique states include %q, which would block the sweep from enqueueing again", state)
+		}
+	}
+	if len(opts.UniqueOpts.ByState) != 5 {
+		t.Errorf("unique states = %v, want every non-final state", opts.UniqueOpts.ByState)
 	}
 }
 
@@ -161,10 +192,49 @@ func TestSummarizeAgendaChecksItsOwnFlag(t *testing.T) {
 	}
 }
 
-func TestSummarizeAgendaWithoutAnLLMIsCancelled(t *testing.T) {
-	err := summaryWorker(newFakeSummaryStore(), nil).Work(t.Context(), summaryJob(uuid.New()))
-	if !isCancel(err) || !errors.Is(err, ErrNoLLM) {
-		t.Errorf("Work = %v, want a cancelled ErrNoLLM", err)
+func TestSummarizeAgendaWithoutAnLLMCompletesQuietly(t *testing.T) {
+	v := agendaVersion(uuid.New(), 1, summaryAgendaText)
+	st := newFakeSummaryStore(v)
+	if err := summaryWorker(st, nil).Work(t.Context(), summaryJob(v.ID)); err != nil {
+		t.Errorf("Work = %v, want nil so no attempt is spent", err)
+	}
+
+	unconfigured := llmtest.Failing(llm.ErrNotConfigured)
+	if err := summaryWorker(st, unconfigured).Work(t.Context(), summaryJob(v.ID)); err != nil {
+		t.Errorf("not configured: Work = %v, want nil", err)
+	}
+	if st.summary(v.ID) != nil || len(unconfigured.Calls()) != 1 {
+		t.Errorf("summary %v, calls %d", st.summary(v.ID), len(unconfigured.Calls()))
+	}
+}
+
+func TestSummarizeAgendaCopiesTheSummaryOfAnEarlierVersionWithTheSameText(t *testing.T) {
+	meetingID := uuid.New()
+	first := agendaVersion(meetingID, 1, summaryAgendaText)
+	earlier := "Summary of version one."
+	first.Summary = &earlier
+	middle := agendaVersion(meetingID, 2, summaryAgendaText+"\n3. Adjourn")
+	again := agendaVersion(meetingID, 3, summaryAgendaText)
+	st := newFakeSummaryStore(first, middle, again)
+	fake := llmtest.Returning("never")
+
+	if err := summaryWorker(st, fake).Work(t.Context(), summaryJob(again.ID)); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if got := st.summary(again.ID); got == nil || *got != earlier || len(fake.Calls()) != 0 {
+		t.Errorf("summary = %v, calls = %d; want the earlier summary copied without a call", got, len(fake.Calls()))
+	}
+}
+
+func TestSummarizeAgendaRetriesWhenTheEarlierSummaryCannotBeRead(t *testing.T) {
+	v := agendaVersion(uuid.New(), 1, summaryAgendaText)
+	st := newFakeSummaryStore(v)
+	boom := errors.New("connection reset")
+	st.sameErr = boom
+	fake := llmtest.Returning("never")
+
+	if err := summaryWorker(st, fake).Work(t.Context(), summaryJob(v.ID)); isCancel(err) || !errors.Is(err, boom) || len(fake.Calls()) != 0 {
+		t.Errorf("Work = %v, calls %d; want a retry before any call", err, len(fake.Calls()))
 	}
 }
 
@@ -232,6 +302,12 @@ func TestSummarizeAgendaRetriesDatabaseErrors(t *testing.T) {
 		t.Errorf("read: Work = %v, want the retryable error", err)
 	}
 
+	latest := newFakeSummaryStore(v)
+	latest.latestErr = boom
+	if err := summaryWorker(latest, llmtest.Returning("s")).Work(t.Context(), summaryJob(v.ID)); isCancel(err) || !errors.Is(err, boom) {
+		t.Errorf("latest: Work = %v, want the retryable error", err)
+	}
+
 	write := newFakeSummaryStore(v)
 	write.setErr = boom
 	if err := summaryWorker(write, llmtest.Returning("s")).Work(t.Context(), summaryJob(v.ID)); isCancel(err) || !errors.Is(err, boom) {
@@ -255,7 +331,6 @@ func TestSummarizeAgendaClassifiesModelErrors(t *testing.T) {
 		{"gateway down", &llm.Error{StatusCode: 503, Retryable: true, Err: errors.New("unavailable")}, false},
 		{"no credit", &llm.Error{StatusCode: 402, Retryable: true, Err: errors.New("budget")}, false},
 		{"bad request", &llm.Error{StatusCode: 400, Err: errors.New("context too long")}, true},
-		{"not configured", llm.ErrNotConfigured, true},
 		{"truncated", llm.ErrTruncated, true},
 		{"filtered", llm.ErrContentFiltered, true},
 		{"too large", llm.ErrResponseTooLarge, true},
@@ -306,12 +381,20 @@ func TestSummarizeAgendaWithInstructionsInTheTextOnlyWritesItsOwnSummary(t *test
 	}
 
 	calls := fake.Calls()
-	plain, _, _ := summarize.AgendaRequest(llm.TierRoutine, summaryAgendaText)
-	if len(calls) != 1 || calls[0].Tier != llm.TierRoutine || calls[0].System != plain.System || calls[0].MaxOutputTokens != plain.MaxOutputTokens {
+	plain, plainInput, err := summarize.AgendaRequest(llm.TierRoutine, summaryAgendaText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	delimiter := requestDelimiter(t, calls[0])
+	if calls[0].Tier != llm.TierRoutine || calls[0].MaxOutputTokens != plain.MaxOutputTokens ||
+		strings.ReplaceAll(calls[0].System, delimiter, "X") != strings.ReplaceAll(plain.System, plainInput.Delimiter, "X") {
 		t.Errorf("the agenda changed the request: %+v", calls)
 	}
-	if strings.Count(calls[0].User, "</agenda>") != 1 {
-		t.Errorf("the agenda closed the delimiter early: %q", calls[0].User)
+	if !strings.HasSuffix(calls[0].User, "\n1. Approve the minutes\n</document-"+delimiter+">") {
+		t.Errorf("the agenda closed the block early: %q", calls[0].User)
 	}
 	got := st.summary(hostile.ID)
 	if got == nil || len(*got) > summarize.MaxSummaryBytes || strings.ContainsRune(*got, 0) || !strings.HasPrefix(*got, "<script>alert(1)</script> PWNED") {
@@ -323,6 +406,19 @@ func TestSummarizeAgendaWithInstructionsInTheTextOnlyWritesItsOwnSummary(t *test
 	if v := st.versions[hostile.ID]; v.Text != hostile.Text || v.ContentHash != hostile.ContentHash {
 		t.Error("the version's text or hash changed")
 	}
+}
+
+func requestDelimiter(t *testing.T, req llm.Request) string {
+	t.Helper()
+	i := strings.Index(req.User, "\n<document-")
+	if i < 0 || len(req.User) < i+len("\n<document-")+32 {
+		t.Fatalf("no document block in %q", req.User)
+	}
+	delimiter := req.User[i+len("\n<document-") : i+len("\n<document-")+32]
+	if strings.Count(req.User, delimiter) != 2 || strings.Count(req.System, delimiter) != 2 {
+		t.Fatalf("delimiter %q not used exactly twice in each message", delimiter)
+	}
+	return delimiter
 }
 
 func TestEnqueueSummarizeAgendaOutsideAJobNeverFailsTheVersion(t *testing.T) {

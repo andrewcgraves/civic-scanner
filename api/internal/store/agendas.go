@@ -201,6 +201,58 @@ func updateAgendaVersion(ctx context.Context, q querier, op, query string, versi
 	return v, nil
 }
 
+func (s *Store) SummaryOfSameContent(ctx context.Context, v AgendaVersion) (string, bool, error) {
+	var summary string
+	err := s.pool.QueryRow(ctx, `
+SELECT summary FROM agenda_versions
+WHERE meeting_id = $1 AND content_hash = $2 AND id <> $3 AND summary IS NOT NULL
+ORDER BY version DESC LIMIT 1`, v.MeetingID, v.ContentHash.String(), v.ID).Scan(&summary)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("summary of same content: %w", err)
+	}
+	return summary, true, nil
+}
+
+type UnsummarizedParams struct {
+	From         time.Time
+	To           time.Time
+	FailedKind   string
+	FailedWithin time.Duration
+	Limit        int
+}
+
+func (s *Store) ListUnsummarizedAgendaVersions(ctx context.Context, p UnsummarizedParams) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT v.id
+FROM meetings m
+JOIN agencies a ON a.id = m.agency_id AND a.status = 'live'
+JOIN LATERAL (
+    SELECT id, summary FROM agenda_versions WHERE meeting_id = m.id ORDER BY version DESC LIMIT 1
+) v ON true
+WHERE m.starts_at >= $1 AND m.starts_at <= $2
+  AND v.summary IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM river_job j
+    WHERE j.kind = $3
+      AND j.args->>'agenda_version_id' = v.id::text
+      AND j.state IN ('cancelled', 'discarded')
+      AND j.finalized_at >= now() - $4::interval
+  )
+ORDER BY m.starts_at DESC, m.id
+LIMIT $5`, p.From, p.To, p.FailedKind, p.FailedWithin, p.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unsummarized agenda versions: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("scan unsummarized agenda versions: %w", err)
+	}
+	return ids, nil
+}
+
 func (s *Store) ListAgendaVersions(ctx context.Context, meetingID uuid.UUID) ([]AgendaVersion, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+agendaVersionColumns+` FROM agenda_versions WHERE meeting_id = $1 ORDER BY version DESC`, meetingID)
