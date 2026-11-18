@@ -323,7 +323,7 @@ type Meeting struct {
 
 `Status` is `sources.StatusScheduled`, `StatusHeld` or `StatusCancelled`, the values the `meetings` table accepts.
 
-Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock}`: `fetch.New(cfg.Fetch)` and `sources.SystemClock{}`. Adapters get their dependencies only from `Deps`, never from globals. No real adapter is registered yet, so every agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
+Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock}`: `fetch.New(cfg.Fetch)` and `sources.SystemClock{}`. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` (the Legistar adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
 
 An adapter must guarantee:
 
@@ -338,6 +338,49 @@ An adapter must guarantee:
 - **Errors.** Return the fetcher's errors wrapped with `%w`, so `sources.Retryable` can classify them; do not retry inside the adapter, since River does. Any other error, such as markup that no longer parses, is permanent.
 
 Tests never call a live site. `internal/sources/sourcestest` has a fake adapter for other packages' tests: `sourcestest.Returning(meetings...)` answers every call with those meetings, `sourcestest.Failing(err)` returns `err`, `Set` and `Fail` change the answer between runs, `Calls()` returns the windows received, and `sourcestest.Constructor(a)` registers it. `sourcestest.NewClock(t)` is a fake clock with `Set` and `Advance`. An adapter's own tests feed it `fetchtest.Fake` responses and check its result with `sources.Validate`.
+
+### Legistar
+
+`internal/sources/legistar` reads any agency that publishes through the [Legistar Web API](https://webapi.legistar.com/Help) (`https://webapi.legistar.com/v1/{client}/events`). One agency is one `legistar.Config`:
+
+```go
+var LAMetro = legistar.Config{
+	Client:   "metro",
+	BodyIDs:  []int{138, 199},
+	TimeZone: "America/Los_Angeles",
+	Granicus: legistar.Granicus{Host: "metro.granicus.com", ViewID: 2},
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `Client` | The Legistar client name, the path segment after `/v1/`. |
+| `BodyIDs` | The `EventBodyId`s of the full board: regular and special board meetings, no committees. |
+| `TimeZone` | IANA zone of the agency's wall-clock times. |
+| `Granicus` | Host and `view_id` of the agency's Granicus media player, for the recording URL. Leave it empty if the agency has none. |
+| `BaseURL` | Defaults to `https://webapi.legistar.com`. Tests point it elsewhere. |
+| `PageSize` | Defaults to 1000, Legistar's largest page. |
+
+To add a Legistar agency:
+
+1. List its bodies: `GET https://webapi.legistar.com/v1/{client}/bodies`. Pick the full board's ids by name, not by `BodyTypeName`: "Primary Legislative Body" also covers test bodies, workshops and public hearings. Skip the `(SAP)` bodies, which are Spanish audio copies of the same meetings.
+2. Add a `Config` next to `LAMetro` in `internal/sources/legistar/agencies.go`, and register `legistar.Constructor(cfg)` under the agency's slug in `cmd/worker/adapters.go`. `Constructor` panics on an invalid config, so a bad config stops the worker at startup; `legistar.New` returns the error instead.
+3. Record one real events response (step 1's GET, with our User-Agent), trim it, save it under `internal/sources/legistar/testdata/`, and add a test like `TestLAMetroBoardMeetingsFromRecordedResponse`.
+
+For LA Metro, body 138 is "Board of Directors - Regular Board Meeting" and 199 "Board of Directors - Special Board Meeting". Not included: the committees, the `(SAP)` copies, the service councils, the taxpayer oversight committees, the public hearings, the test bodies (300 to 303), and the board workshops ("Special Board Budget Workshop" 306, "Special Board Member Workshop" 310).
+
+How the adapter reads Legistar:
+
+- **Query.** One `GET /v1/{client}/events` with `$filter=EventDate ge datetime'{from}' and EventDate le datetime'{to}' and (EventBodyId eq … or …)`, `$orderby=EventDate,EventId`, `$top` and `$skip`. `{from}` and `{to}` are the window's ends as dates in the agency's zone, since `EventDate` is a local date. It pages with `$skip` until a page is shorter than `$top`; an event repeated across pages is returned once, and a full page with no new events is a malformed response. Events of other bodies are dropped in code as well.
+- **Ids and titles.** `SourceID` is `EventId`. `Title` is `EventBodyName`.
+- **Time.** `EventDate` holds the local date (its time part is always midnight) and `EventTime` the local wall-clock time as text, such as `10:00 AM`. The two are joined in the agency's zone and converted to UTC, so daylight saving time is applied for that date. Accepted time forms are `3:04 PM`, `3:04PM` and `15:04`, in either case. A missing, empty or unparseable `EventTime` gives local midnight of the date: the date is right, and when the agency fixes the time the next check moves the meeting.
+- **Status.** `cancelled` when `EventAgendaStatusName` contains "cancel" in any case (LA Metro writes `Canceled`, OCTA `CANCELLED`). Otherwise `held` when the start time has passed and there is evidence the meeting took place: a recording (`EventMedia` or `EventVideoPath`), a minutes file (`EventMinutesFile`), or minutes status `Final`. Otherwise `scheduled`, which includes a past meeting with no such evidence. A past date alone is not evidence: LA Metro's minutes stay `Draft` with no file in Legistar, so for LA Metro the recording is the evidence.
+- **URLs.** `PageURL` is `EventInSiteURL`. `AgendaURL` is `EventAgendaFile`, empty until the agenda is published. `RecordingURL` is `EventVideoPath` when set; otherwise, when `EventMedia` (a Granicus clip id) is set and `Granicus` is configured, `https://{host}/MediaPlayer.php?view_id={view}&clip_id={EventMedia}`; otherwise empty. The adapter never fetches the player page or the media; resolving the media file belongs to the recording download.
+- **Errors.** Fetch errors are wrapped with `%w` and keep their retryability. A body that is not a JSON list of events, or an event without an id, a parseable date, a body name, an absolute `EventInSiteURL`, or with a relative agenda or video URL, is `legistar.ErrMalformed`, which is permanent. If Legistar answers 401, 403, 406 or 429 and Firecrawl is configured, `fetch.New` falls back to Firecrawl, whose markdown is not JSON, so that check is cancelled as malformed and the next day's check tries again.
+
+The daily check calls only the API host, which has no `robots.txt`. The agenda host `metro.legistar1.com` and the player host `metro.granicus.com` disallow crawlers. The check does not touch them; the later stages that do identify themselves with `FETCH_USER_AGENT` (see [Fetching](#fetching)).
+
+The fixtures in `internal/sources/legistar/testdata` are real LA Metro responses recorded on 2026-11-17 and trimmed to a few events and fields: `metro_board_events.json` (the board-only query for 2026-01-01 to 2027-01-31) and `metro_events_with_committee.json` (a board meeting and a Planning and Programming Committee meeting from an unfiltered query). LA Metro had no upcoming board meeting without an agenda that day, so that case, the time edge cases and the status edge cases use events built in the tests.
 
 ### Follow-up jobs
 
