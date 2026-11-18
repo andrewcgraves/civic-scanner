@@ -41,6 +41,24 @@ The binaries read configuration from the environment only and do not load `.env`
 
 Generated files are committed and never edited by hand. CI regenerates them and fails on any diff.
 
+## API
+
+Every route is under `/v1`, public and unauthenticated. `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
+
+| Route | Returns |
+| --- | --- |
+| `GET /v1/healthz` | `ok`, or `degraded` with 503 when the database is unreachable |
+| `GET /v1/agencies` | every live agency |
+| `GET /v1/agencies/{slug}` | one live agency, the same shape as a list item |
+| `GET /v1/agencies/{slug}/meetings` | one page of the agency's meetings, newest first |
+
+- **Not live is not found:** an unknown slug and a pending or rejected agency get the same 404 (`not_found`), so a caller cannot tell whether an unpublished agency exists. A live agency with no meetings returns an empty list.
+- **Meeting items** carry `id`, `title`, `startsAt` (UTC), `status` (`scheduled`, `held`, `cancelled`) and `sourceUrl`, the agency's page for the meeting, left out when the source gave none. New optional fields, such as agenda or summary links, can be added later without breaking clients, which must ignore fields they do not know.
+- **Pagination:** keyset, not offset. Meetings are ordered by `starts_at DESC, id DESC`; the id breaks ties between meetings that start at the same time. A page asks for `limit` (default 50, at most 200) and returns `nextCursor`, which is `null` on the last page. Passing it back as `cursor` returns the meetings strictly after the last one on the previous page, so a meeting added or changed between requests never makes another one skipped or repeated. `meetings_agency_starts_at_idx` (`agency_id, starts_at DESC, id DESC`) serves the query.
+- **Cursors** are opaque to clients. Inside, a cursor is base64url (no padding) of a small JSON object holding the agency id and the last meeting's start time and id, followed by the first 8 bytes of its SHA-256. The checksum catches cursors that were truncated, edited or corrupted; it is not a secret, because a cursor only names a position in public data. A cursor that does not decode, fails its checksum, or belongs to another agency is a 400 (`invalid_cursor`), never a restart from the first page. A `limit` outside 1 to 200 or not an integer, and any other parameter the router cannot parse, is a 400 (`invalid_parameter`).
+- **Order of checks:** a malformed `limit` is rejected before the agency is looked up. The cursor is checked after, since it is tied to the agency, so an unknown agency with a bad cursor is a 404.
+- **Caching:** the routes set no `Cache-Control` or validators, the same as `GET /v1/agencies`. A caching policy for the public reads is a separate decision.
+
 ## Feature flags
 
 Unfinished work ships dark behind a flag. Both sides evaluate flags through [OpenFeature](https://openfeature.dev), with PostHog as the provider when a key is set and an in-memory list otherwise. Each side has its own variables.
