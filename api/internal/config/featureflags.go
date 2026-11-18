@@ -9,10 +9,11 @@ import (
 )
 
 type FeatureFlags struct {
-	PostHogKey     string
-	PostHogHost    string
-	PostHogTimeout time.Duration
-	On             []string
+	PostHogKey      string
+	PostHogHost     string
+	PostHogTimeout  time.Duration
+	PostHogCacheTTL time.Duration
+	On              []string
 }
 
 func loadFeatureFlags() (FeatureFlags, error) {
@@ -23,11 +24,19 @@ func loadFeatureFlags() (FeatureFlags, error) {
 	if err != nil {
 		return FeatureFlags{}, fmt.Errorf("POSTHOG_FLAG_TIMEOUT: %w", err)
 	}
+	cacheTTL, err := time.ParseDuration(envOr("POSTHOG_FLAG_CACHE_TTL", "30s"))
+	if err == nil && cacheTTL < 0 {
+		err = errors.New("must not be negative")
+	}
+	if err != nil {
+		return FeatureFlags{}, fmt.Errorf("POSTHOG_FLAG_CACHE_TTL: %w", err)
+	}
 	return FeatureFlags{
-		PostHogKey:     os.Getenv("POSTHOG_API_KEY"),
-		PostHogHost:    os.Getenv("POSTHOG_HOST"),
-		PostHogTimeout: timeout,
-		On:             splitList(os.Getenv("FEATURE_FLAGS")),
+		PostHogKey:      os.Getenv("POSTHOG_API_KEY"),
+		PostHogHost:     os.Getenv("POSTHOG_HOST"),
+		PostHogTimeout:  timeout,
+		PostHogCacheTTL: cacheTTL,
+		On:              splitList(os.Getenv("FEATURE_FLAGS")),
 	}, nil
 }
 
