@@ -65,7 +65,7 @@ func TestExtractAudioGivesFFmpegOnlyTheGatewayOverPlainHTTP(t *testing.T) {
 		"-rw_timeout 90000000",
 		"-i http://127.0.0.1:",
 		"/r/0/clip.mp4 -map 0:a:0 -vn -sn -dn -t 5400",
-		"-ac 1 -ar 16000 -c:a libmp3lame -b:a 32k -f mp3 " + dst,
+		"-ac 1 -ar 16000 -c:a libmp3lame -b:a 32k -write_xing 0 -id3v2_version 0 -f mp3 " + dst,
 	} {
 		if !strings.Contains(args, want) {
 			t.Errorf("ffmpeg args %q lack %q", args, want)
@@ -138,6 +138,8 @@ func TestExtractAudioChecksTheLengthOfTheResult(t *testing.T) {
 	}{
 		"audio stream complete":         {`600.0\n600.3\n`, "598.5", nil},
 		"audio stream short":            {`600.0\n600.3\n`, "597.0", ErrIncomplete},
+		"audio stream long":             {`600.0\n600.3\n`, "603.0", ErrMalformed},
+		"container length long":         {`N/A\n600.0\n`, "610.0", ErrMalformed},
 		"container length within slack": {`N/A\n600.0\n`, "594.5", nil},
 		"container length short":        {`N/A\n600.0\n`, "590.0", ErrIncomplete},
 		"format only":                   {`600.0\n`, "594.5", nil},

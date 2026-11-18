@@ -20,6 +20,7 @@ import (
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch/fetchtest"
+	"github.com/andrewcgraves/civic-scanner/api/internal/transcribe"
 )
 
 var loopbackGuard = Guard{
@@ -79,10 +80,134 @@ func mediaDir(t *testing.T) string {
 	return dir
 }
 
+func streamShapes(t *testing.T, dir string) {
+	t.Helper()
+	generate(t, dir, "-i", "meeting.mp4", "-c", "copy", "-f", "hls", "-hls_time", "4", "-hls_playlist_type", "vod",
+		"-hls_flags", "single_file", "single.m3u8")
+	generate(t, dir, "-i", "silent.mp4", "-c", "copy", "-f", "hls", "-hls_time", "4", "-hls_playlist_type", "vod",
+		"-hls_segment_filename", "vseg%d.ts", "videoonly.m3u8")
+	generate(t, dir, "-i", "meeting.mp4", "-vn", "-c:a", "copy", "-f", "hls", "-hls_time", "4", "-hls_playlist_type", "vod",
+		"-hls_segment_filename", "aseg%d.ts", "audio.m3u8")
+	generate(t, dir, "-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=8",
+		"-f", "lavfi", "-i", "sine=frequency=660:duration=8",
+		"-c:v", "libx264", "-g", "20", "-preset", "ultrafast", "-c:a", "aac", "-shortest",
+		"-mpegts_start_pid", "0x200", "-mpegts_pmt_start_pid", "0x1100", "-output_ts_offset", "500", "-f", "mpegts", "after.ts")
+	writeFile(t, filepath.Join(dir, "codecs_master.m3u8"), "#EXTM3U\n"+
+		"#EXT-X-STREAM-INF:BANDWIDTH=100,CODECS=\"avc1.42e00a\"\nvideoonly.m3u8\n"+
+		"#EXT-X-STREAM-INF:BANDWIDTH=900000,CODECS=\"avc1.42e00a,mp4a.40.2\"\nplaylist.m3u8\n")
+	writeFile(t, filepath.Join(dir, "nocodecs_master.m3u8"), "#EXTM3U\n"+
+		"#EXT-X-STREAM-INF:BANDWIDTH=100\nvideoonly.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=900000\nplaylist.m3u8\n")
+	writeFile(t, filepath.Join(dir, "shared_master.m3u8"), "#EXTM3U\n"+
+		"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"lo\",NAME=\"en\",URI=\"audio.m3u8\"\n"+
+		"#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"hi\",NAME=\"en\",URI=\"audio.m3u8\"\n"+
+		"#EXT-X-STREAM-INF:BANDWIDTH=100,AUDIO=\"lo\"\nvideoonly.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=900000,AUDIO=\"hi\"\nplaylist.m3u8\n")
+	playlist, err := os.ReadFile(filepath.Join(dir, "playlist.m3u8")) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	discontinuity := strings.Replace(string(playlist), "#EXT-X-ENDLIST", "#EXT-X-DISCONTINUITY\n#EXTINF:8.000000,\nafter.ts\n#EXT-X-ENDLIST", 1)
+	writeFile(t, filepath.Join(dir, "discontinuity.m3u8"), discontinuity)
+}
+
+func TestExtractAudioHandlesHLSStreamShapes(t *testing.T) {
+	requireFFmpeg(t)
+	dir := mediaDir(t)
+	streamShapes(t, dir)
+	srv := newMediaServer(t, dir)
+	tool := realTool(t)
+	durationOf := func(t *testing.T, path string) time.Duration {
+		t.Helper()
+		d, err := transcribe.FFmpeg{}.Duration(t.Context(), path)
+		if err != nil {
+			t.Fatalf("transcribe duration: %v", err)
+		}
+		return d
+	}
+
+	t.Run("single-file byte ranges are refused before any download", func(t *testing.T) {
+		before := srv.requests.Load()
+		err := tool.ExtractAudio(t.Context(), srv.localhost()+"/single.m3u8", filepath.Join(t.TempDir(), "a.mp3"))
+		if !errors.Is(err, ErrUnsupported) || FailureKind(err) != KindUnsupported {
+			t.Errorf("ExtractAudio = %v, want ErrUnsupported", err)
+		}
+		if n := srv.requests.Load() - before; n != 1 {
+			t.Errorf("requests = %d, want only the playlist", n)
+		}
+	})
+
+	for _, name := range []string{"codecs_master.m3u8", "nocodecs_master.m3u8", "shared_master.m3u8"} {
+		t.Run(name, func(t *testing.T) {
+			srv.mu.Lock()
+			srv.paths = nil
+			srv.mu.Unlock()
+			dst := filepath.Join(t.TempDir(), "a.mp3")
+			if err := tool.ExtractAudio(t.Context(), srv.localhost()+"/"+name, dst); err != nil {
+				t.Fatalf("ExtractAudio = %v", err)
+			}
+			srv.mu.Lock()
+			paths := strings.Join(srv.paths, " ")
+			srv.mu.Unlock()
+			triedVideoOnly := strings.Contains(paths, "/videoonly.m3u8")
+			if wantVideoOnly := name == "nocodecs_master.m3u8"; triedVideoOnly != wantVideoOnly {
+				t.Errorf("fetched %s; video-only variant tried = %v, want %v", paths, triedVideoOnly, wantVideoOnly)
+			}
+			if name == "shared_master.m3u8" && (!strings.Contains(paths, "/aseg0.ts") || strings.Contains(paths, "/seg0.ts")) {
+				t.Errorf("fetched %s, want the shared audio rendition only", paths)
+			}
+			if d := durationOf(t, dst); d < 11*time.Second || d > 13*time.Second {
+				t.Errorf("duration = %s, want about 12 s", d)
+			}
+		})
+	}
+
+	t.Run("discontinuity with new PIDs and a timestamp offset", func(t *testing.T) {
+		dst := filepath.Join(t.TempDir(), "a.mp3")
+		if err := tool.ExtractAudio(t.Context(), srv.localhost()+"/discontinuity.m3u8", dst); err != nil {
+			t.Fatalf("ExtractAudio = %v", err)
+		}
+		if _, err := CheckMP3(dst, DefaultMinBytes); err != nil {
+			t.Errorf("CheckMP3 = %v", err)
+		}
+		d := durationOf(t, dst)
+		if d < 19*time.Second || d > 21*time.Second {
+			t.Errorf("duration = %s, want about 20 s", d)
+		}
+		chunk := filepath.Join(t.TempDir(), "chunk.mp3")
+		if err := (transcribe.FFmpeg{}).Extract(t.Context(), dst, chunk, 10*time.Second, 8*time.Second); err != nil {
+			t.Fatalf("transcribe chunk across the join: %v", err)
+		}
+		if c := durationOf(t, chunk); c < 7*time.Second || c > 9*time.Second {
+			t.Errorf("chunk duration = %s, want about 8 s", c)
+		}
+		entries, err := os.ReadDir(filepath.Dir(dst))
+		if err != nil || len(entries) != 1 {
+			t.Errorf("left in the output directory: %v, %v", entries, err)
+		}
+	})
+
+	t.Run("discontinuity runs share the size limit", func(t *testing.T) {
+		capped := tool
+		capped.MaxBytes = 60_000
+		err := capped.ExtractAudio(t.Context(), srv.localhost()+"/discontinuity.m3u8", filepath.Join(t.TempDir(), "a.mp3"))
+		if !errors.Is(err, ErrLimitExceeded) {
+			t.Errorf("ExtractAudio = %v, want ErrLimitExceeded", err)
+		}
+	})
+
+	t.Run("video-only variant is tried and dropped", func(t *testing.T) {
+		writeFile(t, filepath.Join(dir, "videoonly_master.m3u8"), "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\nvideoonly.m3u8\n")
+		err := tool.ExtractAudio(t.Context(), srv.localhost()+"/videoonly_master.m3u8", filepath.Join(t.TempDir(), "a.mp3"))
+		if !errors.Is(err, ErrNoAudio) {
+			t.Errorf("ExtractAudio = %v, want ErrNoAudio", err)
+		}
+	})
+}
+
 type mediaServer struct {
 	*httptest.Server
 	mu       sync.Mutex
 	agents   []string
+	paths    []string
 	failSeg  map[string]int
 	requests atomic.Int64
 
@@ -97,6 +222,7 @@ func newMediaServer(t *testing.T, dir string) *mediaServer {
 		s.requests.Add(1)
 		s.mu.Lock()
 		s.agents = append(s.agents, r.UserAgent())
+		s.paths = append(s.paths, r.URL.Path)
 		status := s.failSeg[r.URL.Path]
 		s.mu.Unlock()
 		switch {

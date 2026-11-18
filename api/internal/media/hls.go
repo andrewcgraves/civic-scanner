@@ -3,10 +3,12 @@ package media
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"net/url"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -20,10 +22,24 @@ const (
 	maxVariants        = 16
 )
 
+var audioCodecPrefixes = []string{"mp4a", "ac-3", "ec-3", "ac-4", "opus", "flac", "alac", "mp3", "vorbis", "dtsc", "dtse", "dtsh", "dtsl"}
+
 type Playlist struct {
-	Duration  time.Duration
-	Parts     []string
-	Playlists int
+	Duration time.Duration
+	Runs     [][]string
+}
+
+func (p *Playlist) parts() int {
+	n := 0
+	for _, run := range p.Runs {
+		n += len(run)
+	}
+	return n
+}
+
+type HLSSource struct {
+	Media      *Playlist
+	Candidates []string
 }
 
 func isHLS(rawURL string) bool {
@@ -31,66 +47,135 @@ func isHLS(rawURL string) bool {
 	return err == nil && strings.EqualFold(path.Ext(u.Path), ".m3u8")
 }
 
-type parsedPlaylist struct {
-	master    bool
-	variants  []string
-	bandwidth map[string]int64
-	audio     []string
-	parts     []string
-	segments  int
-	duration  float64
-	ended     bool
+type variant struct {
+	url       string
+	bandwidth int64
+	codecs    string
+	hasCodecs bool
 }
 
-func InspectPlaylist(ctx context.Context, fetcher fetch.Fetcher, hosts []string, guard Guard, playlistURL string) (*Playlist, error) {
+type parsedPlaylist struct {
+	master   bool
+	variants []variant
+	audio    []string
+	runs     [][]string
+	refs     []string
+	segments int
+	duration float64
+	ended    bool
+}
+
+func InspectHLS(ctx context.Context, fetcher fetch.Fetcher, hosts []string, guard Guard, playlistURL string) (*HLSSource, error) {
 	top, err := fetchPlaylist(ctx, fetcher, hosts, guard, playlistURL)
 	if err != nil {
 		return nil, err
 	}
-	media, playlists := top, 1
-	if top.master {
-		child, err := top.choose()
+	if !top.master {
+		media, err := top.media()
 		if err != nil {
 			return nil, err
 		}
-		if media, err = fetchPlaylist(ctx, fetcher, hosts, guard, child); err != nil {
-			return nil, err
-		}
-		if media.master {
-			return nil, fmt.Errorf("%w: nested master playlist %s", ErrMalformed, child)
-		}
-		playlists++
+		return &HLSSource{Media: media}, nil
 	}
-	if !media.ended {
-		return nil, fmt.Errorf("%w: playlist has no EXT-X-ENDLIST, the stream is live or unfinished", ErrIncomplete)
+	candidates, err := top.candidates()
+	if err != nil {
+		return nil, err
 	}
-	if media.segments == 0 {
-		return nil, fmt.Errorf("%w: playlist has no segments", ErrNoMedia)
-	}
-	return &Playlist{
-		Duration:  time.Duration(media.duration * float64(time.Second)),
-		Parts:     media.parts,
-		Playlists: playlists,
-	}, nil
+	return &HLSSource{Candidates: candidates}, nil
 }
 
-func (p *parsedPlaylist) choose() (string, error) {
-	candidates := len(p.variants) + len(p.audio)
-	switch {
-	case candidates == 0:
-		return "", fmt.Errorf("%w: master playlist lists no variants", ErrNoMedia)
-	case candidates > maxVariants:
-		return "", fmt.Errorf("%w: %d variants, more than %d", ErrLimitExceeded, candidates, maxVariants)
-	case len(p.audio) > 0:
-		return p.audio[0], nil
+func LoadMediaPlaylist(ctx context.Context, fetcher fetch.Fetcher, hosts []string, guard Guard, playlistURL string) (*Playlist, error) {
+	p, err := fetchPlaylist(ctx, fetcher, hosts, guard, playlistURL)
+	if err != nil {
+		return nil, err
 	}
-	best := p.variants[0]
-	for _, v := range p.variants[1:] {
-		if bw := p.bandwidth[v]; bw > 0 && (p.bandwidth[best] == 0 || bw < p.bandwidth[best]) {
-			best = v
+	if p.master {
+		return nil, fmt.Errorf("%w: nested master playlist %s", ErrMalformed, playlistURL)
+	}
+	return p.media()
+}
+
+func (p *parsedPlaylist) media() (*Playlist, error) {
+	if !p.ended {
+		return nil, fmt.Errorf("%w: playlist has no EXT-X-ENDLIST, the stream is live or unfinished", ErrIncomplete)
+	}
+	if p.segments == 0 {
+		return nil, fmt.Errorf("%w: playlist has no segments", ErrNoMedia)
+	}
+	return &Playlist{Duration: time.Duration(p.duration * float64(time.Second)), Runs: p.runs}, nil
+}
+
+func audioClass(v variant) (int, bool) {
+	if !v.hasCodecs {
+		return 2, true
+	}
+	hasAudio, hasOther := false, false
+	for _, codec := range strings.Split(strings.ToLower(v.codecs), ",") {
+		codec = strings.TrimSpace(codec)
+		if codec == "" {
+			continue
+		}
+		audio := false
+		for _, prefix := range audioCodecPrefixes {
+			if strings.HasPrefix(codec, prefix) {
+				audio = true
+				break
+			}
+		}
+		hasAudio = hasAudio || audio
+		hasOther = hasOther || !audio
+	}
+	switch {
+	case !hasAudio:
+		return 0, false
+	case !hasOther:
+		return 0, true
+	}
+	return 1, true
+}
+
+func (p *parsedPlaylist) candidates() ([]string, error) {
+	type ranked struct {
+		url       string
+		class     int
+		bandwidth int64
+	}
+	var variants []ranked
+	for _, v := range p.variants {
+		class, ok := audioClass(v)
+		if !ok {
+			continue
+		}
+		bw := v.bandwidth
+		if bw <= 0 {
+			bw = 1<<63 - 1
+		}
+		variants = append(variants, ranked{url: v.url, class: class, bandwidth: bw})
+	}
+	slices.SortStableFunc(variants, func(a, b ranked) int {
+		return cmp.Or(cmp.Compare(a.class, b.class), cmp.Compare(a.bandwidth, b.bandwidth))
+	})
+	seen := map[string]bool{}
+	var out []string
+	add := func(u string) {
+		if !seen[u] {
+			seen[u] = true
+			out = append(out, u)
 		}
 	}
-	return best, nil
+	for _, u := range p.audio {
+		add(u)
+	}
+	for _, v := range variants {
+		add(v.url)
+	}
+	switch {
+	case len(out) == 0:
+		return nil, fmt.Errorf("%w: master playlist lists no variant that may carry audio", ErrNoAudio)
+	case len(out) > maxVariants:
+		return nil, fmt.Errorf("%w: %d variants, more than %d", ErrLimitExceeded, len(out), maxVariants)
+	}
+	return out, nil
 }
 
 func fetchPlaylist(ctx context.Context, fetcher fetch.Fetcher, hosts []string, guard Guard, playlistURL string) (*parsedPlaylist, error) {
@@ -106,16 +191,10 @@ func fetchPlaylist(ctx context.Context, fetcher fetch.Fetcher, hosts []string, g
 	if err != nil {
 		return nil, err
 	}
-	refs := append(append(append([]string(nil), p.variants...), p.audio...), p.parts...)
-	seen := map[string]bool{}
-	for _, ref := range refs {
+	for _, ref := range p.refs {
 		if ref == playlistURL || ref == base.String() {
 			return nil, fmt.Errorf("%w: playlist %s refers to itself", ErrMalformed, playlistURL)
 		}
-		if p.master && seen[ref] {
-			return nil, fmt.Errorf("%w: playlist %s is listed twice", ErrMalformed, ref)
-		}
-		seen[ref] = true
 	}
 	return p, nil
 }
@@ -125,8 +204,7 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 	if !bytes.HasPrefix(body, []byte("#EXTM3U")) {
 		return nil, fmt.Errorf("%w: not an HLS playlist", ErrMalformed)
 	}
-	p := &parsedPlaylist{bandwidth: map[string]int64{}}
-	entries := 0
+	p := &parsedPlaylist{}
 	resolve := func(ref string) (string, error) {
 		u, err := base.Parse(ref)
 		if err != nil {
@@ -135,9 +213,10 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 		if err := guard.checkURL(u, hosts); err != nil {
 			return "", fmt.Errorf("playlist entry: %w", err)
 		}
-		if entries++; entries > maxPlaylistEntries {
+		if len(p.refs) >= maxPlaylistEntries {
 			return "", fmt.Errorf("%w: more than %d playlist entries", ErrLimitExceeded, maxPlaylistEntries)
 		}
+		p.refs = append(p.refs, u.String())
 		return u.String(), nil
 	}
 	tagURI := func(line string) (string, error) {
@@ -148,10 +227,12 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 		return resolve(uri)
 	}
 	var (
-		nextIsVariant, nextIsSegment bool
-		bandwidth                    int64
-		currentMap                   string
+		nextIsVariant, nextIsSegment, newRun bool
+		pending                              variant
+		currentMap                           string
 	)
+	newRun = true
+	segments := map[string]bool{}
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 64<<10), 64<<10)
 	for scanner.Scan() {
@@ -160,10 +241,11 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 		case line == "":
 		case strings.HasPrefix(line, "#EXT-X-STREAM-INF"):
 			p.master, nextIsVariant = true, true
-			bandwidth = 0
+			pending = variant{}
 			if bw, _, _, ok := attribute(line, "BANDWIDTH"); ok {
-				bandwidth, _ = strconv.ParseInt(bw, 10, 64)
+				pending.bandwidth, _ = strconv.ParseInt(bw, 10, 64)
 			}
+			pending.codecs, _, _, pending.hasCodecs = attribute(line, "CODECS")
 		case strings.HasPrefix(line, "#EXT-X-MEDIA:"):
 			p.master = true
 			u, err := tagURI(line)
@@ -185,15 +267,21 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 			if _, err := tagURI(line); err != nil {
 				return nil, err
 			}
+		case strings.HasPrefix(line, "#EXT-X-BYTERANGE"):
+			return nil, fmt.Errorf("%w: byte-range HLS (%s)", ErrUnsupported, line)
 		case strings.HasPrefix(line, "#EXT-X-MAP"):
+			if _, _, _, ok := attribute(line, "BYTERANGE"); ok {
+				return nil, fmt.Errorf("%w: byte-range HLS (%s)", ErrUnsupported, line)
+			}
 			u, err := tagURI(line)
 			if err != nil {
 				return nil, err
 			}
 			if u != "" && u != currentMap {
-				currentMap = u
-				p.parts = append(p.parts, u)
+				currentMap, newRun = u, true
 			}
+		case strings.HasPrefix(line, "#EXT-X-DISCONTINUITY") && !strings.HasPrefix(line, "#EXT-X-DISCONTINUITY-SEQUENCE"):
+			newRun = true
 		case strings.HasPrefix(line, "#EXTINF:"):
 			value, _, _ := strings.Cut(strings.TrimPrefix(line, "#EXTINF:"), ",")
 			seconds, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
@@ -212,11 +300,22 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 			}
 			switch {
 			case nextIsVariant:
-				p.variants = append(p.variants, u)
-				p.bandwidth[u] = bandwidth
+				pending.url = u
+				p.variants = append(p.variants, pending)
 			case nextIsSegment:
+				if segments[u] {
+					return nil, fmt.Errorf("%w: segment %s is listed twice", ErrMalformed, u)
+				}
+				segments[u] = true
+				if newRun {
+					p.runs = append(p.runs, nil)
+					if currentMap != "" {
+						p.runs[len(p.runs)-1] = append(p.runs[len(p.runs)-1], currentMap)
+					}
+					newRun = false
+				}
+				p.runs[len(p.runs)-1] = append(p.runs[len(p.runs)-1], u)
 				p.segments++
-				p.parts = append(p.parts, u)
 			default:
 				return nil, fmt.Errorf("%w: uri %q outside a segment or variant", ErrMalformed, line)
 			}

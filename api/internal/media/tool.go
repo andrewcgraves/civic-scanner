@@ -36,6 +36,7 @@ const (
 	formatWhitelist     = "mpegts,mov,mp4,m4a,3gp,3g2,mj2,mp3,aac,matroska,webm,ogg,wav,flv"
 	segmentAttempts     = 3
 	segmentRetryDelay   = time.Second
+	maxCandidateTries   = 4
 	defaultTimeout      = time.Hour
 	defaultMaxDuration  = 12 * time.Hour
 	defaultMaxMemory    = 1 << 30
@@ -157,6 +158,7 @@ func (t Tool) ffmpegArgs(input []string, dst string) []string {
 		"-map", "0:a:0", "-vn", "-sn", "-dn",
 		"-t", strconv.FormatFloat(t.MaxDuration.Seconds(), 'f', 0, 64),
 		"-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
+		"-write_xing", "0", "-id3v2_version", "0",
 		"-f", "mp3", dst)
 }
 
@@ -196,30 +198,91 @@ func (t Tool) extract(ctx context.Context, srcURL, dst string) error {
 
 func (t Tool) extractHLS(ctx context.Context, srcURL, dst string) error {
 	pages := PageFetcher{Hosts: t.Hosts, Guard: t.Guard, UserAgent: t.UserAgent}
-	playlist, err := InspectPlaylist(ctx, pages, t.Hosts, t.Guard, srcURL)
+	source, err := InspectHLS(ctx, pages, t.Hosts, t.Guard, srcURL)
 	if err != nil {
 		return err
 	}
-	expected := expectation{duration: playlist.Duration}
-	if expected.duration > t.MaxDuration {
-		return fmt.Errorf("%w: recording lasts %s, longer than %s", ErrLimitExceeded, expected.duration.Round(time.Second), t.MaxDuration)
+	if source.Media != nil {
+		return t.extractPlaylist(ctx, source.Media, dst)
 	}
-	gw, err := t.gateway(int64(segmentAttempts*len(playlist.Parts) + 10))
+	candidates := source.Candidates[:min(len(source.Candidates), maxCandidateTries)]
+	for i, candidate := range candidates {
+		media, err := LoadMediaPlaylist(ctx, pages, t.Hosts, t.Guard, candidate)
+		if err == nil {
+			err = t.extractPlaylist(ctx, media, dst)
+		}
+		if err == nil || !errors.Is(err, ErrNoAudio) || i == len(candidates)-1 {
+			return err
+		}
+		_ = os.Remove(dst)
+	}
+	return nil
+}
+
+func (t Tool) extractPlaylist(ctx context.Context, playlist *Playlist, dst string) error {
+	if playlist.Duration > t.MaxDuration {
+		return fmt.Errorf("%w: recording lasts %s, longer than %s", ErrLimitExceeded, playlist.Duration.Round(time.Second), t.MaxDuration)
+	}
+	ctx, cancel := context.WithTimeout(ctx, t.Timeout)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	gw, err := t.gateway(int64(segmentAttempts*playlist.parts() + 10))
 	if err != nil {
 		return err
 	}
 	defer gw.Close()
+	dir, err := os.MkdirTemp(filepath.Dir(dst), "runs-*")
+	if err != nil {
+		return fmt.Errorf("%w: temp dir: %w", ErrUnavailable, err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
 
+	var (
+		outputs []string
+		got     time.Duration
+		written int64
+	)
+	for i, run := range playlist.Runs {
+		part := t
+		part.Timeout = time.Until(deadline)
+		part.MaxBytes = t.MaxBytes - written
+		part.MaxDuration = t.MaxDuration - got
+		if part.Timeout <= 0 || part.MaxBytes <= 0 || part.MaxDuration <= 0 {
+			return fmt.Errorf("%w: the recording's runs passed the time, size or duration limit", ErrLimitExceeded)
+		}
+		out := filepath.Join(dir, fmt.Sprintf("run%04d.mp3", i))
+		if err := part.extractRun(ctx, gw, run, out); err != nil {
+			return err
+		}
+		d, err := t.localDuration(ctx, out)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(out)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrNoAudio, err)
+		}
+		outputs = append(outputs, out)
+		got += d
+		written += info.Size()
+	}
+	if err := joinFiles(outputs, dst, t.MaxBytes); err != nil {
+		return err
+	}
+	return t.checkComplete(expectation{duration: playlist.Duration}, got)
+}
+
+func (t Tool) extractRun(ctx context.Context, gw *Gateway, parts []string, out string) error {
 	feedCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reader, writer := io.Pipe()
 	fed := make(chan error, 1)
 	go func() {
-		err := feed(feedCtx, gw, playlist.Parts, writer)
+		err := feed(feedCtx, gw, parts, writer)
 		_ = writer.CloseWithError(err)
 		fed <- err
 	}()
-	_, log, runErr := t.run(ctx, t.Timeout, 0, t.ffmpegArgs(pipeArgs(), dst), noProxyEnv(), reader)
+	_, log, runErr := t.run(ctx, t.Timeout, 0, t.ffmpegArgs(pipeArgs(), out), noProxyEnv(), reader)
 	_ = reader.CloseWithError(errReaderClosed)
 	cancel()
 	if feedErr := <-fed; feedErr != nil && !errors.Is(feedErr, errReaderClosed) && !errors.Is(feedErr, context.Canceled) {
@@ -231,7 +294,31 @@ func (t Tool) extractHLS(ctx context.Context, srcURL, dst string) error {
 	if runErr != nil {
 		return runErr
 	}
-	return t.verify(ctx, log, dst, expected)
+	return log.segmentError()
+}
+
+func joinFiles(parts []string, dst string, maxBytes int64) error {
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600) //nolint:gosec
+	if err != nil {
+		return fmt.Errorf("%w: create %s: %w", ErrUnavailable, dst, err)
+	}
+	defer func() { _ = out.Close() }()
+	var total int64
+	for _, part := range parts {
+		in, err := os.Open(part) //nolint:gosec
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrNoAudio, err)
+		}
+		n, err := io.Copy(out, io.LimitReader(in, maxBytes-total+1))
+		_ = in.Close()
+		if err != nil {
+			return fmt.Errorf("join audio: %w", err)
+		}
+		if total += n; total > maxBytes {
+			return fmt.Errorf("%w: output passed %d bytes", ErrLimitExceeded, maxBytes)
+		}
+	}
+	return out.Close()
 }
 
 func feed(ctx context.Context, gw *Gateway, parts []string, w io.Writer) error {
@@ -346,6 +433,9 @@ func (t Tool) checkComplete(expected expectation, got time.Duration) error {
 	}
 	if got+slack < expected.duration {
 		return fmt.Errorf("%w: %s of audio from a %s recording", ErrIncomplete, got.Round(time.Second), expected.duration.Round(time.Second))
+	}
+	if got > expected.duration+slack {
+		return fmt.Errorf("%w: %s of audio from a %s recording", ErrMalformed, got.Round(time.Second), expected.duration.Round(time.Second))
 	}
 	return nil
 }
