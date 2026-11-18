@@ -32,10 +32,12 @@ func (h ContentHash) IsZero() bool {
 }
 
 type AgendaVersionInput struct {
-	MeetingID   uuid.UUID
-	SourceURL   string
-	Text        string
-	ContentHash ContentHash
+	MeetingID        uuid.UUID
+	SourceURL        string
+	Text             string
+	ContentHash      ContentHash
+	Equivalent       func(latestText string) bool
+	DeferChangeEvent bool
 }
 
 type AgendaVersion struct {
@@ -49,16 +51,18 @@ type AgendaVersion struct {
 	ChangeNote  *string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+
+	ChangeEventPending bool
 }
 
-const agendaVersionColumns = `id, meeting_id, version, source_url, extracted_text, content_hash, summary, change_note, created_at, updated_at`
+const agendaVersionColumns = `id, meeting_id, version, source_url, extracted_text, content_hash, summary, change_note, created_at, updated_at, change_event_pending`
 
 func scanAgendaVersion(row pgx.Row) (AgendaVersion, error) {
 	var (
 		v    AgendaVersion
 		hash string
 	)
-	err := row.Scan(&v.ID, &v.MeetingID, &v.Version, &v.SourceURL, &v.Text, &hash, &v.Summary, &v.ChangeNote, &v.CreatedAt, &v.UpdatedAt)
+	err := row.Scan(&v.ID, &v.MeetingID, &v.Version, &v.SourceURL, &v.Text, &hash, &v.Summary, &v.ChangeNote, &v.CreatedAt, &v.UpdatedAt, &v.ChangeEventPending)
 	v.ContentHash = ContentHash{hex: hash}
 	return v, err
 }
@@ -107,22 +111,89 @@ func addAgendaVersion(ctx context.Context, q querier, in AgendaVersionInput) (Ag
 	switch {
 	case err == nil && latest.ContentHash == in.ContentHash:
 		return latest, false, nil
+	case err == nil && in.Equivalent != nil && in.Equivalent(latest.Text):
+		return latest, false, nil
 	case err != nil && !errors.Is(err, ErrNotFound):
 		return AgendaVersion{}, false, err
 	}
 
+	number := latest.Version + 1
+	pending := in.DeferChangeEvent && number > 1
 	v, err := scanAgendaVersion(q.QueryRow(ctx, `
-INSERT INTO agenda_versions (meeting_id, version, source_url, extracted_text, content_hash)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO agenda_versions (meeting_id, version, source_url, extracted_text, content_hash, change_event_pending)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING `+agendaVersionColumns,
-		in.MeetingID, latest.Version+1, in.SourceURL, in.Text, in.ContentHash.String()))
+		in.MeetingID, number, in.SourceURL, in.Text, in.ContentHash.String(), pending))
 	if err != nil {
 		return AgendaVersion{}, false, fmt.Errorf("insert agenda version: %w", err)
+	}
+	if pending {
+		return v, true, nil
 	}
 	if _, err := recordMeetingEvent(ctx, q, agendaEventInput(v)); err != nil {
 		return AgendaVersion{}, false, fmt.Errorf("record agenda event: %w", err)
 	}
 	return v, true, nil
+}
+
+func (s *Store) PreviousAgendaVersion(ctx context.Context, v AgendaVersion) (AgendaVersion, error) {
+	prev, err := scanAgendaVersion(s.pool.QueryRow(ctx,
+		`SELECT `+agendaVersionColumns+` FROM agenda_versions WHERE meeting_id = $1 AND version < $2 ORDER BY version DESC LIMIT 1`,
+		v.MeetingID, v.Version))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AgendaVersion{}, fmt.Errorf("version before %d of meeting %s: %w", v.Version, v.MeetingID, ErrNotFound)
+	}
+	if err != nil {
+		return AgendaVersion{}, fmt.Errorf("get previous agenda version: %w", err)
+	}
+	return prev, nil
+}
+
+func (s *Store) RecordAgendaChange(ctx context.Context, versionID uuid.UUID, note string) (AgendaVersion, bool, error) {
+	var (
+		v        AgendaVersion
+		recorded bool
+	)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		v, err = scanAgendaVersion(tx.QueryRow(ctx, `
+UPDATE agenda_versions
+SET change_note = COALESCE(change_note, $2), change_event_pending = false, updated_at = clock_timestamp()
+WHERE id = $1 AND change_event_pending
+RETURNING `+agendaVersionColumns, versionID, note))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("set change note: %w", err)
+		}
+		recorded = true
+		_, err = recordMeetingEvent(ctx, tx, agendaEventInput(v))
+		return err
+	})
+	if err != nil {
+		return AgendaVersion{}, false, fmt.Errorf("record agenda change: %w", err)
+	}
+	if !recorded {
+		v, err = s.GetAgendaVersion(ctx, versionID)
+		if err != nil {
+			return AgendaVersion{}, false, fmt.Errorf("record agenda change: %w", err)
+		}
+	}
+	return v, recorded, nil
+}
+
+func (s *Store) ListPendingAgendaChanges(ctx context.Context, createdBefore time.Time, limit int) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id FROM agenda_versions WHERE change_event_pending AND created_at < $1 ORDER BY created_at, id LIMIT $2`, createdBefore, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending agenda changes: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("scan pending agenda changes: %w", err)
+	}
+	return ids, nil
 }
 
 func (s *Store) LatestAgendaVersion(ctx context.Context, meetingID uuid.UUID) (AgendaVersion, error) {

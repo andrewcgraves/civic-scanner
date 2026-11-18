@@ -89,6 +89,7 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		extractor: cfg.Extractor,
 		enabled:   cfg.Enabled,
 		followUp:  cfg.AgendaFollowUp,
+		queue:     cfg.Queue,
 	})
 	river.AddWorker(workers, &SummarizeAgendaWorker{
 		logger:     logger,
@@ -105,6 +106,20 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		llm:     cfg.LLM,
 		enabled: cfg.Enabled,
 		queue:   cfg.Queue,
+	})
+	river.AddWorker(workers, &DescribeAgendaChangeWorker{
+		logger:     logger,
+		store:      st,
+		llm:        cfg.LLM,
+		tier:       cfg.SummaryTier,
+		llmTimeout: cfg.LLMTimeout,
+		enabled:    cfg.Enabled,
+	})
+	river.AddWorker(workers, &EnqueueAgendaChangesWorker{
+		logger: logger,
+		store:  st,
+		clock:  cfg.Clock,
+		queue:  cfg.Queue,
 	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,
@@ -124,6 +139,10 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 			river.PeriodicInterval(summarySweepInterval),
 			periodicSummarySweep(cfg.Clock, cfg.Queue),
 			&river.PeriodicJobOpts{ID: EnqueueAgendaSummariesArgs{}.Kind(), RunOnStart: true},
+		), river.NewPeriodicJob(
+			river.PeriodicInterval(changeSweepInterval),
+			periodicChangeSweep(cfg.Clock, cfg.Queue),
+			&river.PeriodicJobOpts{ID: EnqueueAgendaChangesArgs{}.Kind(), RunOnStart: true},
 		))
 	}
 

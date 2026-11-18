@@ -30,7 +30,7 @@ JOIN agencies a ON a.id = m.agency_id
 WHERE m.id = $1 AND a.status = 'live'`
 
 const latestAgendaWithoutTextSQL = `
-SELECT id, meeting_id, version, source_url, '', content_hash, summary, change_note, created_at, updated_at
+SELECT id, meeting_id, version, source_url, '', content_hash, summary, change_note, created_at, updated_at, change_event_pending
 FROM agenda_versions
 WHERE meeting_id = $1
 ORDER BY version DESC

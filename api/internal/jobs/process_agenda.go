@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/andrewcgraves/civic-scanner/api/internal/agendadiff"
 	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
@@ -82,6 +83,7 @@ type ProcessAgendaWorker struct {
 	extractor TextExtractor
 	enabled   func(context.Context, string) bool
 	followUp  AgendaFollowUp
+	queue     string
 }
 
 func (w *ProcessAgendaWorker) Timeout(*river.Job[ProcessAgendaArgs]) time.Duration {
@@ -112,7 +114,9 @@ func (w *ProcessAgendaWorker) Work(ctx context.Context, job *river.Job[ProcessAg
 		return agendaError(args.AgendaURL, err)
 	}
 
-	version, created, err := w.addVersion(ctx, args, text)
+	detectChanges := w.enabled(ctx, FlagAgendaChanges)
+	hash := store.HashContent(text)
+	version, created, err := w.addVersion(ctx, args, text, hash, detectChanges)
 	if errors.Is(err, store.ErrNotFound) {
 		return river.JobCancel(err)
 	}
@@ -120,6 +124,7 @@ func (w *ProcessAgendaWorker) Work(ctx context.Context, job *river.Job[ProcessAg
 		return err
 	}
 	logger.InfoContext(ctx, "agenda processed", "version", version.Version, "created", created,
+		"formatting_only", !created && version.ContentHash != hash, "change_event_pending", created && version.ChangeEventPending,
 		"content_type", resp.ContentType, "bytes", len(resp.Body), "characters", len(text))
 	return nil
 }
@@ -142,21 +147,31 @@ func expectsPDF(agendaURL string) bool {
 	return err == nil && strings.HasSuffix(strings.ToLower(u.Path), ".pdf")
 }
 
-func (w *ProcessAgendaWorker) addVersion(ctx context.Context, args ProcessAgendaArgs, text string) (store.AgendaVersion, bool, error) {
+func (w *ProcessAgendaWorker) addVersion(ctx context.Context, args ProcessAgendaArgs, text string, hash store.ContentHash, detectChanges bool) (store.AgendaVersion, bool, error) {
 	var (
 		version store.AgendaVersion
 		created bool
 	)
+	in := store.AgendaVersionInput{
+		MeetingID:   args.MeetingID,
+		SourceURL:   args.AgendaURL,
+		Text:        text,
+		ContentHash: hash,
+	}
+	if detectChanges {
+		in.Equivalent = func(latest string) bool { return agendadiff.Equivalent(latest, text) }
+		in.DeferChangeEvent = true
+	}
 	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		var err error
-		version, created, err = w.store.AddAgendaVersionTx(ctx, tx, store.AgendaVersionInput{
-			MeetingID:   args.MeetingID,
-			SourceURL:   args.AgendaURL,
-			Text:        text,
-			ContentHash: store.HashContent(text),
-		})
+		version, created, err = w.store.AddAgendaVersionTx(ctx, tx, in)
 		if err != nil || !created {
 			return err
+		}
+		if version.ChangeEventPending {
+			if err := enqueueDescribeAgendaChange(ctx, tx, w.queue, version); err != nil {
+				return err
+			}
 		}
 		if err := w.followUp.AgendaVersionAdded(ctx, tx, version); err != nil {
 			return fmt.Errorf("follow up agenda version %d of meeting %s: %w", version.Version, args.MeetingID, err)

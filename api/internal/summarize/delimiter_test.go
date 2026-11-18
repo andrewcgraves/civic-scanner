@@ -7,9 +7,24 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/andrewcgraves/civic-scanner/api/internal/agendadiff"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm/llmtest"
 )
+
+func TestAChangeRequestWithoutADelimiterIsAnError(t *testing.T) {
+	diff := agendadiff.Compare("1. Call to Order", "1. Call to Order\n2. Roll Call")
+	if _, _, err := changeRequest(llm.TierRoutine, diff, bytes.NewReader(nil)); err == nil {
+		t.Error("err = nil, want the read error")
+	}
+	old := randomSource
+	randomSource = bytes.NewReader(nil)
+	t.Cleanup(func() { randomSource = old })
+	fake := llmtest.Returning("never")
+	if _, err := AgendaChange(context.Background(), fake, llm.TierRoutine, diff); err == nil || len(fake.Calls()) != 0 {
+		t.Errorf("err = %v, calls = %d", err, len(fake.Calls()))
+	}
+}
 
 func TestADelimiterFoundInTheDocumentIsDrawnAgain(t *testing.T) {
 	taken, fresh := bytes.Repeat([]byte{0xab}, delimiterBytes), bytes.Repeat([]byte{0x01}, delimiterBytes)

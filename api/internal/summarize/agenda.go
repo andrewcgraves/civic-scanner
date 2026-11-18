@@ -117,10 +117,17 @@ func Agenda(ctx context.Context, client llm.Client, tier llm.Tier, text string) 
 }
 
 func Clean(reply string, truncatedInput bool) string {
-	text := extract.Normalize(strings.Map(dropFormatting, reply))
-	limit := MaxSummaryBytes
+	note := ""
 	if truncatedInput {
-		limit -= len(TruncatedNote) + 1
+		note = TruncatedNote
+	}
+	return clean(reply, MaxSummaryBytes, note)
+}
+
+func clean(reply string, limit int, note string) string {
+	text := extract.Normalize(strings.Map(dropFormatting, reply))
+	if note != "" {
+		limit -= len(note) + 1
 	}
 	if len(text) > limit {
 		const ellipsis = "…"
@@ -130,8 +137,8 @@ func Clean(reply string, truncatedInput bool) string {
 		}
 		text = strings.TrimSpace(text) + ellipsis
 	}
-	if truncatedInput && text != "" {
-		text += "\n" + TruncatedNote
+	if note != "" && text != "" {
+		text += "\n" + note
 	}
 	return text
 }

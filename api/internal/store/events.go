@@ -54,6 +54,7 @@ type MeetingEvent struct {
 type AgendaEventPayload struct {
 	AgendaVersionID uuid.UUID `json:"agenda_version_id"`
 	Version         int       `json:"version"`
+	ChangeNote      *string   `json:"change_note,omitempty"`
 }
 
 const meetingEventColumns = `id, sequence, type, meeting_id, payload, occurred_at`
@@ -121,7 +122,7 @@ func agendaEventInput(v AgendaVersion) MeetingEventInput {
 	return MeetingEventInput{
 		Type:      eventType,
 		MeetingID: v.MeetingID,
-		Payload:   AgendaEventPayload{AgendaVersionID: v.ID, Version: v.Version},
+		Payload:   AgendaEventPayload{AgendaVersionID: v.ID, Version: v.Version, ChangeNote: v.ChangeNote},
 	}
 }
 
