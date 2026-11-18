@@ -7,11 +7,8 @@ const posthog = vi.hoisted(() => ({
   capture: vi.fn(),
 }));
 
+const POSTHOG_MODULE = "posthog-js/dist/module.slim.no-external";
 const PROJECT = { key: "phc_test", host: "https://eu.i.posthog.com" };
-
-function mockPostHog() {
-  vi.doMock("posthog-js/dist/module.slim", () => ({ default: posthog }));
-}
 
 async function loadAnalytics() {
   vi.resetModules();
@@ -43,14 +40,37 @@ function captured() {
   }));
 }
 
+function sentVitals() {
+  return captured()
+    .filter(({ event }) => event === "$web_vitals")
+    .map(({ properties }) => [properties.metric_name, properties.metric_value]);
+}
+
+function setVisibility(state: DocumentVisibilityState) {
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue(state);
+}
+
+function hidePage(order: "visibilitychange first" | "pagehide first") {
+  if (order === "visibilitychange first") {
+    setVisibility("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("pagehide"));
+  } else {
+    window.dispatchEvent(new Event("pagehide"));
+    setVisibility("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+}
+
 beforeEach(() => {
   posthog.init.mockReset();
   posthog.capture.mockReset();
-  mockPostHog();
+  vi.doMock(POSTHOG_MODULE, () => ({ default: posthog }));
 });
 
 afterEach(() => {
-  vi.doUnmock("posthog-js/dist/module.slim");
+  window.dispatchEvent(new Event("pageshow"));
+  vi.doUnmock(POSTHOG_MODULE);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -69,8 +89,9 @@ describe("analytics before it is started", () => {
 });
 
 describe("analytics", () => {
-  it("starts PostHog once, anonymous and in memory only", async () => {
+  it("starts PostHog once, anonymous, in memory only, behind the payload allow-list", async () => {
     const { startAnalytics } = await loadAnalytics();
+    const { onlyAllowed } = await import("./payload");
 
     startAnalytics(PROJECT);
     startAnalytics(PROJECT);
@@ -90,66 +111,52 @@ describe("analytics", () => {
         disable_external_dependency_loading: true,
         advanced_disable_flags: true,
         respect_dnt: true,
-        save_referrer: false,
+        before_send: onlyAllowed,
       }),
     );
   });
 
-  it("sends one page view per URL, with its search params", async () => {
+  it("sends one page view per path, without search params or hash", async () => {
     vi.stubGlobal("location", new URL("https://civic.example/"));
     const { startAnalytics, trackPageview } = await loadAnalytics();
     startAnalytics(PROJECT);
 
     trackPageview("/", "");
     trackPageview("/", "");
-    trackPageview("/agencies", "page=2");
-    trackPageview("/agencies", "page=2");
-    trackPageview("/", "");
+    trackPageview("/agencies", "page=2&email=jane%40example.com");
+    trackPageview("/agencies", "page=3");
+    trackPageview("/", "gclid=abc123");
     await settle();
 
     expect(captured()).toEqual([
       {
         event: "$pageview",
-        properties: {
-          $current_url: "https://civic.example/",
-          $pathname: "/",
-        },
+        properties: { $current_url: "https://civic.example/", $pathname: "/" },
         options: undefined,
       },
       {
         event: "$pageview",
         properties: {
-          $current_url: "https://civic.example/agencies?page=2",
+          $current_url: "https://civic.example/agencies",
           $pathname: "/agencies",
         },
         options: undefined,
       },
       {
         event: "$pageview",
-        properties: {
-          $current_url: "https://civic.example/",
-          $pathname: "/",
-        },
+        properties: { $current_url: "https://civic.example/", $pathname: "/" },
         options: undefined,
       },
     ]);
   });
 
-  it("reports each web vital once with its name, value and rating", async () => {
+  it("sends FCP, LCP and TTFB once, as soon as they are reported", async () => {
     const { startAnalytics, reportWebVital } = await loadAnalytics();
     startAnalytics(PROJECT);
 
     reportWebVital(vital());
     reportWebVital(vital());
-    reportWebVital(
-      vital({
-        id: "v6-2",
-        name: "CLS",
-        value: 0.31,
-        delta: 0.31,
-        rating: "poor",
-      }),
-    );
+    reportWebVital(vital({ id: "v6-2", name: "TTFB", value: 80, delta: 80 }));
     await settle();
 
     expect(captured()).toEqual([
@@ -174,32 +181,64 @@ describe("analytics", () => {
       {
         event: "$web_vitals",
         properties: expect.objectContaining({
-          $web_vitals_CLS_value: 0.31,
-          metric_name: "CLS",
-          metric_value: 0.31,
-          metric_rating: "poor",
+          metric_name: "TTFB",
+          metric_value: 80,
         }) as Record<string, unknown>,
         options: { transport: "sendBeacon", send_instantly: true },
       },
     ]);
   });
 
-  it("files a web vital under the page it measured, without the hash", async () => {
+  it.each(["visibilitychange first", "pagehide first"] as const)(
+    "sends the final CLS and INP once when the page goes away (%s)",
+    async (order) => {
+      const { startAnalytics, reportWebVital } = await loadAnalytics();
+      startAnalytics(PROJECT);
+      const cls = vital({ id: "cls-1", name: "CLS", rating: "good" });
+      const inp = vital({ id: "inp-1", name: "INP", rating: "good" });
+
+      setVisibility("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      reportWebVital({ ...cls, value: 0.05 });
+      reportWebVital({ ...inp, value: 40 });
+      setVisibility("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+      await settle();
+      expect(sentVitals()).toEqual([]);
+
+      document.addEventListener(
+        "visibilitychange",
+        () => {
+          reportWebVital({ ...cls, value: 0.3, rating: "poor" });
+          reportWebVital({ ...inp, value: 250 });
+        },
+        { once: true, capture: true },
+      );
+      hidePage(order);
+      reportWebVital({ ...cls, value: 0.4 });
+      await settle();
+
+      expect(sentVitals()).toEqual([
+        ["CLS", 0.3],
+        ["INP", 250],
+      ]);
+    },
+  );
+
+  it("files a web vital under the page it measured, without search params or hash", async () => {
     const { startAnalytics, reportWebVital } = await loadAnalytics();
     startAnalytics(PROJECT);
 
     reportWebVital(
       vital({
-        name: "INP",
-        navigationURL: "https://civic.example/agencies?page=2#top",
+        navigationURL: "https://civic.example/agencies?page=2&gclid=x#top",
       }),
     );
     await settle();
 
     expect(captured()[0]?.properties).toMatchObject({
-      $current_url: "https://civic.example/agencies?page=2",
-      $pathname: "/agencies",
-      metric_name: "INP",
+      $current_url: "https://civic.example/agencies",
+      metric_name: "LCP",
     });
   });
 
@@ -211,9 +250,7 @@ describe("analytics", () => {
     reportWebVital(vital({ id: "v6-3", navigationType: "soft-navigation" }));
     await settle();
 
-    expect(captured().map(({ properties }) => properties.metric_name)).toEqual([
-      "LCP",
-    ]);
+    expect(sentVitals()).toEqual([["LCP", 1234.5]]);
   });
 });
 
@@ -261,7 +298,7 @@ describe("analytics for a visitor who opted out", () => {
 
 describe("analytics when PostHog fails", () => {
   it("stays quiet when the PostHog script cannot load", async () => {
-    vi.doMock("posthog-js/dist/module.slim", () => {
+    vi.doMock(POSTHOG_MODULE, () => {
       throw new Error("blocked by an ad blocker");
     });
     const consoleError = vi.spyOn(console, "error");

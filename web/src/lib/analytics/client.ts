@@ -2,13 +2,15 @@ import type {
   CaptureOptions,
   PostHog,
   PostHogConfig,
-} from "posthog-js/dist/module.slim";
+} from "posthog-js/dist/module.slim.no-external";
 
 import type { PostHogProject } from "@/lib/posthog/config";
 
+import { onlyAllowed, pageUrl, type WEB_VITALS } from "./payload";
+
 export interface WebVital {
   id: string;
-  name: "CLS" | "FCP" | "INP" | "LCP" | "TTFB";
+  name: (typeof WEB_VITALS)[number];
   value: number;
   delta: number;
   rating: "good" | "needs-improvement" | "poor";
@@ -19,6 +21,7 @@ export interface WebVital {
 type Capture = Pick<PostHog, "capture">;
 
 const SOFT_NAVIGATION = "soft-navigation";
+const FINAL_WHEN_REPORTED: readonly WebVital["name"][] = ["FCP", "LCP", "TTFB"];
 
 const privacyConfig = (host: string): Partial<PostHogConfig> => ({
   api_host: host,
@@ -40,17 +43,17 @@ const privacyConfig = (host: string): Partial<PostHogConfig> => ({
   disable_external_dependency_loading: true,
   advanced_disable_flags: true,
   respect_dnt: true,
-  mask_personal_data_properties: true,
-  disable_capture_url_hashes: true,
   save_referrer: false,
   save_campaign_params: false,
-  property_denylist: ["$referrer", "$initial_referrer"],
   internal_or_test_user_hostname: null,
+  before_send: onlyAllowed,
 });
 
 let client: Promise<Capture | undefined> | undefined;
 let lastPageview: string | undefined;
-const reportedVitals = new Set<string>();
+let unloading = false;
+const pendingVitals = new Map<string, WebVital>();
+const sentVitals = new Set<string>();
 
 export function visitorOptedOut(): boolean {
   const browser = navigator as Navigator & {
@@ -68,16 +71,13 @@ export function visitorOptedOut(): boolean {
 
 async function load(project: PostHogProject): Promise<Capture | undefined> {
   try {
-    const { default: posthog } = await import("posthog-js/dist/module.slim");
+    const { default: posthog } =
+      await import("posthog-js/dist/module.slim.no-external");
     posthog.init(project.key, privacyConfig(project.host));
     return posthog;
   } catch {
     return undefined;
   }
-}
-
-export function startAnalytics(project: PostHogProject): void {
-  client ??= visitorOptedOut() ? Promise.resolve(undefined) : load(project);
 }
 
 function send(
@@ -94,40 +94,17 @@ function send(
   });
 }
 
-export function trackPageview(pathname: string, search: string): void {
-  const url = new URL(
-    search === "" ? pathname : `${pathname}?${search}`,
-    window.location.origin,
-  ).href;
-  if (url === lastPageview) {
-    return;
-  }
-  lastPageview = url;
-  send("$pageview", { $current_url: url, $pathname: pathname });
-}
-
-function pageOf(navigationURL: string | undefined) {
-  if (navigationURL === undefined) {
-    return {};
-  }
-  const url = new URL(navigationURL);
-  url.hash = "";
-  return { $current_url: url.href, $pathname: url.pathname };
-}
-
-export function reportWebVital(metric: WebVital): void {
-  if (
-    metric.navigationType === SOFT_NAVIGATION ||
-    reportedVitals.has(metric.id)
-  ) {
-    return;
-  }
-  reportedVitals.add(metric.id);
+function sendVital(metric: WebVital): void {
+  sentVitals.add(metric.id);
   const { id, name, value, delta, rating, navigationType } = metric;
+  const page =
+    metric.navigationURL === undefined
+      ? {}
+      : { $current_url: pageUrl(metric.navigationURL).href };
   send(
     "$web_vitals",
     {
-      ...pageOf(metric.navigationURL),
+      ...page,
       [`$web_vitals_${name}_value`]: value,
       [`$web_vitals_${name}_event`]: {
         id,
@@ -143,4 +120,62 @@ export function reportWebVital(metric: WebVital): void {
     },
     { transport: "sendBeacon", send_instantly: true },
   );
+}
+
+function flushVitals(): void {
+  for (const metric of pendingVitals.values()) {
+    sendVital(metric);
+  }
+  pendingVitals.clear();
+}
+
+function watchPageHide(): void {
+  addEventListener("pagehide", () => {
+    unloading = true;
+    if (document.visibilityState === "hidden") {
+      flushVitals();
+    }
+  });
+  addEventListener("pageshow", () => {
+    unloading = false;
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (unloading && document.visibilityState === "hidden") {
+      flushVitals();
+    }
+  });
+}
+
+export function startAnalytics(project: PostHogProject): void {
+  if (client !== undefined) {
+    return;
+  }
+  if (visitorOptedOut()) {
+    client = Promise.resolve(undefined);
+    return;
+  }
+  watchPageHide();
+  client = load(project);
+}
+
+export function trackPageview(pathname: string, search: string): void {
+  const url = pageUrl(
+    new URL(`${pathname}?${search}`, window.location.origin).href,
+  );
+  if (url.href === lastPageview) {
+    return;
+  }
+  lastPageview = url.href;
+  send("$pageview", { $current_url: url.href, $pathname: url.pathname });
+}
+
+export function reportWebVital(metric: WebVital): void {
+  if (metric.navigationType === SOFT_NAVIGATION || sentVitals.has(metric.id)) {
+    return;
+  }
+  if (FINAL_WHEN_REPORTED.includes(metric.name)) {
+    sendVital(metric);
+    return;
+  }
+  pendingVitals.set(metric.id, metric);
 }

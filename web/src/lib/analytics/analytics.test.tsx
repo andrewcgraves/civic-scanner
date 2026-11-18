@@ -27,7 +27,9 @@ vi.mock("next/web-vitals", () => ({
   },
 }));
 
-vi.mock("posthog-js/dist/module.slim", () => ({ default: posthog }));
+vi.mock("posthog-js/dist/module.slim.no-external", () => ({
+  default: posthog,
+}));
 
 const PROJECT = { key: "phc_test", host: "https://us.i.posthog.com" };
 
@@ -86,7 +88,7 @@ describe("Analytics", () => {
     ]);
   });
 
-  it("sends one page view per client-side navigation", async () => {
+  it("sends one page view per client-side navigation to a new path", async () => {
     const { Analytics } = await loadAnalytics();
     const { rerender } = render(<Analytics project={PROJECT} />);
 
@@ -101,10 +103,6 @@ describe("Analytics", () => {
       { $current_url: "http://localhost:3000/", $pathname: "/" },
       {
         $current_url: "http://localhost:3000/agencies",
-        $pathname: "/agencies",
-      },
-      {
-        $current_url: "http://localhost:3000/agencies?page=2",
         $pathname: "/agencies",
       },
     ]);
