@@ -31,6 +31,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Health"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
         "503":
           description: Service is unhealthy.
           content:
@@ -41,7 +43,7 @@ paths:
     get:
       operationId: listAgencies
       summary: List tracked agencies
-      description: Returns every agency the tracker follows.
+      description: Returns every live agency the tracker follows.
       tags: [agencies]
       security: []
       responses:
@@ -51,6 +53,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgencyList"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
         default:
           description: Unexpected error.
           content:
@@ -58,6 +62,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 components:
+  responses:
+    MethodNotAllowed:
+      description: The path does not support the requested method.
+      headers:
+        Allow:
+          description: Methods the path supports.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
   schemas:
     Health:
       type: object
@@ -71,7 +87,7 @@ components:
           description: Build version (git SHA) of the running API.
     Agency:
       type: object
-      required: [id, slug, name]
+      required: [id, slug, name, website]
       properties:
         id:
           type: string
@@ -81,6 +97,10 @@ components:
           description: URL-safe identifier, e.g. `la-metro`.
         name:
           type: string
+        website:
+          type: string
+          format: uri
+          description: The agency's official website.
     AgencyList:
       type: object
       required: [agencies]
