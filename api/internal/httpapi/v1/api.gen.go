@@ -69,6 +69,9 @@ type Health struct {
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// MethodNotAllowed defines model for MethodNotAllowed.
+type MethodNotAllowed = Error
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// ListAgencies List tracked agencies
@@ -255,6 +258,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	return r
 }
 
+type MethodNotAllowedResponseHeaders struct {
+	Allow *string
+}
+type MethodNotAllowedJSONResponse struct {
+	Body Error
+
+	Headers MethodNotAllowedResponseHeaders
+}
+
 type ListAgenciesRequestObject struct {
 }
 
@@ -272,6 +284,23 @@ func (response ListAgencies200JSONResponse) VisitListAgenciesResponse(w http.Res
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAgencies405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response ListAgencies405JSONResponse) VisitListAgenciesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -310,6 +339,23 @@ func (response GetHealth200JSONResponse) VisitGetHealthResponse(w http.ResponseW
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetHealth405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response GetHealth405JSONResponse) VisitGetHealthResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
 	_, err := buf.WriteTo(w)
 	return err
 }

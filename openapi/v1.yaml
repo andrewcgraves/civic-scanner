@@ -31,6 +31,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Health"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
         "503":
           description: Service is unhealthy.
           content:
@@ -51,6 +53,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgencyList"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
         default:
           description: Unexpected error.
           content:
@@ -58,6 +62,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 components:
+  responses:
+    MethodNotAllowed:
+      description: The path does not support the requested method.
+      headers:
+        Allow:
+          description: Methods the path supports.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
   schemas:
     Health:
       type: object
