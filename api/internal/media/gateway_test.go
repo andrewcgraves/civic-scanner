@@ -69,10 +69,6 @@ func TestGatewayForwardsOnlyRegisteredURLsWithItsOwnUserAgent(t *testing.T) {
 		t.Errorf("upstream user agents = %v", agents)
 	}
 
-	playlist := gw.Serve([]byte("#EXTM3U\n"), "playlist.m3u8")
-	if code, body, header := get(t, playlist, nil); code != 200 || body != "#EXTM3U\n" || header.Get("Content-Type") != playlistContentType {
-		t.Errorf("served playlist = %d %q %v", code, body, header)
-	}
 	if gw.Err() != nil {
 		t.Errorf("Err = %v", gw.Err())
 	}
@@ -207,6 +203,65 @@ func TestGatewayVerifiesUpstreamCertificates(t *testing.T) {
 		t.Errorf("a certificate failure is not a refusal: %v", untrusted.Err())
 	}
 }
+
+func TestGatewayCopyStreamsSegmentsAndClassifiesFailures(t *testing.T) {
+	srv := pageServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gone.ts":
+			w.WriteHeader(http.StatusNotFound)
+		case "/busy.ts":
+			w.WriteHeader(http.StatusServiceUnavailable)
+		case "/playlist.ts":
+			_, _ = w.Write([]byte("#EXTM3U\n"))
+		case "/empty.ts":
+		default:
+			_, _ = w.Write([]byte(strings.Repeat("s", 100)))
+		}
+	})
+	gw := startGateway(t, GatewayConfig{Hosts: []string{"localhost"}, Guard: loopbackGuard, MaxRequests: 6})
+	var out strings.Builder
+	if err := gw.Copy(t.Context(), localhostURL(srv)+"/seg.ts", &out); err != nil || out.Len() != 100 {
+		t.Errorf("Copy = %v, %d bytes", err, out.Len())
+	}
+	if err := gw.Copy(t.Context(), localhostURL(srv)+"/empty.ts", &out); err != nil {
+		t.Errorf("Copy of an empty body = %v", err)
+	}
+	cases := map[string]error{
+		"/gone.ts":     ErrRefused,
+		"/busy.ts":     ErrNetwork,
+		"/playlist.ts": ErrForbiddenHost,
+	}
+	for path, want := range cases {
+		if err := gw.Copy(t.Context(), localhostURL(srv)+path, io.Discard); !errors.Is(err, want) {
+			t.Errorf("Copy(%s) = %v, want %v", path, err, want)
+		}
+	}
+	var status *StatusError
+	if err := gw.Copy(t.Context(), localhostURL(srv)+"/gone.ts", io.Discard); !errors.As(err, &status) || status.Status != 404 {
+		t.Errorf("Copy = %v, want a StatusError", err)
+	}
+	if err := gw.Copy(t.Context(), localhostURL(srv)+"/seg.ts", io.Discard); !errors.Is(err, ErrLimitExceeded) {
+		t.Errorf("Copy past the budget = %v, want ErrLimitExceeded", err)
+	}
+
+	open := startGateway(t, GatewayConfig{Hosts: []string{"localhost"}, Guard: loopbackGuard})
+	if err := open.Copy(t.Context(), srv.URL+"/seg.ts", io.Discard); !errors.Is(err, ErrForbiddenHost) {
+		t.Errorf("Copy off the list = %v, want ErrForbiddenHost", err)
+	}
+	broken := errors.New("reader went away")
+	if err := open.Copy(t.Context(), localhostURL(srv)+"/seg.ts", failingWriter{broken}); !errors.Is(err, broken) {
+		t.Errorf("Copy into a failing writer = %v", err)
+	}
+	unreachable := startGateway(t, GatewayConfig{Hosts: []string{"localhost"}, Guard: loopbackGuard})
+	srv.Close()
+	if err := unreachable.Copy(t.Context(), localhostURL(srv)+"/seg.ts", io.Discard); !errors.Is(err, ErrNetwork) {
+		t.Errorf("Copy from a closed server = %v, want ErrNetwork", err)
+	}
+}
+
+type failingWriter struct{ err error }
+
+func (f failingWriter) Write([]byte) (int, error) { return 0, f.err }
 
 func TestUpstreamPath(t *testing.T) {
 	cases := map[string]string{

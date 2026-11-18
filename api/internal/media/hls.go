@@ -18,17 +18,12 @@ const (
 	maxPlaylistBytes   = 2 << 20
 	maxPlaylistEntries = 20_000
 	maxVariants        = 16
-	uriMarker          = "\x00"
 )
 
 type Playlist struct {
-	Duration      time.Duration
-	AudioDuration time.Duration
-	Entries       int
-	Playlists     int
-
-	top      *parsedPlaylist
-	children map[string]*parsedPlaylist
+	Duration  time.Duration
+	Parts     []string
+	Playlists int
 }
 
 func isHLS(rawURL string) bool {
@@ -36,21 +31,15 @@ func isHLS(rawURL string) bool {
 	return err == nil && strings.EqualFold(path.Ext(u.Path), ".m3u8")
 }
 
-type playlistLine struct {
-	text string
-	uri  string
-}
-
 type parsedPlaylist struct {
-	name      string
 	master    bool
-	children  []string
-	audio     map[string]bool
-	resources []string
+	variants  []string
+	bandwidth map[string]int64
+	audio     []string
+	parts     []string
 	segments  int
 	duration  float64
 	ended     bool
-	lines     []playlistLine
 }
 
 func InspectPlaylist(ctx context.Context, fetcher fetch.Fetcher, hosts []string, guard Guard, playlistURL string) (*Playlist, error) {
@@ -58,82 +47,50 @@ func InspectPlaylist(ctx context.Context, fetcher fetch.Fetcher, hosts []string,
 	if err != nil {
 		return nil, err
 	}
-	out := &Playlist{top: top, children: map[string]*parsedPlaylist{}, Playlists: 1, Entries: len(top.resources)}
-	media := []*parsedPlaylist{top}
+	media, playlists := top, 1
 	if top.master {
-		if len(top.children) == 0 {
-			return nil, fmt.Errorf("%w: master playlist lists no variants", ErrNoMedia)
+		child, err := top.choose()
+		if err != nil {
+			return nil, err
 		}
-		if len(top.children) > maxVariants {
-			return nil, fmt.Errorf("%w: %d variants, more than %d", ErrLimitExceeded, len(top.children), maxVariants)
+		if media, err = fetchPlaylist(ctx, fetcher, hosts, guard, child); err != nil {
+			return nil, err
 		}
-		media = media[:0]
-		seen := map[string]bool{playlistURL: true}
-		for _, child := range top.children {
-			if seen[child] {
-				return nil, fmt.Errorf("%w: playlist %s is listed twice or refers to itself", ErrMalformed, child)
-			}
-			seen[child] = true
-			p, err := fetchPlaylist(ctx, fetcher, hosts, guard, child)
-			if err != nil {
-				return nil, err
-			}
-			if p.master {
-				return nil, fmt.Errorf("%w: nested master playlist %s", ErrMalformed, child)
-			}
-			out.children[child] = p
-			out.Playlists++
-			out.Entries += len(p.resources)
-			media = append(media, p)
+		if media.master {
+			return nil, fmt.Errorf("%w: nested master playlist %s", ErrMalformed, child)
 		}
+		playlists++
 	}
-	for _, p := range media {
-		if !p.ended {
-			return nil, fmt.Errorf("%w: playlist has no EXT-X-ENDLIST, the stream is live or unfinished", ErrIncomplete)
-		}
-		if p.segments == 0 {
-			return nil, fmt.Errorf("%w: playlist has no segments", ErrNoMedia)
-		}
-		d := time.Duration(p.duration * float64(time.Second))
-		out.Duration = max(out.Duration, d)
+	if !media.ended {
+		return nil, fmt.Errorf("%w: playlist has no EXT-X-ENDLIST, the stream is live or unfinished", ErrIncomplete)
 	}
-	out.AudioDuration = out.Duration
-	if len(top.audio) > 0 {
-		out.AudioDuration = 0
-		for child := range top.audio {
-			out.AudioDuration = max(out.AudioDuration, time.Duration(out.children[child].duration*float64(time.Second)))
-		}
+	if media.segments == 0 {
+		return nil, fmt.Errorf("%w: playlist has no segments", ErrNoMedia)
 	}
-	if out.Entries > maxPlaylistEntries {
-		return nil, fmt.Errorf("%w: %d playlist entries, more than %d", ErrLimitExceeded, out.Entries, maxPlaylistEntries)
-	}
-	return out, nil
+	return &Playlist{
+		Duration:  time.Duration(media.duration * float64(time.Second)),
+		Parts:     media.parts,
+		Playlists: playlists,
+	}, nil
 }
 
-func (p *Playlist) Serve(g *Gateway) string {
-	return p.serve(g, p.top)
-}
-
-func (p *Playlist) serve(g *Gateway, doc *parsedPlaylist) string {
-	var b strings.Builder
-	for _, line := range doc.lines {
-		if line.uri == "" {
-			b.WriteString(line.text + "\n")
-			continue
-		}
-		local := ""
-		if child, ok := p.children[line.uri]; ok && doc == p.top {
-			local = p.serve(g, child)
-		} else {
-			local = g.Register(line.uri)
-		}
-		if line.text == "" {
-			b.WriteString(local + "\n")
-		} else {
-			b.WriteString(strings.Replace(line.text, uriMarker, local, 1) + "\n")
+func (p *parsedPlaylist) choose() (string, error) {
+	candidates := len(p.variants) + len(p.audio)
+	switch {
+	case candidates == 0:
+		return "", fmt.Errorf("%w: master playlist lists no variants", ErrNoMedia)
+	case candidates > maxVariants:
+		return "", fmt.Errorf("%w: %d variants, more than %d", ErrLimitExceeded, candidates, maxVariants)
+	case len(p.audio) > 0:
+		return p.audio[0], nil
+	}
+	best := p.variants[0]
+	for _, v := range p.variants[1:] {
+		if bw := p.bandwidth[v]; bw > 0 && (p.bandwidth[best] == 0 || bw < p.bandwidth[best]) {
+			best = v
 		}
 	}
-	return g.Serve([]byte(b.String()), doc.name)
+	return best, nil
 }
 
 func fetchPlaylist(ctx context.Context, fetcher fetch.Fetcher, hosts []string, guard Guard, playlistURL string) (*parsedPlaylist, error) {
@@ -149,14 +106,16 @@ func fetchPlaylist(ctx context.Context, fetcher fetch.Fetcher, hosts []string, g
 	if err != nil {
 		return nil, err
 	}
-	for _, ref := range append(append([]string(nil), p.children...), p.resources...) {
+	refs := append(append(append([]string(nil), p.variants...), p.audio...), p.parts...)
+	seen := map[string]bool{}
+	for _, ref := range refs {
 		if ref == playlistURL || ref == base.String() {
 			return nil, fmt.Errorf("%w: playlist %s refers to itself", ErrMalformed, playlistURL)
 		}
-	}
-	p.name = path.Base(base.Path)
-	if !strings.EqualFold(path.Ext(p.name), ".m3u8") {
-		p.name += ".m3u8"
+		if p.master && seen[ref] {
+			return nil, fmt.Errorf("%w: playlist %s is listed twice", ErrMalformed, ref)
+		}
+		seen[ref] = true
 	}
 	return p, nil
 }
@@ -166,7 +125,8 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 	if !bytes.HasPrefix(body, []byte("#EXTM3U")) {
 		return nil, fmt.Errorf("%w: not an HLS playlist", ErrMalformed)
 	}
-	p := &parsedPlaylist{audio: map[string]bool{}}
+	p := &parsedPlaylist{bandwidth: map[string]int64{}}
+	entries := 0
 	resolve := func(ref string) (string, error) {
 		u, err := base.Parse(ref)
 		if err != nil {
@@ -175,25 +135,23 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 		if err := guard.checkURL(u, hosts); err != nil {
 			return "", fmt.Errorf("playlist entry: %w", err)
 		}
-		if len(p.resources)+len(p.children) >= maxPlaylistEntries {
+		if entries++; entries > maxPlaylistEntries {
 			return "", fmt.Errorf("%w: more than %d playlist entries", ErrLimitExceeded, maxPlaylistEntries)
 		}
 		return u.String(), nil
 	}
 	tagURI := func(line string) (string, error) {
-		uri, start, end, ok := attribute(line, "URI")
+		uri, _, _, ok := attribute(line, "URI")
 		if !ok {
-			p.lines = append(p.lines, playlistLine{text: line})
 			return "", nil
 		}
-		u, err := resolve(uri)
-		if err != nil {
-			return "", err
-		}
-		p.lines = append(p.lines, playlistLine{text: line[:start] + uriMarker + line[end:], uri: u})
-		return u, nil
+		return resolve(uri)
 	}
-	nextIsVariant, nextIsSegment := false, false
+	var (
+		nextIsVariant, nextIsSegment bool
+		bandwidth                    int64
+		currentMap                   string
+	)
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 64<<10), 64<<10)
 	for scanner.Scan() {
@@ -202,20 +160,23 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 		case line == "":
 		case strings.HasPrefix(line, "#EXT-X-STREAM-INF"):
 			p.master, nextIsVariant = true, true
-			p.lines = append(p.lines, playlistLine{text: line})
-		case strings.HasPrefix(line, "#EXT-X-MEDIA:"), strings.HasPrefix(line, "#EXT-X-I-FRAME-STREAM-INF"):
+			bandwidth = 0
+			if bw, _, _, ok := attribute(line, "BANDWIDTH"); ok {
+				bandwidth, _ = strconv.ParseInt(bw, 10, 64)
+			}
+		case strings.HasPrefix(line, "#EXT-X-MEDIA:"):
 			p.master = true
 			u, err := tagURI(line)
 			if err != nil {
 				return nil, err
 			}
-			switch {
-			case u == "":
-			case strings.HasPrefix(line, "#EXT-X-MEDIA:") && strings.Contains(line, "TYPE=AUDIO"):
-				p.children = append(p.children, u)
-				p.audio[u] = true
-			default:
-				p.resources = append(p.resources, u)
+			if u != "" && strings.Contains(line, "TYPE=AUDIO") {
+				p.audio = append(p.audio, u)
+			}
+		case strings.HasPrefix(line, "#EXT-X-I-FRAME-STREAM-INF"):
+			p.master = true
+			if _, err := tagURI(line); err != nil {
+				return nil, err
 			}
 		case strings.HasPrefix(line, "#EXT-X-KEY"), strings.HasPrefix(line, "#EXT-X-SESSION-KEY"):
 			if method, _, _, ok := attribute(line, "METHOD"); !ok || method != "NONE" {
@@ -229,8 +190,9 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 			if err != nil {
 				return nil, err
 			}
-			if u != "" {
-				p.resources = append(p.resources, u)
+			if u != "" && u != currentMap {
+				currentMap = u
+				p.parts = append(p.parts, u)
 			}
 		case strings.HasPrefix(line, "#EXTINF:"):
 			value, _, _ := strings.Cut(strings.TrimPrefix(line, "#EXTINF:"), ",")
@@ -240,13 +202,9 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 			}
 			p.duration += seconds
 			nextIsSegment = true
-			p.lines = append(p.lines, playlistLine{text: line})
 		case line == "#EXT-X-ENDLIST":
 			p.ended = true
-			p.lines = append(p.lines, playlistLine{text: line})
-		case strings.HasPrefix(line, "#") && strings.Contains(strings.ToUpper(line), "URI="):
 		case strings.HasPrefix(line, "#"):
-			p.lines = append(p.lines, playlistLine{text: line})
 		default:
 			u, err := resolve(line)
 			if err != nil {
@@ -254,14 +212,14 @@ func parsePlaylist(body []byte, base *url.URL, hosts []string, guard Guard) (*pa
 			}
 			switch {
 			case nextIsVariant:
-				p.children = append(p.children, u)
+				p.variants = append(p.variants, u)
+				p.bandwidth[u] = bandwidth
 			case nextIsSegment:
 				p.segments++
-				p.resources = append(p.resources, u)
+				p.parts = append(p.parts, u)
 			default:
 				return nil, fmt.Errorf("%w: uri %q outside a segment or variant", ErrMalformed, line)
 			}
-			p.lines = append(p.lines, playlistLine{uri: u})
 			nextIsVariant, nextIsSegment = false, false
 		}
 	}

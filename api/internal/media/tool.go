@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"os"
@@ -30,8 +31,11 @@ const (
 	youtubeTimeout      = 2 * time.Minute
 	probeTimeout        = 2 * time.Minute
 	readTimeoutHeadroom = 30 * time.Second
-	protocolWhitelist   = "http,tcp"
-	formatWhitelist     = "hls,mpegts,mov,mp4,m4a,3gp,3g2,mj2,mp3,aac,matroska,webm,ogg,wav,flv,webvtt"
+	fileProtocols       = "http,tcp"
+	pipeProtocols       = "pipe"
+	formatWhitelist     = "mpegts,mov,mp4,m4a,3gp,3g2,mj2,mp3,aac,matroska,webm,ogg,wav,flv"
+	segmentAttempts     = 3
+	segmentRetryDelay   = time.Second
 	defaultTimeout      = time.Hour
 	defaultMaxDuration  = 12 * time.Hour
 	defaultMaxMemory    = 1 << 30
@@ -42,6 +46,8 @@ const (
 	containerSlack      = 3 * time.Second
 	containerSlackRatio = 0.005
 )
+
+var errReaderClosed = errors.New("media: ffmpeg stopped reading")
 
 var statusPattern = regexp.MustCompile(`(?i)(?:http error|server returned) ([1-5][0-9][0-9]|[45]xx)`)
 
@@ -132,18 +138,22 @@ func (t Tool) withDefaults() Tool {
 	return t
 }
 
-func (t Tool) inputArgs() []string {
+func (t Tool) fileArgs(input string) []string {
 	return []string{
-		"-protocol_whitelist", protocolWhitelist,
+		"-protocol_whitelist", fileProtocols,
 		"-format_whitelist", formatWhitelist,
 		"-rw_timeout", strconv.FormatInt((t.IdleTimeout + readTimeoutHeadroom).Microseconds(), 10),
+		"-i", input,
 	}
 }
 
-func (t Tool) ffmpegArgs(input, dst string) []string {
-	args := append([]string{t.FFmpeg, "-nostdin", "-hide_banner", "-loglevel", "warning", "-y"}, t.inputArgs()...)
+func pipeArgs() []string {
+	return []string{"-protocol_whitelist", pipeProtocols, "-format_whitelist", formatWhitelist, "-i", "pipe:0"}
+}
+
+func (t Tool) ffmpegArgs(input []string, dst string) []string {
+	args := append([]string{t.FFmpeg, "-nostdin", "-hide_banner", "-loglevel", "warning", "-y"}, input...)
 	return append(args,
-		"-i", input,
 		"-map", "0:a:0", "-vn", "-sn", "-dn",
 		"-t", strconv.FormatFloat(t.MaxDuration.Seconds(), 'f', 0, 64),
 		"-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
@@ -178,21 +188,117 @@ func (t Tool) extract(ctx context.Context, srcURL, dst string) error {
 	if t.Limit == "" {
 		return fmt.Errorf("%w: no limit binary configured, set AUDIO_LIMIT_BINARY", ErrUnavailable)
 	}
-	gw, input, expected, err := t.prepare(ctx, srcURL)
+	if isHLS(srcURL) {
+		return t.extractHLS(ctx, srcURL, dst)
+	}
+	return t.extractFile(ctx, srcURL, dst)
+}
+
+func (t Tool) extractHLS(ctx context.Context, srcURL, dst string) error {
+	pages := PageFetcher{Hosts: t.Hosts, Guard: t.Guard, UserAgent: t.UserAgent}
+	playlist, err := InspectPlaylist(ctx, pages, t.Hosts, t.Guard, srcURL)
+	if err != nil {
+		return err
+	}
+	expected := expectation{duration: playlist.Duration}
+	if expected.duration > t.MaxDuration {
+		return fmt.Errorf("%w: recording lasts %s, longer than %s", ErrLimitExceeded, expected.duration.Round(time.Second), t.MaxDuration)
+	}
+	gw, err := t.gateway(int64(segmentAttempts*len(playlist.Parts) + 10))
 	if err != nil {
 		return err
 	}
 	defer gw.Close()
+
+	feedCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	reader, writer := io.Pipe()
+	fed := make(chan error, 1)
+	go func() {
+		err := feed(feedCtx, gw, playlist.Parts, writer)
+		_ = writer.CloseWithError(err)
+		fed <- err
+	}()
+	_, log, runErr := t.run(ctx, t.Timeout, 0, t.ffmpegArgs(pipeArgs(), dst), noProxyEnv(), reader)
+	_ = reader.CloseWithError(errReaderClosed)
+	cancel()
+	if feedErr := <-fed; feedErr != nil && !errors.Is(feedErr, errReaderClosed) && !errors.Is(feedErr, context.Canceled) {
+		return feedErr
+	}
+	if gerr := gw.Err(); gerr != nil {
+		return gerr
+	}
+	if runErr != nil {
+		return runErr
+	}
+	return t.verify(ctx, log, dst, expected)
+}
+
+func feed(ctx context.Context, gw *Gateway, parts []string, w io.Writer) error {
+	for _, part := range parts {
+		var err error
+		for attempt := 1; attempt <= segmentAttempts; attempt++ {
+			counted := &countingWriter{w: w}
+			err = gw.Copy(ctx, part, counted)
+			if err == nil || counted.n > 0 || !errors.Is(err, ErrNetwork) || attempt == segmentAttempts {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * segmentRetryDelay):
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("segment %s: %w", part, err)
+		}
+	}
+	return nil
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+func (t Tool) extractFile(ctx context.Context, srcURL, dst string) error {
+	u, err := url.Parse(srcURL)
+	if err != nil {
+		return fmt.Errorf("%w: %q", ErrInvalidURL, srcURL)
+	}
+	if err := t.Guard.checkURL(u, t.Hosts); err != nil {
+		return err
+	}
+	gw, err := t.gateway(fileRequestBudget)
+	if err != nil {
+		return err
+	}
+	defer gw.Close()
+	input := gw.Register(srcURL)
+	expected, err := t.probe(ctx, gw, input)
+	if err != nil {
+		return err
+	}
 	if expected.duration > t.MaxDuration {
 		return fmt.Errorf("%w: recording lasts %s, longer than %s", ErrLimitExceeded, expected.duration.Round(time.Second), t.MaxDuration)
 	}
-	_, log, err := t.run(ctx, t.Timeout, 0, t.ffmpegArgs(input, dst), noProxyEnv())
+	_, log, err := t.run(ctx, t.Timeout, 0, t.ffmpegArgs(t.fileArgs(input), dst), noProxyEnv(), nil)
 	if gerr := gw.Err(); gerr != nil {
 		return gerr
 	}
 	if err != nil {
 		return err
 	}
+	return t.verify(ctx, log, dst, expected)
+}
+
+func (t Tool) verify(ctx context.Context, log *stderrLog, dst string, expected expectation) error {
 	if err := log.segmentError(); err != nil {
 		return err
 	}
@@ -203,44 +309,11 @@ func (t Tool) extract(ctx context.Context, srcURL, dst string) error {
 	return t.checkComplete(expected, got)
 }
 
-func (t Tool) prepare(ctx context.Context, srcURL string) (*Gateway, string, expectation, error) {
-	if isHLS(srcURL) {
-		pages := PageFetcher{Hosts: t.Hosts, Guard: t.Guard, UserAgent: t.UserAgent}
-		playlist, err := InspectPlaylist(ctx, pages, t.Hosts, t.Guard, srcURL)
-		if err != nil {
-			return nil, "", expectation{}, err
-		}
-		gw, err := t.gateway(int64(2*playlist.Entries + 2*playlist.Playlists + 20))
-		if err != nil {
-			return nil, "", expectation{}, err
-		}
-		return gw, playlist.Serve(gw), expectation{duration: playlist.AudioDuration}, nil
-	}
-	u, err := url.Parse(srcURL)
-	if err != nil {
-		return nil, "", expectation{}, fmt.Errorf("%w: %q", ErrInvalidURL, srcURL)
-	}
-	if err := t.Guard.checkURL(u, t.Hosts); err != nil {
-		return nil, "", expectation{}, err
-	}
-	gw, err := t.gateway(fileRequestBudget)
-	if err != nil {
-		return nil, "", expectation{}, err
-	}
-	input := gw.Register(srcURL)
-	expected, err := t.probe(ctx, gw, input)
-	if err != nil {
-		gw.Close()
-		return nil, "", expectation{}, err
-	}
-	return gw, input, expected, nil
-}
-
 func (t Tool) probe(ctx context.Context, gw *Gateway, input string) (expectation, error) {
-	args := append([]string{t.FFprobe, "-v", "error"}, t.inputArgs()...)
+	args := append([]string{t.FFprobe, "-v", "error"}, t.fileArgs(input)[:6]...)
 	args = append(args, "-select_streams", "a:0", "-show_entries", "stream=duration:format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1", "--", input)
-	out, _, err := t.run(ctx, min(t.Timeout, probeTimeout), maxProbeOutputBytes, args, noProxyEnv())
+	out, _, err := t.run(ctx, min(t.Timeout, probeTimeout), maxProbeOutputBytes, args, noProxyEnv(), nil)
 	if gerr := gw.Err(); gerr != nil {
 		return expectation{}, gerr
 	}
@@ -281,7 +354,7 @@ func (t Tool) localDuration(ctx context.Context, path string) (time.Duration, er
 	out, _, err := t.run(ctx, probeTimeout, maxProbeOutputBytes, []string{
 		t.FFprobe, "-v", "error", "-protocol_whitelist", "file",
 		"-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "--", path,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		return 0, fmt.Errorf("probe audio: %w", err)
 	}
@@ -310,7 +383,7 @@ func (t Tool) YouTubeAudioURL(ctx context.Context, pageURL string) (string, erro
 		"--ignore-config", "--no-playlist", "--no-cache-dir", "--no-warnings", "--no-progress",
 		"--use-extractors", "youtube",
 		"-f", "bestaudio", "--get-url", "--", pageURL,
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		return "", fmt.Errorf("resolve youtube audio: %w", err)
 	}
@@ -321,7 +394,7 @@ func (t Tool) YouTubeAudioURL(ctx context.Context, pageURL string) (string, erro
 	return strings.TrimSpace(line), nil
 }
 
-func (t Tool) run(ctx context.Context, timeout time.Duration, maxStdout int, command, env []string) (string, *stderrLog, error) {
+func (t Tool) run(ctx context.Context, timeout time.Duration, maxStdout int, command, env []string, stdin io.Reader) (string, *stderrLog, error) {
 	if t.Limit == "" {
 		return "", nil, fmt.Errorf("%w: no limit binary configured, set AUDIO_LIMIT_BINARY", ErrUnavailable)
 	}
@@ -333,6 +406,7 @@ func (t Tool) run(ctx context.Context, timeout time.Duration, maxStdout int, com
 	args := append(limit.Limits{MaxMemory: t.MaxMemory, MaxFileBytes: t.MaxBytes}.Args(), command...)
 	cmd := exec.CommandContext(runCtx, t.Limit, args...) //nolint:gosec
 	cmd.Env = append(append(append(os.Environ(), "MALLOC_ARENA_MAX=2"), env...), t.Env...)
+	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

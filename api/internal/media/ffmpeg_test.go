@@ -294,21 +294,29 @@ func hostileURIs(addr string) map[string]string {
 
 func TestFFmpegCannotReachTheNetworkExceptThroughTheGateway(t *testing.T) {
 	requireFFmpeg(t)
-	trap := newTrap(t)
 	tool := realTool(t).withDefaults()
-	for name, uri := range hostileURIs(trap.addr()) {
+	for name, uri := range hostileURIs("127.0.0.1:1") {
 		t.Run(name, func(t *testing.T) {
-			gw := startGateway(t, GatewayConfig{Hosts: tool.Hosts, Guard: loopbackGuard, MaxRequests: 50})
+			trap := newTrap(t)
+			uri := strings.ReplaceAll(uri, "127.0.0.1:1", trap.addr())
 			playlists := map[string]string{
 				"segment": "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n" + uri + "\n#EXT-X-ENDLIST\n",
 				"variant": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n" + uri + "\n",
-				"key":     "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + uri + "\"\n#EXTINF:4.0,\n" + gw.Serve([]byte("x"), "seg.ts") + "\n#EXT-X-ENDLIST\n",
+				"key":     "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"" + uri + "\"\n#EXTINF:4.0,\nhttp://" + trap.addr() + "/seg.ts\n#EXT-X-ENDLIST\n",
 			}
+			srv := pageServer(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+				_, _ = w.Write([]byte(playlists[strings.TrimPrefix(r.URL.Path, "/")]))
+			})
 			for kind, body := range playlists {
-				dst := filepath.Join(t.TempDir(), "audio.mp3")
-				_, _, _ = tool.run(t.Context(), 30*time.Second, 0, tool.ffmpegArgs(gw.Serve([]byte(body), "playlist.m3u8"), dst), noProxyEnv())
-				if _, err := CheckMP3(dst, 1); err == nil && name != "data" {
-					t.Errorf("%s %s: ffmpeg produced audio", name, kind)
+				piped := filepath.Join(t.TempDir(), "piped.mp3")
+				_, _, _ = tool.run(t.Context(), 30*time.Second, 0, tool.ffmpegArgs(pipeArgs(), piped), noProxyEnv(), strings.NewReader(body))
+				fetched := filepath.Join(t.TempDir(), "fetched.mp3")
+				_, _, _ = tool.run(t.Context(), 30*time.Second, 0, tool.ffmpegArgs(tool.fileArgs(srv.URL+"/"+kind), fetched), noProxyEnv(), nil)
+				for _, out := range []string{piped, fetched} {
+					if _, err := CheckMP3(out, 1); err == nil {
+						t.Errorf("%s %s: ffmpeg produced audio", name, kind)
+					}
 				}
 			}
 			if n := trap.accepted.Load(); n != 0 {

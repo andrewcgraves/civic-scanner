@@ -44,43 +44,9 @@ func TestInspectPlaylistReadsAWowzaStyleMasterAndChunklist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectPlaylist: %v", err)
 	}
-	if got.Duration != 30*time.Second || got.AudioDuration != 30*time.Second || got.Entries != 4 || got.Playlists != 2 {
+	want := []string{hlsBase + "init.mp4", hlsBase + "media_w1_0.ts", hlsBase + "media_w1_1.ts", hlsBase + "media_w1_2.ts"}
+	if got.Duration != 30*time.Second || got.Playlists != 2 || strings.Join(got.Parts, " ") != strings.Join(want, " ") {
 		t.Errorf("InspectPlaylist = %+v", got)
-	}
-
-	gw := startGateway(t, GatewayConfig{Hosts: DefaultHosts.Media})
-	local := got.Serve(gw)
-	if !strings.HasSuffix(local, "/playlist.m3u8") {
-		t.Errorf("served top playlist = %s", local)
-	}
-	gw.mu.Lock()
-	defer gw.mu.Unlock()
-	var served, upstream []string
-	for _, r := range gw.routes {
-		if r.body != nil {
-			served = append(served, string(r.body))
-		} else {
-			upstream = append(upstream, r.upstream)
-		}
-	}
-	if len(served) != 2 || len(upstream) != 4 || upstream[0] != hlsBase+"init.mp4" || upstream[1] != hlsBase+"media_w1_0.ts" {
-		t.Fatalf("routes: served %d playlists, upstream %v", len(served), upstream)
-	}
-	for _, body := range served {
-		for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
-			if strings.Contains(line, "://") && !strings.Contains(line, "http://127.0.0.1:") {
-				t.Errorf("served playlist line %q does not go through the gateway", line)
-			}
-		}
-		if strings.Contains(body, "evil.test") || strings.Contains(body, "SESSION-DATA") {
-			t.Errorf("unknown URI tag passed through:\n%s", body)
-		}
-	}
-	if !strings.Contains(served[0], "#EXT-X-MAP:URI=\"http://127.0.0.1:") || !strings.Contains(served[0], "#EXT-X-KEY:METHOD=NONE") {
-		t.Errorf("chunklist not rewritten:\n%s", served[0])
-	}
-	if !strings.Contains(served[1], "/r/4/chunklist_w1.m3u8") {
-		t.Errorf("master does not point at the served chunklist:\n%s", served[1])
 	}
 }
 
@@ -117,7 +83,7 @@ func TestInspectPlaylistRejectsUnsafeOrBrokenPlaylists(t *testing.T) {
 		"stray uri":               {map[string]string{top: "#EXTM3U\ns.ts\n#EXT-X-ENDLIST\n"}, ErrMalformed},
 		"master and media":        {map[string]string{top: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n#EXTINF:10,\ns.ts\n"}, ErrMalformed},
 		"too many segments":       {map[string]string{top: mediaPlaylist(maxPlaylistEntries+1, "")}, ErrLimitExceeded},
-		"too many variants":       {map[string]string{top: "#EXTM3U\n" + strings.Repeat("#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n", maxVariants+1)}, ErrLimitExceeded},
+		"too many variants":       {map[string]string{top: "#EXTM3U\n" + variantList(maxVariants+1)}, ErrLimitExceeded},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -136,29 +102,41 @@ func TestInspectPlaylistRejectsUnsafeOrBrokenPlaylists(t *testing.T) {
 	}
 }
 
-func TestInspectPlaylistTakesTheLongestRendition(t *testing.T) {
+func TestInspectPlaylistPrefersTheAudioRendition(t *testing.T) {
 	top := hlsBase + "playlist.m3u8"
 	fake := playlists(map[string]string{
 		top:                    "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nvideo.m3u8\n",
-		hlsBase + "audio.m3u8": mediaPlaylist(5, "#EXT-X-MAP:URI=\"init.mp4\"\n"),
-		hlsBase + "video.m3u8": mediaPlaylist(6, ""),
+		hlsBase + "audio.m3u8": mediaPlaylist(4, "#EXT-X-MAP:URI=\"init.mp4\"\n"),
 	})
 	got, err := InspectPlaylist(t.Context(), fake, DefaultHosts.Media, Guard{}, top)
-	if err != nil || got.Duration != 60*time.Second || got.AudioDuration != 50*time.Second || got.Playlists != 3 || got.Entries != 12 {
+	if err != nil || got.Duration != 40*time.Second || len(got.Parts) != 5 || got.Parts[0] != hlsBase+"init.mp4" {
 		t.Errorf("InspectPlaylist = %+v, %v", got, err)
+	}
+	if calls := fake.Calls(); len(calls) != 2 || calls[1].URL != hlsBase+"audio.m3u8" {
+		t.Errorf("fetched %+v, want the master and the audio rendition only", calls)
 	}
 }
 
-func TestInspectPlaylistUsesTheAudioRenditionForTheAudioLength(t *testing.T) {
+func TestInspectPlaylistPicksTheLowestBandwidthVariant(t *testing.T) {
 	top := hlsBase + "playlist.m3u8"
 	fake := playlists(map[string]string{
-		top:                    "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",URI=\"audio.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\nvideo.m3u8\n",
-		hlsBase + "audio.m3u8": mediaPlaylist(4, ""),
-		hlsBase + "video.m3u8": mediaPlaylist(6, ""),
+		top: "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nhigh.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=400000\nlow.m3u8\n" +
+			"#EXT-X-STREAM-INF:RESOLUTION=1x1\nunknown.m3u8\n#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1,URI=\"iframes.m3u8\"\n",
+		hlsBase + "low.m3u8": mediaPlaylist(2, ""),
 	})
 	got, err := InspectPlaylist(t.Context(), fake, DefaultHosts.Media, Guard{}, top)
-	if err != nil || got.Duration != 60*time.Second || got.AudioDuration != 40*time.Second {
+	if err != nil || got.Duration != 20*time.Second {
 		t.Errorf("InspectPlaylist = %+v, %v", got, err)
+	}
+	if calls := fake.Calls(); len(calls) != 2 || calls[1].URL != hlsBase+"low.m3u8" {
+		t.Errorf("fetched %+v, want the low variant", calls)
+	}
+}
+
+func TestChooseWithoutBandwidthTakesTheFirstVariant(t *testing.T) {
+	p := &parsedPlaylist{variants: []string{"a", "b"}, bandwidth: map[string]int64{}}
+	if got, err := p.choose(); err != nil || got != "a" {
+		t.Errorf("choose = %q, %v", got, err)
 	}
 }
 
@@ -191,4 +169,12 @@ func TestIsHLS(t *testing.T) {
 			t.Errorf("isHLS(%q) = %v, want %v", u, got, want)
 		}
 	}
+}
+
+func variantList(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=1\nv%d.m3u8\n", i)
+	}
+	return b.String()
 }
