@@ -20,6 +20,7 @@ type Config struct {
 	Transcription Transcription
 	Ingest        Ingest
 	Extract       Extract
+	Summary       Summary
 }
 
 func Load() (Config, error) {
@@ -55,6 +56,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Extract, err = loadExtract(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Summary, err = loadSummary(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

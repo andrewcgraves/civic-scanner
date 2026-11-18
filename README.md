@@ -189,6 +189,7 @@ Callers pick a tier, never a model. Config maps each tier to a gateway model ID 
 | `LLM_ROUTINE_MODEL` | `anthropic/claude-haiku-5.5` | Model for the `routine` tier: cheap, fast work such as agenda and transcript summaries. |
 | `LLM_STRONG_MODEL` | `anthropic/claude-sonnet-5.5` | Model for the `strong` tier: paid directed prompts and other work that needs a stronger model. |
 | `LLM_TIMEOUT` | `2m` | Limit on one gateway call, as a Go duration. Must be positive. |
+| `AGENDA_SUMMARY_TIER` | `routine` | Tier the agenda summary job uses (see [Agenda summaries](#agenda-summaries)): `routine` or `strong`. Anything else stops the binaries at startup. |
 
 The current model IDs are listed at `https://ai-gateway.vercel.sh/v1/models`.
 
@@ -281,7 +282,7 @@ Tests never call a live site or Firecrawl. `internal/fetch/fetchtest` provides `
 
 ## Ingestion
 
-The worker checks every live agency once a day for board meetings, records them, and stores the text of each published agenda. These are the first links of the pipeline (check agency, process agenda, download audio, transcribe, summarize). Three River jobs in `internal/jobs` do it, behind the `ingest-check-agencies` feature flag.
+The worker checks every live agency once a day for board meetings, records them, and stores the text of each published agenda. These are the first links of the pipeline (check agency, process agenda, summarize the agenda, download audio, transcribe, summarize the transcript). Three River jobs in `internal/jobs` do it, behind the `ingest-check-agencies` feature flag; a fourth, `summarize_agenda`, summarizes each new agenda version behind its own flag (see [Agenda summaries](#agenda-summaries)).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -507,7 +508,30 @@ type AgendaFollowUp interface {
 }
 ```
 
-It is called once for each version that was created, never for an unchanged agenda, inside the transaction that inserted the version, so whatever it writes commits or rolls back with the version. It is for follow-up jobs: the summary story (CIV-39) and the change story (CIV-40) enqueue their jobs here with `InsertTx`. It must not record meeting events: `AddAgendaVersionTx` already records `agenda_published` or `agenda_changed` in the same transaction, so an event written here would be a duplicate. Today the default, `jobs.NoAgendaFollowUp`, does nothing; another implementation is set through `jobs.Config.AgendaFollowUp`.
+It is called once for each version that was created, never for an unchanged agenda, inside the transaction that inserted the version, so whatever it writes commits or rolls back with the version. It is for follow-up jobs: the summary job (CIV-39) is enqueued here, and the change story (CIV-40) will enqueue its job here too, with `InsertTx`. It must not record meeting events: `AddAgendaVersionTx` already records `agenda_published` or `agenda_changed` in the same transaction, so an event written here would be a duplicate. The default is `jobs.EnqueueSummarizeAgenda{Queue, Logger}` on the client's queue, which inserts `summarize_agenda` for the new version (see [Agenda summaries](#agenda-summaries)). `jobs.NoAgendaFollowUp` does nothing. Another implementation is set through `jobs.Config.AgendaFollowUp`; one that also wants summaries calls `EnqueueSummarizeAgenda` itself.
+
+### Agenda summaries
+
+`summarize_agenda` writes a plain-language summary on one agenda version, through `internal/llm` on the tier `AGENDA_SUMMARY_TIER` names (default `routine`). Its args are the agenda version id. The prompt lives in one place, `internal/summarize/agenda.go`, and its tests use `llmtest.Fake`.
+
+- **Flag.** `ingest-summarize-agendas`, separate from `ingest-check-agencies`, so agendas keep being stored while summaries are off, and summaries can be turned off alone (cost, a bad model). With it off, the job completes without calling the model. Jobs are still enqueued while it is off, and those versions are not summarized later.
+- **Enqueue.** `EnqueueSummarizeAgenda` inserts the job in the transaction that adds the version, inside a savepoint. If the insert fails, it rolls back to the savepoint, logs `agenda summary not enqueued` at `warn` and returns nil, so the version and its event still commit. A summary can never block or roll back agenda ingestion: the job runs after the version committed, and none of its failures touch the version.
+- **Keyed to one version.** The job reads the text of the version named in its args and writes the summary on that same row; versions are immutable, so a summary always describes the text it sits on. It never summarizes the meeting's latest text on behalf of an older version.
+- **Idempotent.** A version that already has a summary completes without a model call. The write is `store.SetAgendaSummaryIfUnset`, a conditional `UPDATE ... WHERE summary IS NULL`, so of two runs that race, the first write wins and the second leaves it alone. The job is unique by args and queue for as long as River keeps a row for it, so a second insert for the same version is skipped. Two racing runs can still both pay for a model call; they cannot both write.
+- **Superseded versions.** When a newer version of the meeting exists by the time the job runs, it completes without a model call. Only the latest version is shown, so summarizing older text would cost money for nothing.
+- **No transaction across the call.** The job reads the version with plain queries, calls the model with no transaction open, and writes with one statement.
+- **Untrusted text.** Agenda text comes from public websites and may contain instructions aimed at the model. The system prompt holds every instruction and says the document is data; the user message is a fixed line, then the document between a line `<agenda>` and a line `</agenda>`. Any `<agenda>` or `</agenda>` tag inside the document (any case, any spacing) is removed first, so the document cannot close the block early. Nothing in the document changes the tier, the system prompt, the output limit or which row is written; the model's reply only ever becomes the summary text.
+- **Plain-text output.** The reply is normalized with `extract.Normalize` (control characters and NUL removed, whitespace collapsed), any `<agenda>` tag is removed, and it is capped at 4,000 bytes (`summarize.MaxSummaryBytes`) at a word, ending with `…`. Markup is not interpreted or stripped: the summary is plain text, and anything that shows it must escape it (React does) and never render it as HTML or Markdown.
+- **Input limit.** The model gets at most the first 100,000 bytes of the agenda text (`summarize.MaxAgendaInputBytes`, roughly 25,000 tokens of English), cut at the last line break in the second half of that window, else at a UTF-8 character boundary. The user message then says the document was cut short. Agendas put the list of items first and attached staff reports after, so the head holds what the summary needs. There is no map-reduce over chunks: it would multiply the cost of every long agenda for detail the summary leaves out. A summary of a cut agenda can miss items listed after the cut; `input_truncated` in the log line says when that happened.
+- **Bounds per job.** At most 100,000 bytes of document plus a fixed prompt in, and 1,024 output tokens (`summarize.MaxOutputTokens`) out, per attempt; at most 5 attempts, so at most 5 model calls per version. The job's timeout is `LLM_TIMEOUT` plus one minute (3 minutes by default), so the gateway call's own limit fires first.
+- **Logging.** Each attempt logs the tier, model, finish reason, input and output tokens, input bytes, text bytes and whether the input was cut, at `info` when summarized and at `warn` when not.
+
+Errors, classified like `process_agenda`:
+
+- Retryable, River retries with backoff: `llm.IsRetryable` (network failures, the `LLM_TIMEOUT` limit, the job's own timeout, 402, 408, 429, 5xx, an undecodable or empty reply, and a reply that is empty once cleaned), and database errors. A 429's `Retry-After` is not used for snoozing, as in the other jobs; River's backoff applies.
+- Permanent, cancelled with `river.JobCancel`: other 4xx, `llm.ErrTruncated`, `llm.ErrContentFiltered`, `llm.ErrResponseTooLarge`, `llm.ErrNotConfigured` (no `AI_GATEWAY_API_KEY`), `jobs.ErrNoLLM` (no client passed to `jobs.Config.LLM`), `summarize.ErrEmptyAgenda`, and a version that no longer exists (`store.ErrNotFound`). The version stays without a summary; nothing retries it.
+
+**Versions created before this job existed are not backfilled.** They keep a null summary, which the API already returns as `null` and the meeting page must handle anyway while a summary is pending. Any agenda that changes gets a new, summarized version. Because the job is idempotent and keyed by version id, a backfill later is a matter of inserting `summarize_agenda` jobs for the versions that need one; nothing ships to do it, so no model spend happens without a deliberate step.
 
 ### Tests
 
@@ -524,7 +548,9 @@ A meeting's agenda is kept as numbered versions in `agenda_versions` (migration 
 | `AddAgendaVersion(ctx, in)`, `AddAgendaVersionTx(ctx, tx, in)` | Adds a version from `AgendaVersionInput{MeetingID, SourceURL, Text, ContentHash}`. When the meeting's latest version has the same hash, it adds nothing and returns that version with `created` false; otherwise it inserts the next number, records an `agenda_published` (version 1) or `agenda_changed` (later versions) meeting event in the same transaction (see "Meeting events"), and returns `created` true. A missing meeting is `ErrNotFound`. |
 | `LatestAgendaVersion(ctx, meetingID)` | The highest-numbered version, or `ErrNotFound` when the meeting has none. |
 | `ListAgendaVersions(ctx, meetingID)` | Every version, newest first. Empty for a meeting with none. |
+| `GetAgendaVersion(ctx, id)` | One version by id, with its text. A missing version is `ErrNotFound`. |
 | `SetAgendaSummary`, `SetAgendaChangeNote` (and `...Tx`) | Sets the field on one version by id and returns the updated version. A missing version is `ErrNotFound`. |
+| `SetAgendaSummaryIfUnset(ctx, id, summary)` | Sets the summary only when the version has none, in one conditional `UPDATE`. Returns the version and whether this call wrote it; when it did not, the version carries the summary already there. A missing version is `ErrNotFound`. |
 
 The `...Tx` variants run in the caller's transaction, so a job can add a version and enqueue its follow-up River job atomically.
 
@@ -708,7 +734,7 @@ Merging to `main` deploys both sides.
   - No health check and no public domain: the worker serves no HTTP. A deploy goes live once the container starts; a crash restarts it up to 5 times.
   - One replica. River elects a leader for periodic jobs, so more replicas would be safe, but one is enough for a daily check.
   - On a redeploy the old worker gets SIGTERM and 30 seconds (`drainingSeconds`) before SIGKILL. The worker stops fetching new jobs and gives running ones 25 seconds to finish. A job cut off stays running in the database until River's rescuer finds it stuck and retries it.
-  - Its variables are `DATABASE_URL`, `APP_ENV` and `LOG_LEVEL`. `INGEST_CHECK_HOUR_UTC` keeps its default. No flag variables are set, so `ingest-check-agencies` is off and the daily check does nothing until the flag is turned on (see [Feature flags](#feature-flags)).
+  - Its variables are `DATABASE_URL`, `APP_ENV` and `LOG_LEVEL`. `INGEST_CHECK_HOUR_UTC` keeps its default. No flag variables are set, so `ingest-check-agencies` is off and the daily check does nothing until the flag is turned on (see [Feature flags](#feature-flags)). `ingest-summarize-agendas` is off too, and the worker has no `AI_GATEWAY_API_KEY`: turning the flag on without the key cancels every summary job with `llm.ErrNotConfigured`.
 - **Web on Vercel**, with the project root directory set to `web`. Each pull request gets a preview deploy.
 
 ### Changing Railway configuration

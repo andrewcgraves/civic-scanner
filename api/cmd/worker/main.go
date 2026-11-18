@@ -13,6 +13,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
+	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
@@ -58,6 +59,9 @@ func run(ctx context.Context) error {
 		Fallback:     firecrawl,
 		Extractor:    &extract.Extractor{PDF: pdfExtractor},
 		CheckHourUTC: cfg.Ingest.CheckHourUTC,
+		LLM:          llm.New(cfg.LLM),
+		SummaryTier:  llm.Tier(cfg.Summary.AgendaTier),
+		LLMTimeout:   cfg.LLM.Timeout,
 	})
 	if err != nil {
 		return err
@@ -66,7 +70,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC,
-		"pdf_extractor", pdfExtractor.Binary)
+		"pdf_extractor", pdfExtractor.Binary, "agenda_summary_tier", cfg.Summary.AgendaTier, "llm_configured", cfg.LLM.APIKey != "")
 	if _, err := os.Stat(pdfExtractor.Binary); err != nil {
 		logger.WarnContext(ctx, "pdf extractor not found: PDF agendas will be cancelled; build it next to the worker or set EXTRACT_PDF_BINARY",
 			"pdf_extractor", pdfExtractor.Binary, "error", err)

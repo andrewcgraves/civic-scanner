@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,6 +14,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
+	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
@@ -29,11 +31,14 @@ type Config struct {
 	Enabled        func(ctx context.Context, flag string) bool
 	FollowUp       FollowUp
 	AgendaFollowUp AgendaFollowUp
+	LLM            llm.Client
+	SummaryTier    llm.Tier
+	LLMTimeout     time.Duration
 	Queue          string
 	NoPeriodicJobs bool
 }
 
-func (c Config) withDefaults() Config {
+func (c Config) withDefaults(logger *slog.Logger) Config {
 	if c.Clock == nil {
 		c.Clock = sources.SystemClock{}
 	}
@@ -50,13 +55,19 @@ func (c Config) withDefaults() Config {
 		c.Extractor = extract.New(config.Extract{})
 	}
 	if c.AgendaFollowUp == nil {
-		c.AgendaFollowUp = NoAgendaFollowUp{}
+		c.AgendaFollowUp = EnqueueSummarizeAgenda{Queue: c.Queue, Logger: logger}
+	}
+	if c.SummaryTier == "" {
+		c.SummaryTier = llm.TierRoutine
+	}
+	if c.LLMTimeout <= 0 {
+		c.LLMTimeout = defaultLLMTimeout
 	}
 	return c
 }
 
 func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Client[pgx.Tx], error) {
-	cfg = cfg.withDefaults()
+	cfg = cfg.withDefaults(logger)
 	st := store.New(pool)
 
 	workers := river.NewWorkers()
@@ -78,6 +89,14 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		extractor: cfg.Extractor,
 		enabled:   cfg.Enabled,
 		followUp:  cfg.AgendaFollowUp,
+	})
+	river.AddWorker(workers, &SummarizeAgendaWorker{
+		logger:     logger,
+		store:      st,
+		llm:        cfg.LLM,
+		tier:       cfg.SummaryTier,
+		llmTimeout: cfg.LLMTimeout,
+		enabled:    cfg.Enabled,
 	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,

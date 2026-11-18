@@ -141,9 +141,37 @@ func latestAgendaVersion(ctx context.Context, q querier, meetingID uuid.UUID) (A
 	return v, nil
 }
 
+func (s *Store) GetAgendaVersion(ctx context.Context, versionID uuid.UUID) (AgendaVersion, error) {
+	v, err := scanAgendaVersion(s.pool.QueryRow(ctx,
+		`SELECT `+agendaVersionColumns+` FROM agenda_versions WHERE id = $1`, versionID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AgendaVersion{}, fmt.Errorf("agenda version %s: %w", versionID, ErrNotFound)
+	}
+	if err != nil {
+		return AgendaVersion{}, fmt.Errorf("get agenda version: %w", err)
+	}
+	return v, nil
+}
+
+func (s *Store) SetAgendaSummaryIfUnset(ctx context.Context, versionID uuid.UUID, summary string) (AgendaVersion, bool, error) {
+	v, err := scanAgendaVersion(s.pool.QueryRow(ctx, setAgendaSummaryIfUnsetSQL, versionID, summary))
+	if err == nil {
+		return v, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return AgendaVersion{}, false, fmt.Errorf("set agenda summary if unset: %w", err)
+	}
+	existing, err := s.GetAgendaVersion(ctx, versionID)
+	if err != nil {
+		return AgendaVersion{}, false, fmt.Errorf("set agenda summary if unset: %w", err)
+	}
+	return existing, false, nil
+}
+
 const (
-	setAgendaSummarySQL    = `UPDATE agenda_versions SET summary = $2, updated_at = clock_timestamp() WHERE id = $1 RETURNING ` + agendaVersionColumns
-	setAgendaChangeNoteSQL = `UPDATE agenda_versions SET change_note = $2, updated_at = clock_timestamp() WHERE id = $1 RETURNING ` + agendaVersionColumns
+	setAgendaSummaryIfUnsetSQL = `UPDATE agenda_versions SET summary = $2, updated_at = clock_timestamp() WHERE id = $1 AND summary IS NULL RETURNING ` + agendaVersionColumns
+	setAgendaSummarySQL        = `UPDATE agenda_versions SET summary = $2, updated_at = clock_timestamp() WHERE id = $1 RETURNING ` + agendaVersionColumns
+	setAgendaChangeNoteSQL     = `UPDATE agenda_versions SET change_note = $2, updated_at = clock_timestamp() WHERE id = $1 RETURNING ` + agendaVersionColumns
 )
 
 func (s *Store) SetAgendaSummary(ctx context.Context, versionID uuid.UUID, summary string) (AgendaVersion, error) {
