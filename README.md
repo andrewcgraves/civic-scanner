@@ -506,6 +506,12 @@ Merging to `main` deploys both sides.
   - `/app/migrate up` runs as the pre-deploy step, with a 5-minute limit. A failed migration stops the deploy.
   - A deploy goes live only once `/v1/healthz` returns 200 within 60 seconds.
   - `DATABASE_URL` references the database over Railway's private network.
+- **Worker on Railway**, also in `.railway/railway.ts`: the `civic-scanner-worker` service runs the River worker (`api/cmd/worker`) against the same `Postgres` database. It builds the same `api/Dockerfile` from the same commit, with the same watch paths and Wait for CI, and its start command `/app/worker` replaces the image's `/app/api` entrypoint.
+  - `/app/migrate up` runs as its pre-deploy step too, so the worker never starts new code before its schema exists, whichever service deploys first. Both services may run it at once: `migrations.Up` holds a Postgres advisory lock, so the second run waits and then finds nothing to apply.
+  - No health check and no public domain: the worker serves no HTTP. A deploy goes live once the container starts; a crash restarts it up to 5 times.
+  - One replica. River elects a leader for periodic jobs, so more replicas would be safe, but one is enough for a daily check.
+  - On a redeploy the old worker gets SIGTERM and 30 seconds (`drainingSeconds`) before SIGKILL. The worker stops fetching new jobs and gives running ones 25 seconds to finish. A job cut off stays running in the database until River's rescuer finds it stuck and retries it.
+  - Its variables are `DATABASE_URL`, `APP_ENV` and `LOG_LEVEL`. `INGEST_CHECK_HOUR_UTC` keeps its default. No flag variables are set, so `ingest-check-agencies` is off and the daily check does nothing until the flag is turned on (see [Feature flags](#feature-flags)).
 - **Web on Vercel**, with the project root directory set to `web`. Each pull request gets a preview deploy.
 
 ### Changing Railway configuration
