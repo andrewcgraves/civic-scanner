@@ -153,8 +153,24 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      objectstore:
+        image: adobe/s3mock:5.2.3
+        env:
+          COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: civic-audio
+        ports:
+          - 9090:9090
+        options: >-
+          --health-cmd "wget -q -O /dev/null 'http://localhost:9090/civic-audio?list-type=2'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     env:
       DATABASE_URL: postgres://civic:civic@localhost:5432/civic?sslmode=disable
+      STORAGE_ENDPOINT: http://localhost:9090
+      STORAGE_BUCKET: civic-audio
+      STORAGE_ACCESS_KEY_ID: civic
+      STORAGE_SECRET_ACCESS_KEY: civic-secret
+      STORAGE_PATH_STYLE: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

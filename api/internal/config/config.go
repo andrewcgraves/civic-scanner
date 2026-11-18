@@ -13,8 +13,11 @@ type Config struct {
 	LogLevel    slog.Level
 	AppEnv      string
 	LLM         LLM
+	Storage     Storage
+	Fetch       Fetch
 
-	FeatureFlags FeatureFlags
+	FeatureFlags  FeatureFlags
+	Transcription Transcription
 }
 
 func Load() (Config, error) {
@@ -34,6 +37,15 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.LLM = llm
+	if cfg.Storage, err = loadStorage(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Fetch, err = loadFetch(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Transcription, err = loadTranscription(); err != nil {
+		return Config{}, err
+	}
 	if cfg.FeatureFlags, err = loadFeatureFlags(); err != nil {
 		return Config{}, err
 	}

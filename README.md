@@ -23,7 +23,7 @@ A Go API and a Next.js front end in one repo, both generated from a shared OpenA
 
 ```sh
 make install          # web dependencies
-make dev-db           # Postgres 17 on localhost:5432 (db, user, password: civic)
+make dev-db           # Postgres 17 on localhost:5432 (db, user, password: civic) and an S3-compatible store on localhost:9090
 make migrate          # apply migrations
 make test             # unit tests
 make ci               # everything CI runs
@@ -102,7 +102,7 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | --- | --- |
 | `openapi-lint` | Redocly lint of `openapi/*.yaml` |
 | `api` | build, vet, golangci-lint, unit tests with `-race` and coverage, codegen drift |
-| `api-integration` | unit and integration tests with `-race` and coverage, against a Postgres 17 container; fails below the coverage minimum |
+| `api-integration` | unit and integration tests with `-race` and coverage, against Postgres 17 and S3Mock containers; fails below the coverage minimum |
 | `migrations-lint` | Squawk on changed migrations |
 | `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database |
 | `web` | lint, format, typecheck, tests with coverage, codegen drift, build |
@@ -181,6 +181,98 @@ When a reply is truncated, filtered or empty, `Complete` returns the error toget
 A River job's own timeout (one minute unless the worker overrides `Timeout`) also cancels the call, so a worker that calls the gateway should set a `Timeout` longer than `LLM_TIMEOUT`.
 
 Tests never call the gateway. `internal/llm/llmtest` provides `llmtest.Fake`, an `llm.Client` for other packages' tests: `llmtest.Returning(text)` answers every call with `text` and finish reason `stop`, `llmtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. A zero `Fake` replies `fake reply`. `Calls()` returns the requests received. Like the real client, the fake rejects an unknown tier, returns a retryable `*llm.Error` for a canceled context, and runs `llm.CheckReply` on the responses `Respond` builds. The client's own tests run against an `httptest` server.
+
+## Object storage
+
+`internal/storage` stores the audio track of meeting recordings in a [Railway bucket](https://docs.railway.com/storage-buckets), which speaks the S3 API. `storage.New(cfg.Storage)` returns a `storage.Store` with five methods: `Put` (streams from an `io.Reader`), `Get` (returns a streaming `io.ReadCloser`), `Delete` (a missing key is not an error), `Stat` (key, size, last modified) and `ListOlderThan` (keys last modified before a time, for the retention job). Keys are chosen by the caller. Nothing calls the store yet.
+
+It uses [`minio-go`](https://github.com/minio/minio-go) rather than the AWS SDK for Go v2: it takes any S3-compatible endpoint, streams an unsized `io.Reader` as a multipart upload without a seekable body, switches between path-style and virtual-hosted-style addressing with one option, and pulls in far fewer dependencies.
+
+Errors:
+
+- `storage.ErrNotFound` marks a missing key (from `Get` and `Stat`); test with `errors.Is`.
+- `storage.ErrNotConfigured` comes from every method when none of the variables below is set. The binaries still start.
+- `storage.IsRetryable(err)` is true for network errors, cancelled contexts, HTTP 408, 429 and 5xx, so a River job can return the error and retry. Everything else (bad credentials, missing bucket) is permanent. The client itself retries a failed request twice.
+
+Tests of code that uses a store use `storage/storagetest`: `storagetest.New()` is an in-memory store with a settable clock (`Now`), and `storagetest.Failing(err)` fails every operation with `err`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `STORAGE_ENDPOINT` | | S3 endpoint as `http(s)://host[:port]`, no path. Unset (with the rest) means not configured. |
+| `STORAGE_REGION` | `auto` | Signing region. Railway buckets use `auto`. |
+| `STORAGE_BUCKET` | | Bucket name for the S3 API (Railway's `BUCKET`, not `RAILWAY_BUCKET_NAME`) |
+| `STORAGE_ACCESS_KEY_ID` | | Access key |
+| `STORAGE_SECRET_ACCESS_KEY` | | Secret key |
+| `STORAGE_PATH_STYLE` | `false` | Use path-style URLs. Railway buckets use virtual-hosted-style, except ones created long ago, whose Credentials tab says so. |
+
+Setting any of the variables without a valid endpoint, bucket, access key and secret makes `storage.New` fail.
+
+In production the `audio` bucket is defined in `.railway/railway.ts` and the API service's `STORAGE_*` variables reference it. Objects are meant to be deleted after about six months; the retention job that does it is not built yet, and Railway buckets have no lifecycle rules.
+
+Locally, `make dev-db` also starts [Adobe S3Mock](https://github.com/adobe/S3Mock) on `localhost:9090` with a `civic-audio` bucket (the image is small, needs no start arguments so it works as a CI service container, and accepts any credentials). The Makefile exports matching `STORAGE_*` defaults, which `make test-integration` and `make coverage` use. The `api-integration` CI job runs the same image as a service container.
+
+## Fetching
+
+`internal/fetch` is the one way source adapters and the agency screener read a public page, feed or document. A `fetch.Fetcher` has one method, `Fetch(ctx, fetch.Request{URL, MaxBytes})`, and returns a `fetch.Response` with `Status`, `ContentType`, `Body` and `FinalURL` (after redirects). Only `http` and `https` URLs are accepted.
+
+- `fetch.NewPlain(cfg.Fetch)` makes a plain HTTP GET.
+- `fetch.NewFirecrawl(cfg.Fetch)` calls the [Firecrawl](https://docs.firecrawl.dev/api-reference/endpoint/scrape) `POST /v2/scrape` endpoint with `Authorization: Bearer` and returns the page as markdown (content type `text/markdown`). It always asks for a live fetch (`maxAge: 0`), not Firecrawl's two-day cache.
+- `fetch.New(cfg.Fetch)` is the composition callers should use: plain HTTP first, then Firecrawl when the site refuses.
+
+`MaxBytes` caps one call's body and overrides `FETCH_MAX_BYTES` when set, so a caller reading agenda PDFs can raise it. A larger body returns `fetch.ErrTooLarge`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FETCH_USER_AGENT` | `CivicScanner/1.0 (+https://github.com/andrewcgraves/civic-scanner)` | User-Agent for plain HTTP. Names the service and gives a contact URL. Set it to a URL that reaches a person who answers. |
+| `FETCH_TIMEOUT` | `30s` | Limit on one plain HTTP call, including redirects and reading the body. Must be positive. |
+| `FETCH_MAX_BYTES` | `134217728` | Default response size cap in bytes (128 MiB). Must be positive. |
+| `FETCH_MAX_REDIRECTS` | `5` | Redirects followed before `fetch.ErrTooManyRedirects`. Must be positive. |
+| `FIRECRAWL_API_KEY` | none | Firecrawl API key. A secret: set it in Railway, never in `.railway/railway.ts`. |
+| `FIRECRAWL_BASE_URL` | `https://api.firecrawl.dev` | Firecrawl base URL. |
+| `FIRECRAWL_TIMEOUT` | `90s` | Limit on one Firecrawl call. Must be positive. |
+
+Several source hosts disallow crawlers in `robots.txt`. We identify ourselves honestly instead of hiding: plain HTTP sends `FETCH_USER_AGENT` on every request, including each redirect hop. Requests that go through Firecrawl do not carry our User-Agent. Firecrawl fetches from its own infrastructure with its own browser identity, so the host sees Firecrawl, not Civic Scanner.
+
+Without `FIRECRAWL_API_KEY` the binaries start normally, and the Firecrawl fetcher returns `fetch.ErrNotConfigured` when used.
+
+The fallback tries plain HTTP and calls Firecrawl only when the plain error carries one of these statuses, which sites use to turn away automated clients: 401, 403, 406, 429 and 999 (the non-standard code some sites return to bots). Other failures are not bot blocks and Firecrawl would not fix them: 404 and 410 mean the page is gone, 5xx and network errors are transient and River should retry the plain fetch, and too-large and redirect-loop errors would repeat. If Firecrawl is not configured, the fallback returns the original plain HTTP error. If Firecrawl is configured and also fails, its error is returned.
+
+Errors are `*fetch.Error` values, and `fetch.IsRetryable(err)` tells a worker whether a retry can help, as in `internal/llm`:
+
+- Retryable: network failures, timeouts, a canceled context, 408, 429 and 5xx, and a Firecrawl 200 response that cannot be decoded or reports failure. On a 429 with a `Retry-After` header in seconds, `RetryAfter` holds the delay, which a worker can pass to `river.JobSnooze`. A target page's own status through Firecrawl is classified the same way.
+- Permanent: other 4xx statuses (`StatusCode` on `*fetch.Error`), `fetch.ErrTooLarge`, `fetch.ErrTooManyRedirects`, `fetch.ErrInvalidURL`, and `fetch.ErrNotConfigured`. A worker should wrap these in `river.JobCancel` rather than retry them.
+
+Tests never call a live site or Firecrawl. `internal/fetch/fetchtest` provides `fetchtest.Fake`, a `fetch.Fetcher` for other packages' tests: `fetchtest.Returning(body)` answers every call with a 200 HTML page, `fetchtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. `Calls()` returns the requests received. The fetchers' own tests run against `httptest` servers.
+
+## Transcription
+
+`internal/transcribe` turns an audio file into a timestamped transcript through [Groq's](https://console.groq.com/docs/speech-to-text) OpenAI-compatible `POST /audio/transcriptions` endpoint, using only the standard library. `transcribe.New(cfg.Transcription)` returns a `transcribe.Client`, whose one method, `Transcribe(ctx, audioPath)`, takes a file path and returns a `transcribe.Transcript`: the full `Text`, the audio `Duration`, and ordered `Segments`, each with `Start`, `End` and `Text`. There are no speaker labels. A file path, not a reader, is the input so a multi-hundred-MB recording is streamed from disk into the request and never held in memory.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GROQ_API_KEY` | none | Groq API key, sent as `Authorization: Bearer`. A secret: set it in Railway, never in `.railway/railway.ts`. |
+| `GROQ_BASE_URL` | `https://api.groq.com/openai/v1` | Groq base URL. Must be an `http` or `https` URL with a host, or the binaries fail at startup. |
+| `TRANSCRIPTION_MODEL` | `whisper-large-v3-turbo` | Whisper model ID. |
+| `TRANSCRIPTION_TIMEOUT` | `5m` | Limit on one Groq request, upload included, as a Go duration. Must be positive. |
+| `TRANSCRIPTION_MAX_UPLOAD_MB` | `25` | Largest single upload, in MiB. Groq allows 25 MB on the free tier and 100 MB on the dev tier; raise this only on the dev tier. |
+
+Without `GROQ_API_KEY` the binaries start normally, and every `Transcribe` call returns `transcribe.ErrNotConfigured` without contacting Groq.
+
+Requests send `response_format=verbose_json`, `timestamp_granularities[]=segment` and `temperature=0`; the language is auto-detected.
+
+### Chunking
+
+A file at or under `TRANSCRIPTION_MAX_UPLOAD_MB` is uploaded as is. A larger file is split with `ffprobe` and `ffmpeg`, which must be on `PATH` (the worker image does not have them yet; CIV-34 adds ffmpeg). Chunks are 10 minutes long and overlap by 5 seconds, so each starts 9 minutes 55 seconds after the previous one. Each chunk is re-encoded as 16 kHz mono 32 kbps MP3 (about 2.4 MB), which is the rate Groq downsamples to anyway, so the upload limit is never a concern for a chunk. A chunk that still exceeds the limit fails with `transcribe.ErrChunkTooLarge`.
+
+Overlap means a sentence cut by a boundary is heard whole by one of the two chunks. Each chunk transcribes in order and its segment times are shifted by the chunk's offset. To keep overlapped speech from appearing twice, the boundary between two chunks is the middle of their overlap, and a segment is kept only by the chunk whose side of the boundary holds the segment's midpoint. The stitched `Text` joins the kept segments, and `Duration` is the `ffprobe` duration of the whole file. Chunks are extracted and uploaded one at a time, and the temporary directory holding them is removed on every return path, including errors and a canceled context.
+
+### Errors
+
+`Transcribe` does not retry; River retries the job, but a retry restarts the whole file. `transcribe.IsRetryable(err)` is true for network failures, the `TRANSCRIPTION_TIMEOUT` limit, a canceled context, 408, 429 (with `RetryAfter` from the `Retry-After` header when present), 5xx, and a 200 response that cannot be decoded. These are `*transcribe.Error` values. Everything else is permanent and a worker should wrap it in `river.JobCancel`: other 4xx statuses (including 413), `ErrNotConfigured`, `ErrChunkTooLarge`, `ErrResponseTooLarge` (a reply over 32 MiB), a missing audio file, and `ffmpeg` or `ffprobe` failures such as unreadable audio or a binary that is not installed.
+
+### Tests
+
+Tests never call Groq; the client's own tests run against `httptest` servers and a fake `Splitter`. One test runs real `ffmpeg` on a generated tone and skips when `ffmpeg` or `ffprobe` is not installed. `internal/transcribe/transcribetest` provides `transcribetest.Fake`, a `transcribe.Client` for other packages' tests (`Returning(transcript)`, `Failing(err)`, or a `Respond` function; `Calls()` returns the paths received), and `transcribetest.FakeSplitter`.
 
 ## Migrations
 
