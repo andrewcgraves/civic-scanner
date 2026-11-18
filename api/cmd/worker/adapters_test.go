@@ -27,3 +27,21 @@ func TestLAMetroIsRegisteredAsALegistarAdapter(t *testing.T) {
 		t.Errorf("requests = %+v, want one to the metro Legistar events API", calls)
 	}
 }
+
+func TestMetrolinkIsRegisteredAsAGranicusAdapter(t *testing.T) {
+	fake := fetchtest.Returning(`<rss version="2.0"><channel></channel></rss>`)
+	now := time.Date(2026, 11, 18, 13, 0, 0, 0, time.UTC)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fake, Clock: sourcestest.NewClock(now)}, adapters)
+
+	adapter, ok := registry.Lookup("metrolink")
+	if !ok {
+		t.Fatalf("no adapter for metrolink; registered: %v", registry.Slugs())
+	}
+	if _, err := adapter.Meetings(t.Context(), sources.Window{From: now, To: now.AddDate(0, 0, 1)}); err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.Calls()
+	if len(calls) != 2 || !strings.HasPrefix(calls[0].URL, "https://metrolink.granicus.com/ViewPublisherRSS.php?view_id=8&") {
+		t.Errorf("requests = %+v, want two to the Metrolink Granicus feeds", calls)
+	}
+}
