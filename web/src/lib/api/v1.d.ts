@@ -84,6 +84,30 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/agencies/{slug}/feed.xml": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get an agency's RSS feed
+     * @description An RSS 2.0 feed of a live agency's latest meeting events (agenda published, agenda changed, transcript ready), newest first, at most 50 items. Each item links to the public meeting page and has the event id as its GUID. Supports conditional requests with `If-None-Match`. Behind the `agency-rss-feeds` flag; while the flag is off, and for an unknown slug or an agency that is not live, the response is the same 404.
+     */
+    get: operations["getAgencyFeed"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    /**
+     * Get the headers of an agency's RSS feed
+     * @description The same as `GET` without the body.
+     */
+    head: operations["headAgencyFeed"];
+    patch?: never;
+    trace?: never;
+  };
   "/meetings/{id}": {
     parameters: {
       query?: never;
@@ -234,6 +258,26 @@ export interface components {
     };
   };
   responses: {
+    /** @description The feed, an RSS 2.0 document in UTF-8 with an Atom self link. Item titles are plain text; item descriptions are HTML-escaped plain text, so readers never render agency or AI text as markup. */
+    AgencyFeed: {
+      headers: {
+        ETag: components["headers"]["ETag"];
+        "Cache-Control": components["headers"]["CacheControl"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/rss+xml; charset=utf-8": string;
+      };
+    };
+    /** @description The feed has not changed since the ETag the client sent. */
+    NotModified: {
+      headers: {
+        ETag: components["headers"]["ETag"];
+        "Cache-Control": components["headers"]["CacheControl"];
+        [name: string]: unknown;
+      };
+      content?: never;
+    };
     /** @description A query parameter is invalid. `code` is `invalid_cursor` for a bad cursor and `invalid_parameter` for any other parameter. */
     BadRequest: {
       headers: {
@@ -267,9 +311,16 @@ export interface components {
   parameters: {
     /** @description The agency's slug, e.g. `la-metro`. */
     AgencySlug: string;
+    /** @description ETags from earlier responses. When one matches the current feed, the response is 304 with no body. */
+    IfNoneMatch: string;
   };
   requestBodies: never;
-  headers: never;
+  headers: {
+    /** @description Strong validator of the feed body; changes whenever the body does. */
+    ETag: string;
+    /** @description How long caches and feed readers may reuse the response. */
+    CacheControl: string;
+  };
   pathItems: never;
 }
 export type $defs = Record<string, never>;
@@ -395,6 +446,66 @@ export interface operations {
         };
       };
       400: components["responses"]["BadRequest"];
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  getAgencyFeed: {
+    parameters: {
+      query?: never;
+      header?: {
+        /** @description ETags from earlier responses. When one matches the current feed, the response is 304 with no body. */
+        "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+      };
+      path: {
+        /** @description The agency's slug, e.g. `la-metro`. */
+        slug: components["parameters"]["AgencySlug"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: components["responses"]["AgencyFeed"];
+      304: components["responses"]["NotModified"];
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  headAgencyFeed: {
+    parameters: {
+      query?: never;
+      header?: {
+        /** @description ETags from earlier responses. When one matches the current feed, the response is 304 with no body. */
+        "If-None-Match"?: components["parameters"]["IfNoneMatch"];
+      };
+      path: {
+        /** @description The agency's slug, e.g. `la-metro`. */
+        slug: components["parameters"]["AgencySlug"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      200: components["responses"]["AgencyFeed"];
+      304: components["responses"]["NotModified"];
       404: components["responses"]["NotFound"];
       405: components["responses"]["MethodNotAllowed"];
       /** @description Unexpected error. */

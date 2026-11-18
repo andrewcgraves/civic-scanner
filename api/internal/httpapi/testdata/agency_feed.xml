@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>LA Metro meetings</title>
+    <link>https://civic.example/agencies/la-metro</link>
+    <description>&lt;p&gt;Agendas, agenda changes and transcripts of LA Metro meetings.&lt;/p&gt;</description>
+    <language>en-us</language>
+    <atom:link href="https://civic.example/agencies/la-metro/feed.xml" rel="self" type="application/rss+xml"></atom:link>
+    <lastBuildDate>Sat, 30 Jan 2027 04:15:00 +0000</lastBuildDate>
+    <item>
+      <title>Transcript ready: Regular Board Meeting (Jan 28, 2027)</title>
+      <link>https://civic.example/meetings/6f1c2a43-1d1e-4b8e-9a51-0c3b8e7d2f10</link>
+      <description>&lt;p&gt;A transcript of Regular Board Meeting, Thursday, January 28, 2027 at 6:00 PM PST, is ready.&lt;/p&gt;</description>
+      <guid isPermaLink="false">c3d4e5f6-0000-4000-8000-000000000003</guid>
+      <pubDate>Sat, 30 Jan 2027 04:15:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>Agenda updated: Regular Board Meeting (Jan 28, 2027)</title>
+      <link>https://civic.example/meetings/6f1c2a43-1d1e-4b8e-9a51-0c3b8e7d2f10</link>
+      <description>&lt;p&gt;LA Metro changed the agenda for Regular Board Meeting, Thursday, January 28, 2027 at 6:00 PM PST.&lt;/p&gt;&lt;p&gt;What changed: Item 7, the bus lane contract, was added.&lt;/p&gt;&lt;p&gt;Summary: The board will vote on the K Line extension.&lt;/p&gt;&lt;p&gt;Public comment opens at 6 PM.&lt;/p&gt;</description>
+      <guid isPermaLink="false">b2c3d4e5-0000-4000-8000-000000000002</guid>
+      <pubDate>Wed, 27 Jan 2027 16:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>Agenda posted: Regular Board Meeting (Jan 28, 2027)</title>
+      <link>https://civic.example/meetings/6f1c2a43-1d1e-4b8e-9a51-0c3b8e7d2f10</link>
+      <description>&lt;p&gt;LA Metro posted the agenda for Regular Board Meeting, Thursday, January 28, 2027 at 6:00 PM PST.&lt;/p&gt;&lt;p&gt;Summary: The board will vote on the K Line extension &amp;amp; fares.&lt;/p&gt;</description>
+      <guid isPermaLink="false">a1b2c3d4-0000-4000-8000-000000000001</guid>
+      <pubDate>Fri, 22 Jan 2027 16:00:00 +0000</pubDate>
+    </item>
+  </channel>
+</rss>

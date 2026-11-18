@@ -26,6 +26,23 @@ type fakeStore struct {
 	listed      *listMeetingsCall
 	meeting     *store.MeetingDetail
 	meetingErr  error
+	feeds       map[string]store.AgencyFeed
+	feedErr     error
+	feedCalls   *int
+}
+
+func (f fakeStore) GetLiveAgencyFeed(_ context.Context, slug string) (store.AgencyFeed, error) {
+	if f.feedCalls != nil {
+		*f.feedCalls++
+	}
+	if f.feedErr != nil {
+		return store.AgencyFeed{}, f.feedErr
+	}
+	feed, ok := f.feeds[slug]
+	if !ok {
+		return store.AgencyFeed{}, store.ErrNotFound
+	}
+	return feed, nil
 }
 
 func (f fakeStore) GetLiveMeetingDetail(_ context.Context, id uuid.UUID) (store.MeetingDetail, error) {

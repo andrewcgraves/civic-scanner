@@ -20,12 +20,14 @@ type Store interface {
 	GetLiveAgency(ctx context.Context, slug string) (store.Agency, error)
 	ListMeetings(ctx context.Context, agencyID uuid.UUID, params store.ListMeetingsParams) (store.MeetingPage, error)
 	GetLiveMeetingDetail(ctx context.Context, id uuid.UUID) (store.MeetingDetail, error)
+	GetLiveAgencyFeed(ctx context.Context, slug string) (store.AgencyFeed, error)
 }
 
 type Handler struct {
 	store   Store
 	logger  *slog.Logger
 	version string
+	feeds   FeedConfig
 }
 
 var _ v1.StrictServerInterface = (*Handler)(nil)
