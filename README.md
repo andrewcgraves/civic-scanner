@@ -31,7 +31,7 @@ make ci               # everything CI runs
 
 `make help` lists every target. The Makefile defaults `DATABASE_URL` to the compose database; override it to point at another database.
 
-The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix.
+The binaries read configuration from the environment only and do not load `.env` files. `api/.env.example` lists the variables (`LOG_LEVEL`: `debug`, `info`, `warn`, `error`; `APP_ENV`: `development`, `production`; the `AI_GATEWAY_*` and `LLM_*` variables are described under "LLM"); copy it to `.env` and export it. For the web app, copy `web/.env.example` to `web/.env.local`; `NEXT_PUBLIC_API_BASE_URL` includes the `/v1` prefix.
 
 ## OpenAPI-first workflow
 
@@ -86,6 +86,33 @@ Test helpers:
 - `internal/testbin`: builds the package under test into a real binary and runs it. Each binary is tested this way for its exit code on bad input and, in the integration tests, for a clean exit on SIGTERM. When the coverage script sets `TESTBIN_COVERPKG` and `TESTBIN_COVERDIR`, the binary is built with `-cover` and writes to that directory; the script converts it with `go tool covdata` and merges it into the profile. Without them, the binary is built plainly.
 
 The binaries' `run` functions take a context, so tests also call them in process. Uncovered by design: error branches with no way to trigger them, such as goose or River failing after the connection is up, or the HTTP server failing to shut down.
+
+## LLM
+
+`internal/llm` calls [Vercel AI Gateway](https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions) through its OpenAI-compatible `POST /chat/completions` endpoint, using only the standard library. `llm.New(cfg.LLM)` returns an `llm.Client`, whose one method, `Complete`, takes a tier, a system prompt and a user prompt, and returns the text, the model that answered, and the input and output token counts. An empty system prompt is left out of the request.
+
+Callers pick a tier, never a model. Config maps each tier to a gateway model ID (`provider/model`), so a model is swapped by changing an environment variable:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AI_GATEWAY_API_KEY` | none | AI Gateway API key, sent as `Authorization: Bearer`. A secret: set it in Railway, never in `.railway/railway.ts`. |
+| `AI_GATEWAY_BASE_URL` | `https://ai-gateway.vercel.sh/v1` | Gateway base URL. |
+| `LLM_ROUTINE_MODEL` | `anthropic/claude-haiku-5.5` | Model for the `routine` tier: cheap, fast work such as agenda and transcript summaries. |
+| `LLM_STRONG_MODEL` | `anthropic/claude-sonnet-5.5` | Model for the `strong` tier: paid directed prompts and other work that needs a stronger model. |
+| `LLM_TIMEOUT` | `2m` | Limit on one gateway call, as a Go duration. Must be positive. |
+
+The current model IDs are listed at `https://ai-gateway.vercel.sh/v1/models`.
+
+Without `AI_GATEWAY_API_KEY` the binaries start normally, and every `Complete` call returns `llm.ErrNotConfigured` without contacting the gateway.
+
+`Complete` does not retry; River retries the job. Errors tell a worker whether a retry can help:
+
+- `llm.IsRetryable(err)` is true for network failures, the `LLM_TIMEOUT` limit, a canceled context, 408, 429, 5xx, and a 200 response that cannot be decoded or has no choices. These are `*llm.Error` values; on a 429 with a `Retry-After` header in seconds, `RetryAfter` holds the delay, which a worker can pass to `river.JobSnooze`.
+- Every other error is permanent: other 4xx statuses (`StatusCode` on `*llm.Error`, with the gateway's message in the text), `llm.ErrNotConfigured`, `llm.ErrUnknownTier`, and an invalid base URL. A worker should wrap these in `river.JobCancel` rather than retry them.
+
+A River job's own timeout (one minute unless the worker overrides `Timeout`) also cancels the call, so a worker that calls the gateway should set a `Timeout` longer than `LLM_TIMEOUT`.
+
+Tests never call the gateway. `internal/llm/llmtest` provides `llmtest.Fake`, an `llm.Client` for other packages' tests: `llmtest.Returning(text)` answers every call with `text`, `llmtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. `Calls()` returns the requests received. Like the real client, the fake rejects an unknown tier and a canceled context. The client's own tests run against an `httptest` server.
 
 ## Migrations
 
