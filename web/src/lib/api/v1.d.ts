@@ -44,6 +44,46 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/agencies/{slug}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get a tracked agency
+     * @description Returns one live agency by slug. An unknown slug and an agency that is not live both return the same 404.
+     */
+    get: operations["getAgency"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/agencies/{slug}/meetings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List an agency's meetings
+     * @description Returns a live agency's meetings, newest first by start time, ties broken by meeting id. Pages are keyset-paginated: pass `nextCursor` from one page as `cursor` to get the next. A meeting added between requests never causes another meeting to be skipped or repeated. An unknown slug and an agency that is not live both return the same 404; a live agency with no meetings returns an empty list.
+     */
+    get: operations["listAgencyMeetings"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -69,6 +109,30 @@ export interface components {
     AgencyList: {
       agencies: components["schemas"]["Agency"][];
     };
+    /** @enum {string} */
+    MeetingStatus: "scheduled" | "held" | "cancelled";
+    /** @description A meeting as listed on its agency's page. New optional fields may be added; clients must ignore fields they do not know. */
+    MeetingSummary: {
+      /** Format: uuid */
+      id: string;
+      title: string;
+      /**
+       * Format: date-time
+       * @description When the meeting starts.
+       */
+      startsAt: string;
+      status: components["schemas"]["MeetingStatus"];
+      /**
+       * Format: uri
+       * @description The agency's own page for the meeting. Absent when the source gave none.
+       */
+      sourceUrl?: string;
+    };
+    MeetingList: {
+      meetings: components["schemas"]["MeetingSummary"][];
+      /** @description Pass as `cursor` to get the next page. Null on the last page. */
+      nextCursor: string | null;
+    };
     Error: {
       /** @description Stable machine-readable error code. */
       code: string;
@@ -77,6 +141,24 @@ export interface components {
     };
   };
   responses: {
+    /** @description A query parameter is invalid. `code` is `invalid_cursor` for a bad cursor and `invalid_parameter` for any other parameter. */
+    BadRequest: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description No live agency has this slug. */
+    NotFound: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
     /** @description The path does not support the requested method. */
     MethodNotAllowed: {
       headers: {
@@ -89,7 +171,10 @@ export interface components {
       };
     };
   };
-  parameters: never;
+  parameters: {
+    /** @description The agency's slug, e.g. `la-metro`. */
+    AgencySlug: string;
+  };
   requestBodies: never;
   headers: never;
   pathItems: never;
@@ -144,6 +229,80 @@ export interface operations {
           "application/json": components["schemas"]["AgencyList"];
         };
       };
+      405: components["responses"]["MethodNotAllowed"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  getAgency: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The agency's slug, e.g. `la-metro`. */
+        slug: components["parameters"]["AgencySlug"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The agency. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Agency"];
+        };
+      };
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  listAgencyMeetings: {
+    parameters: {
+      query?: {
+        /** @description Opaque cursor from a previous page's `nextCursor`. Omit for the first page. A cursor that is malformed, altered, or from another agency is rejected with 400. */
+        cursor?: string;
+        /** @description Maximum number of meetings to return. */
+        limit?: number;
+      };
+      header?: never;
+      path: {
+        /** @description The agency's slug, e.g. `la-metro`. */
+        slug: components["parameters"]["AgencySlug"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of the agency's meetings. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MeetingList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      404: components["responses"]["NotFound"];
       405: components["responses"]["MethodNotAllowed"];
       /** @description Unexpected error. */
       default: {

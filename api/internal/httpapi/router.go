@@ -23,7 +23,13 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 		w.Header().Set("Allow", http.MethodGet)
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	})
-	v1.HandlerFromMuxWithBaseURL(v1.NewStrictHandler(h, nil), r, "/v1")
+	v1.HandlerWithOptions(v1.NewStrictHandler(h, nil), v1.ChiServerOptions{
+		BaseURL:    "/v1",
+		BaseRouter: r,
+		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
+			writeError(w, http.StatusBadRequest, "invalid_parameter", err.Error())
+		},
+	})
 	return r
 }
 
