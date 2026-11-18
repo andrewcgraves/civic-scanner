@@ -92,3 +92,39 @@ func TestAgendaVersionsMigrationRollsBackAndReapplies(t *testing.T) {
 		t.Error("agenda_versions missing after reapplying")
 	}
 }
+
+func TestRecordingsMigrationRollsBackAndReapplies(t *testing.T) {
+	ctx := t.Context()
+	provider, pool, schema := isolatedProvider(t)
+	tables := []string{"recordings", "transcripts"}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	for _, table := range tables {
+		if !tableExists(t, pool, schema, table) {
+			t.Fatalf("%s missing after Up", table)
+		}
+	}
+
+	if _, err := provider.DownTo(ctx, 4); err != nil {
+		t.Fatalf("DownTo(4): %v", err)
+	}
+	for _, table := range tables {
+		if tableExists(t, pool, schema, table) {
+			t.Errorf("%s still exists after rolling back 00005", table)
+		}
+	}
+	if !tableExists(t, pool, schema, "agenda_versions") {
+		t.Error("agenda_versions missing after rolling back only 00005")
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	for _, table := range tables {
+		if !tableExists(t, pool, schema, table) {
+			t.Errorf("%s missing after reapplying", table)
+		}
+	}
+}
