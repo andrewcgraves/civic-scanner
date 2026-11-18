@@ -18,7 +18,7 @@ type Fake struct {
 
 func Returning(text string) *Fake {
 	return &Fake{Respond: func(llm.Request) (llm.Response, error) {
-		return llm.Response{Text: text}, nil
+		return llm.Response{Text: text, FinishReason: "stop"}, nil
 	}}
 }
 
@@ -34,15 +34,19 @@ func (f *Fake) Complete(ctx context.Context, req llm.Request) (llm.Response, err
 	f.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
-		return llm.Response{}, err
+		return llm.Response{}, &llm.Error{Retryable: true, Err: err}
 	}
 	if !req.Tier.Valid() {
 		return llm.Response{}, fmt.Errorf("%w %q", llm.ErrUnknownTier, req.Tier)
 	}
 	if f.Respond == nil {
-		return llm.Response{}, nil
+		return llm.Response{Text: "fake reply", FinishReason: "stop"}, nil
 	}
-	return f.Respond(req)
+	resp, err := f.Respond(req)
+	if err != nil {
+		return resp, err
+	}
+	return resp, llm.CheckReply(resp)
 }
 
 func (f *Fake) Calls() []llm.Request {
