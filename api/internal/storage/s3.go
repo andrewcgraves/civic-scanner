@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -61,7 +62,7 @@ func (s *s3Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 		return nil, classify(err, key)
 	}
 	if _, err := obj.Stat(); err != nil {
-		obj.Close()
+		_ = obj.Close()
 		return nil, classify(err, key)
 	}
 	return &reader{obj: obj, key: key}, nil
@@ -100,7 +101,7 @@ type reader struct {
 
 func (r *reader) Read(p []byte) (int, error) {
 	n, err := r.obj.Read(p)
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		return n, err
 	}
 	return n, classify(err, r.key)

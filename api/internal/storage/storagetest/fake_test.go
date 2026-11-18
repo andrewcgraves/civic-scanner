@@ -14,6 +14,13 @@ import (
 
 var _ storage.Store = (*storagetest.Fake)(nil)
 
+func putKey(t *testing.T, fake *storagetest.Fake, key, body string) {
+	t.Helper()
+	if err := fake.Put(t.Context(), key, strings.NewReader(body)); err != nil {
+		t.Fatalf("Put %s: %v", key, err)
+	}
+}
+
 func TestFakeRoundTrip(t *testing.T) {
 	fake := storagetest.New()
 
@@ -24,7 +31,7 @@ func TestFakeRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	got, _ := io.ReadAll(r)
 	if string(got) != "sound" {
 		t.Errorf("body = %q, want sound", got)
@@ -48,7 +55,7 @@ func TestFakeMissingKeyIsNotFound(t *testing.T) {
 
 func TestFakeDeleteIsIdempotent(t *testing.T) {
 	fake := storagetest.New()
-	fake.Put(t.Context(), "k", strings.NewReader("x"))
+	putKey(t, fake, "k", "x")
 
 	if err := fake.Delete(t.Context(), "k"); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -63,8 +70,8 @@ func TestFakeDeleteIsIdempotent(t *testing.T) {
 
 func TestFakePutReplacesAndCopiesBody(t *testing.T) {
 	fake := storagetest.New()
-	fake.Put(t.Context(), "k", strings.NewReader("first"))
-	fake.Put(t.Context(), "k", strings.NewReader("second"))
+	putKey(t, fake, "k", "first")
+	putKey(t, fake, "k", "second")
 
 	r, _ := fake.Get(t.Context(), "k")
 	got, _ := io.ReadAll(r)
@@ -77,9 +84,9 @@ func TestFakeListOlderThanUsesTheClock(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	fake := storagetest.New()
 	fake.Now = func() time.Time { return now }
-	fake.Put(t.Context(), "old", strings.NewReader("x"))
+	putKey(t, fake, "old", "x")
 	now = now.Add(48 * time.Hour)
-	fake.Put(t.Context(), "new", strings.NewReader("x"))
+	putKey(t, fake, "new", "x")
 
 	keys, err := fake.ListOlderThan(t.Context(), now.Add(-24*time.Hour))
 	if err != nil {

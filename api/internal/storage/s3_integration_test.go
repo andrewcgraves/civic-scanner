@@ -3,10 +3,11 @@
 package storage_test
 
 import (
+	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"io"
-	"math/rand/v2"
 	"os"
 	"slices"
 	"strings"
@@ -43,7 +44,9 @@ func uniqueKey(t *testing.T, name string) string {
 	t.Helper()
 	key := "it/" + uuid.NewString() + "/" + name
 	t.Cleanup(func() {
-		realStore(t).Delete(t.Context(), key)
+		if err := realStore(t).Delete(context.WithoutCancel(t.Context()), key); err != nil {
+			t.Errorf("cleanup %s: %v", key, err)
+		}
 	})
 	return key
 }
@@ -60,7 +63,7 @@ func TestIntegrationRoundTrip(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	got, err := io.ReadAll(r)
-	r.Close()
+	_ = r.Close()
 	if err != nil || string(got) != "public comment" {
 		t.Errorf("Get body = %q, %v; want public comment", got, err)
 	}
@@ -94,9 +97,8 @@ func TestIntegrationStreamsLargeObject(t *testing.T) {
 	store := realStore(t)
 	key := uniqueKey(t, "meeting.opus")
 	const size = 40 << 20
-	rng := rand.New(rand.NewPCG(1, 2))
 	want := sha256.New()
-	source := io.TeeReader(io.LimitReader(randomReader{rng}, size), want)
+	source := io.TeeReader(io.LimitReader(rand.Reader, size), want)
 
 	if err := store.Put(t.Context(), key, source); err != nil {
 		t.Fatalf("Put: %v", err)
@@ -110,7 +112,7 @@ func TestIntegrationStreamsLargeObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	got := sha256.New()
 	n, err := io.Copy(got, r)
 	if err != nil || n != size {
@@ -188,13 +190,4 @@ func TestIntegrationMissingBucketIsPermanent(t *testing.T) {
 	if err == nil || storage.IsRetryable(err) || errors.Is(err, storage.ErrNotFound) {
 		t.Errorf("err = %v, want a permanent error that is not ErrNotFound", err)
 	}
-}
-
-type randomReader struct{ rng *rand.Rand }
-
-func (r randomReader) Read(p []byte) (int, error) {
-	for i := range p {
-		p[i] = byte(r.rng.Uint32())
-	}
-	return len(p), nil
 }

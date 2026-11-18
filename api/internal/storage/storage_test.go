@@ -48,7 +48,7 @@ func TestNewRejectsPartialConfig(t *testing.T) {
 func serverReplying(t *testing.T, status int) config.Storage {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body)
+		_, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(status)
 	}))
 	t.Cleanup(srv.Close)
