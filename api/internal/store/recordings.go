@@ -58,15 +58,16 @@ var downloadFailureKinds = map[string]bool{
 const recordingColumns = `id, meeting_id, source_url, audio_key, audio_expires_at, audio_deleted_at,
 download_attempts, download_failure, download_failed_at, download_retry_after, created_at, updated_at`
 
-func scanRecording(row pgx.Row) (Recording, error) {
+func scanRecording(row pgx.Row, extra ...any) (Recording, error) {
 	var (
 		r         Recording
 		key       *string
 		expiresAt *time.Time
 		failure   *string
 	)
-	if err := row.Scan(&r.ID, &r.MeetingID, &r.SourceURL, &key, &expiresAt, &r.AudioDeletedAt,
-		&r.Download.Attempts, &failure, &r.Download.FailedAt, &r.Download.RetryAfter, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	dest := append([]any{&r.ID, &r.MeetingID, &r.SourceURL, &key, &expiresAt, &r.AudioDeletedAt,
+		&r.Download.Attempts, &failure, &r.Download.FailedAt, &r.Download.RetryAfter, &r.CreatedAt, &r.UpdatedAt}, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return Recording{}, err
 	}
 	if failure != nil {
