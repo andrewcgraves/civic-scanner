@@ -15,7 +15,8 @@ type Config struct {
 	LLM         LLM
 	Fetch       Fetch
 
-	FeatureFlags FeatureFlags
+	FeatureFlags  FeatureFlags
+	Transcription Transcription
 }
 
 func Load() (Config, error) {
@@ -36,6 +37,9 @@ func Load() (Config, error) {
 	}
 	cfg.LLM = llm
 	if cfg.Fetch, err = loadFetch(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Transcription, err = loadTranscription(); err != nil {
 		return Config{}, err
 	}
 	if cfg.FeatureFlags, err = loadFeatureFlags(); err != nil {
