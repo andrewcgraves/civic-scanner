@@ -25,7 +25,7 @@ func firecrawlConfig(baseURL string) config.Fetch {
 
 func firecrawlServer(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
@@ -156,7 +156,7 @@ func TestFirecrawlAPIStatusErrors(t *testing.T) {
 }
 
 func TestFirecrawlReadsRetryAfter(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "12")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))

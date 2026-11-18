@@ -81,7 +81,7 @@ func TestFallbackReportsSecondaryError(t *testing.T) {
 }
 
 func TestNewFallsBackToFirecrawlWhenSiteBlocksPlainHTTP(t *testing.T) {
-	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer site.Close()
@@ -100,7 +100,7 @@ func TestNewFallsBackToFirecrawlWhenSiteBlocksPlainHTTP(t *testing.T) {
 }
 
 func TestNewWithoutFirecrawlKeyReturnsPlainBlock(t *testing.T) {
-	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	defer site.Close()

@@ -182,7 +182,7 @@ func TestPlainStatusErrors(t *testing.T) {
 		{http.StatusServiceUnavailable, true},
 	}
 	for _, tt := range tests {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(tt.status)
 		}))
 		_, err := fetch.NewPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL})
@@ -202,7 +202,7 @@ func TestPlainStatusErrors(t *testing.T) {
 }
 
 func TestPlainReadsRetryAfter(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "7")
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
