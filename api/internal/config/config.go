@@ -12,6 +12,7 @@ type Config struct {
 	DatabaseURL string
 	LogLevel    slog.Level
 	AppEnv      string
+	LLM         LLM
 }
 
 func Load() (Config, error) {
@@ -26,6 +27,11 @@ func Load() (Config, error) {
 	if err := cfg.LogLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
 	}
+	llm, err := loadLLM()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.LLM = llm
 	return cfg, nil
 }
 
