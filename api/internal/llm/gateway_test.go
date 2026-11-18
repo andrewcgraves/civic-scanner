@@ -60,9 +60,10 @@ func TestCompleteSendsChatCompletionAndReturnsTextAndUsage(t *testing.T) {
 	}
 
 	want := llm.Response{
-		Text:  "A short summary.",
-		Model: "vendor/cheap",
-		Usage: llm.Usage{InputTokens: 15, OutputTokens: 28},
+		Text:         "A short summary.",
+		Model:        "vendor/cheap",
+		FinishReason: "stop",
+		Usage:        llm.Usage{InputTokens: 15, OutputTokens: 28},
 	}
 	if resp != want {
 		t.Errorf("response = %+v, want %+v", resp, want)
@@ -113,6 +114,84 @@ func TestCompleteMapsTierToConfiguredModel(t *testing.T) {
 	}
 }
 
+func TestCompleteSendsMaxTokensOnlyWhenSet(t *testing.T) {
+	var bodies []map[string]any
+	srv := recordingServer(t, &bodies)
+	client := llm.New(gatewayConfig(srv.URL))
+
+	for _, limit := range []int{500, 0} {
+		if _, err := client.Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u", MaxOutputTokens: limit}); err != nil {
+			t.Fatalf("Complete(MaxOutputTokens=%d): %v", limit, err)
+		}
+	}
+
+	if got := bodies[0]["max_tokens"]; got != float64(500) {
+		t.Errorf("max_tokens = %v, want 500", got)
+	}
+	if _, sent := bodies[1]["max_tokens"]; sent {
+		t.Errorf("max_tokens sent without a limit: %v", bodies[1])
+	}
+}
+
+func replyServer(t *testing.T, content, finishReason string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": "vendor/cheap",
+			"choices": []map[string]any{{
+				"message":       map[string]string{"role": "assistant", "content": content},
+				"finish_reason": finishReason,
+			}},
+			"usage": map[string]int{"prompt_tokens": 900, "completion_tokens": 500},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCompleteTruncatedReplyIsPermanentAndKeepsUsage(t *testing.T) {
+	srv := replyServer(t, "The meeting began with", "length")
+
+	resp, err := llm.New(gatewayConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u", MaxOutputTokens: 500})
+
+	if !errors.Is(err, llm.ErrTruncated) {
+		t.Fatalf("err = %v, want ErrTruncated", err)
+	}
+	if llm.IsRetryable(err) {
+		t.Error("truncated reply reported as retryable")
+	}
+	if resp.FinishReason != "length" || resp.Usage.OutputTokens != 500 {
+		t.Errorf("response = %+v, want finish reason and usage kept", resp)
+	}
+}
+
+func TestCompleteFilteredReplyIsPermanent(t *testing.T) {
+	srv := replyServer(t, "", "content_filter")
+
+	_, err := llm.New(gatewayConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u"})
+
+	if !errors.Is(err, llm.ErrContentFiltered) {
+		t.Fatalf("err = %v, want ErrContentFiltered", err)
+	}
+	if llm.IsRetryable(err) {
+		t.Error("filtered reply reported as retryable")
+	}
+}
+
+func TestCompleteEmptyReplyIsRetryable(t *testing.T) {
+	for _, finishReason := range []string{"stop", ""} {
+		t.Run("finish_reason="+finishReason, func(t *testing.T) {
+			srv := replyServer(t, "", finishReason)
+
+			_, err := llm.New(gatewayConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u"})
+
+			if err == nil || !llm.IsRetryable(err) {
+				t.Errorf("err = %v, want a retryable error", err)
+			}
+		})
+	}
+}
+
 func TestCompleteOmitsEmptySystemPrompt(t *testing.T) {
 	var bodies []map[string]any
 	srv := recordingServer(t, &bodies)
@@ -134,7 +213,7 @@ func TestCompleteClassifiesGatewayStatus(t *testing.T) {
 	}{
 		{http.StatusBadRequest, false},
 		{http.StatusUnauthorized, false},
-		{http.StatusPaymentRequired, false},
+		{http.StatusPaymentRequired, true},
 		{http.StatusForbidden, false},
 		{http.StatusNotFound, false},
 		{http.StatusUnprocessableEntity, false},
@@ -282,6 +361,19 @@ func TestCompleteTruncatedResponseIsRetryable(t *testing.T) {
 
 	if err == nil || !llm.IsRetryable(err) {
 		t.Errorf("err = %v, want a retryable error", err)
+	}
+}
+
+func TestCompleteOversizedResponseIsPermanent(t *testing.T) {
+	srv := replyServer(t, strings.Repeat("a", 9<<20), "stop")
+
+	_, err := llm.New(gatewayConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u"})
+
+	if !errors.Is(err, llm.ErrResponseTooLarge) {
+		t.Fatalf("err = %v, want ErrResponseTooLarge", err)
+	}
+	if llm.IsRetryable(err) {
+		t.Error("oversized response reported as retryable")
 	}
 }
 
