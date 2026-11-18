@@ -111,7 +111,7 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | `api` | build, vet, golangci-lint, unit tests with `-race` and coverage, codegen drift |
 | `api-integration` | unit and integration tests with `-race` and coverage, against Postgres 17 and S3Mock containers; fails below the coverage minimum |
 | `migrations-lint` | Squawk on changed migrations |
-| `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database |
+| `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database, with Postgres 17 and S3Mock containers like `api-integration` |
 | `web` | lint, format, typecheck, tests with coverage, codegen drift, build |
 | `coverage-comment` | posts or updates the coverage comment on the pull request; not part of `ci-ok` |
 | `ci-ok` | passes when none of the above failed; the one required check on `main` |
