@@ -26,6 +26,21 @@ type fakeStore struct {
 	listed      *listMeetingsCall
 	meeting     *store.MeetingDetail
 	meetingErr  error
+	users       *userCalls
+}
+
+type userCalls struct {
+	inputs []store.UserInput
+	user   store.User
+	err    error
+}
+
+func (f fakeStore) EnsureUser(_ context.Context, in store.UserInput) (store.User, bool, error) {
+	if f.users == nil {
+		return store.User{}, false, errors.New("unexpected EnsureUser")
+	}
+	f.users.inputs = append(f.users.inputs, in)
+	return f.users.user, false, f.users.err
 }
 
 func (f fakeStore) GetLiveMeetingDetail(_ context.Context, id uuid.UUID) (store.MeetingDetail, error) {
