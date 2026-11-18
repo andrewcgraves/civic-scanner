@@ -11,11 +11,12 @@ A Go API and a Next.js front end in one repo, both generated from a shared OpenA
 | `api/` | Go API. Migrations in `api/migrations/`, generated server types in `api/internal/httpapi/v1/`. |
 | `web/` | Next.js front end (pnpm). Generated client types in `web/src/lib/api/v1.d.ts`. |
 | `.github/` | CI workflow, Dependabot, the ruleset for `main`. |
+| `.railway/` | Railway infrastructure as code (`railway.ts`). |
 
 ## Prerequisites
 
 - Go (version in `api/go.mod`) and [golangci-lint v2](https://golangci-lint.run)
-- Node (version in `web/.nvmrc`) and pnpm (version in `web/package.json`; `corepack enable` picks it up)
+- Node (version in `web/.nvmrc`) and pnpm (version in `web/package.json`). Node 25 and later no longer bundle Corepack; install pnpm with `npm install --global corepack && corepack enable`, Homebrew, or the standalone installer. pnpm switches itself to the pinned version.
 - Docker, for local Postgres
 
 ## Quickstart
@@ -106,5 +107,23 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 
 Merging to `main` deploys both sides.
 
-- **API on Railway**, configured by `api/railway.json`, with the service root directory set to `/api` (the Docker build context). The `RAILWAY_GIT_COMMIT_SHA` build arg becomes the version the health endpoint reports. Migrations run as the pre-deploy step, so a failed migration stops the deploy. Watch paths limit redeploys to `api/` and `openapi/`.
+- **API on Railway**, defined in `.railway/railway.ts`: the `civic-scanner` service and its `Postgres` database in the `production` environment. The service builds `api/Dockerfile` with `/api` as the build context and redeploys only when `api/` changes. The `RAILWAY_GIT_COMMIT_SHA` build arg becomes the version the health endpoint reports.
+  - Wait for CI is on: a deploy waits until the GitHub Actions run on that commit finishes.
+  - `/app/migrate up` runs as the pre-deploy step, with a 5-minute limit. A failed migration stops the deploy.
+  - A deploy goes live only once `/v1/healthz` returns 200 within 60 seconds.
+  - `DATABASE_URL` references the database over Railway's private network.
 - **Web on Vercel**, with the project root directory set to `web`. Each pull request gets a preview deploy.
+
+### Changing Railway configuration
+
+`.railway/railway.ts` owns the Railway project, including every variable on its services. Change settings there, not in the dashboard: the next apply reverts dashboard edits. Secrets go in as `preserve()` so their values stay out of the repository.
+
+With the [Railway CLI](https://docs.railway.com/cli) installed:
+
+```sh
+railway link            # once: pick the project and the production environment
+railway config plan     # preview the change; changes nothing
+railway config apply    # apply it after reviewing the plan
+```
+
+`railway config pull` re-imports the project from Railway. Generated Railway domains are not in the file and are left alone. The file needs no npm install: the CLI evaluates it.
