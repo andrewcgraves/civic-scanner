@@ -38,7 +38,7 @@ Write the summary:
 
 If the user message says the document was cut short, summarize only the part you were given.`
 
-var randomSource io.Reader = rand.Reader
+var randomSource = rand.Reader
 
 var (
 	ErrEmptyAgenda = errors.New("summarize: agenda text is empty")
