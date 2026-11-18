@@ -7,14 +7,14 @@ import (
 
 func TestNormalizeCollapsesFormattingNoise(t *testing.T) {
 	cases := map[string]string{
-		"":                                   "",
-		"  \n\t\n":                           "",
-		"Board  Meeting\r\n\r\n  Item\t1  ":  "Board Meeting\nItem 1",
-		"a\u00a0b\u2003c":                    "a b c",
-		"line\u2028next\fpage\vtab":          "line\nnext\npage\ntab",
+		"":                                    "",
+		"  \n\t\n":                            "",
+		"Board  Meeting\r\n\r\n  Item\t1  ":   "Board Meeting\nItem 1",
+		"a\u00a0b\u2003c":                     "a b c",
+		"line\u2028next\fpage\vtab":           "line\nnext\npage\ntab",
 		"nul\x00byte\x07bell\ufeffbom\u00adx": "nulbytebellbomx",
-		"bad \xff utf8":                      "bad utf8",
-		"zero\u200bwidth":                    "zerowidth",
+		"bad \xff utf8":                       "bad utf8",
+		"zero\u200bwidth":                     "zerowidth",
 	}
 	for in, want := range cases {
 		if got := Normalize(in); got != want {

@@ -48,7 +48,7 @@ func (s *agendaSource) fail(errs ...error) {
 	s.errs = errs
 }
 
-func (s *agendaSource) Fetch(ctx context.Context, req fetch.Request) (fetch.Response, error) {
+func (s *agendaSource) Fetch(_ context.Context, req fetch.Request) (fetch.Response, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.errs) > 0 {
