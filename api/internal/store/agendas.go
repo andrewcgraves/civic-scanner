@@ -119,6 +119,9 @@ RETURNING `+agendaVersionColumns,
 	if err != nil {
 		return AgendaVersion{}, false, fmt.Errorf("insert agenda version: %w", err)
 	}
+	if _, err := recordMeetingEvent(ctx, q, agendaEventInput(v)); err != nil {
+		return AgendaVersion{}, false, fmt.Errorf("record agenda event: %w", err)
+	}
 	return v, true, nil
 }
 
