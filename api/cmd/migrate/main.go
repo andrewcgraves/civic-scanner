@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -13,15 +14,18 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx, os.Args[1:])
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "migrate:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	if len(os.Args) != 2 || os.Args[1] != "up" {
-		return fmt.Errorf("usage: %s up", os.Args[0])
+func run(ctx context.Context, args []string) error {
+	if len(args) != 1 || args[0] != "up" {
+		return errors.New("usage: migrate up")
 	}
 
 	cfg, err := config.Load()
@@ -29,9 +33,6 @@ func run() error {
 		return err
 	}
 	logger := config.NewLogger(cfg)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	pool, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {

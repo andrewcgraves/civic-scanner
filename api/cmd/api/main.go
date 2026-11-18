@@ -21,21 +21,21 @@ const shutdownTimeout = 25 * time.Second
 var version = "dev"
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	err := run(ctx)
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "api:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(ctx context.Context) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
 	logger := config.NewLogger(cfg)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	pool, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
