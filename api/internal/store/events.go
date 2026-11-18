@@ -44,6 +44,7 @@ type MeetingEventInput struct {
 
 type MeetingEvent struct {
 	ID         uuid.UUID
+	Sequence   int64
 	Type       EventType
 	MeetingID  uuid.UUID
 	Payload    json.RawMessage
@@ -55,28 +56,28 @@ type AgendaEventPayload struct {
 	Version         int       `json:"version"`
 }
 
-const meetingEventColumns = `id, type, meeting_id, payload, occurred_at`
+const meetingEventColumns = `id, sequence, type, meeting_id, payload, occurred_at`
 
 func scanMeetingEvent(row pgx.Row) (MeetingEvent, error) {
 	var (
 		e       MeetingEvent
 		payload []byte
 	)
-	err := row.Scan(&e.ID, &e.Type, &e.MeetingID, &payload, &e.OccurredAt)
+	err := row.Scan(&e.ID, &e.Sequence, &e.Type, &e.MeetingID, &payload, &e.OccurredAt)
 	e.Payload = payload
 	return e, err
 }
 
 func encodeEventPayload(payload any) (string, error) {
-	if payload == nil {
-		return "{}", nil
-	}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrInvalidPayload, err)
 	}
+	if string(raw) == "null" {
+		return "{}", nil
+	}
 	var object map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+	if err := json.Unmarshal(raw, &object); err != nil {
 		return "", ErrInvalidPayload
 	}
 	return string(raw), nil
@@ -126,7 +127,7 @@ func agendaEventInput(v AgendaVersion) MeetingEventInput {
 
 func (s *Store) ListMeetingEvents(ctx context.Context, meetingID uuid.UUID) ([]MeetingEvent, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT `+meetingEventColumns+` FROM meeting_events WHERE meeting_id = $1 ORDER BY occurred_at, id`, meetingID)
+		`SELECT `+meetingEventColumns+` FROM meeting_events WHERE meeting_id = $1 ORDER BY sequence`, meetingID)
 	if err != nil {
 		return nil, fmt.Errorf("query meeting events: %w", err)
 	}

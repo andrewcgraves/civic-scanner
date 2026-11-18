@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -75,8 +77,9 @@ func TestAddAgendaVersionRecordsPublishedThenChangedEvents(t *testing.T) {
 			t.Errorf("events[%d] = %+v (payload %+v), want %s for version %d", i, e, p, want.eventType, want.version.Version)
 		}
 	}
-	if events[0].ID == events[1].ID || events[1].OccurredAt.Before(events[0].OccurredAt) {
-		t.Errorf("events not distinct and ordered: %+v", events)
+	if events[0].ID == events[1].ID || events[0].Sequence < 1 || events[1].Sequence <= events[0].Sequence ||
+		events[1].OccurredAt.Before(events[0].OccurredAt) {
+		t.Errorf("events not distinct and ordered by sequence: %+v", events)
 	}
 }
 
@@ -154,7 +157,7 @@ func TestRecordMeetingEventTxRecordsTranscriptReadyWithItsPayload(t *testing.T) 
 	if err := json.Unmarshal(e.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if e.ID != recorded.ID || e.Type != store.EventTranscriptReady || e.MeetingID != meetingID ||
+	if e.ID != recorded.ID || e.Sequence != recorded.Sequence || e.Type != store.EventTranscriptReady || e.MeetingID != meetingID ||
 		!e.OccurredAt.Equal(recorded.OccurredAt) || payload.TranscriptURL != "https://example.com/t.json" || payload.Segments != 42 {
 		t.Errorf("event = %+v (payload %+v), want the recorded transcript_ready event %+v", e, payload, recorded)
 	}
@@ -223,5 +226,50 @@ func TestListMeetingEventsFailsOnClosedPool(t *testing.T) {
 	_, err = store.New(pool).ListMeetingEvents(t.Context(), uuid.New())
 	if err == nil || errors.Is(err, store.ErrNotFound) {
 		t.Errorf("err = %v, want a connection error", err)
+	}
+}
+
+func failEventInsertsFor(t *testing.T, pool *pgxpool.Pool, meetingID uuid.UUID) {
+	t.Helper()
+	ctx := t.Context()
+	suffix := strings.ReplaceAll(meetingID.String(), "-", "")
+	function, trigger := "store_test_fail_event_"+suffix, "store_test_fail_event_"+suffix
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
+CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.meeting_id = '%s' THEN
+        RAISE EXCEPTION 'event insert refused';
+    END IF;
+    RETURN NEW;
+END $$`, function, meetingID)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.WithoutCancel(ctx), `DROP FUNCTION IF EXISTS `+function+` CASCADE`)
+	})
+	if _, err := pool.Exec(ctx, fmt.Sprintf(
+		`CREATE TRIGGER %s BEFORE INSERT ON meeting_events FOR EACH ROW EXECUTE FUNCTION %s()`, trigger, function)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAddAgendaVersionRollsBackTheVersionWhenTheEventFails(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	meetingID := seedMeeting(t, pool, "store-test-events-fail")
+	failEventInsertsFor(t, pool, meetingID)
+
+	_, created, err := s.AddAgendaVersion(ctx, agendaInput(meetingID, "agenda"))
+	if err == nil || created || !strings.Contains(err.Error(), "record agenda event") || errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("AddAgendaVersion = (created %v, err %v), want a record agenda event error", created, err)
+	}
+	if _, err := s.LatestAgendaVersion(ctx, meetingID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("version kept after its event failed: err = %v, want ErrNotFound", err)
+	}
+
+	tx := beginTx(t, pool)
+	if _, _, err := s.AddAgendaVersionTx(ctx, tx, agendaInput(meetingID, "agenda")); err == nil || !strings.Contains(err.Error(), "record agenda event") {
+		t.Errorf("AddAgendaVersionTx err = %v, want a record agenda event error", err)
 	}
 }

@@ -429,7 +429,7 @@ The migration's down half drops the table. `api/migrations/down_integration_test
 
 ## Meeting events
 
-`meeting_events` (migration `00006`) is the outbox between the pipeline and delivery: RSS feeds and webhooks read what happened to a meeting from here and nowhere else. Each row has a unique `id` (uuid), a `type`, the `meeting_id`, a JSON object `payload`, and `occurred_at` (`clock_timestamp()` at insert, so events written in one transaction keep their order). Events are only inserted; nothing updates them. Deleting a meeting deletes its events (`ON DELETE CASCADE`).
+`meeting_events` (migration `00006`) is the outbox between the pipeline and delivery: RSS feeds and webhooks read what happened to a meeting from here and nowhere else. Each row has a unique `id` (uuid, the public identifier of the event), a `sequence` (`bigint GENERATED ALWAYS AS IDENTITY`, unique), a `type`, the `meeting_id`, a JSON object `payload`, and `occurred_at` (`clock_timestamp()` at insert). Events are only inserted; nothing updates them. `meeting_id` is a plain foreign key, so a meeting that has events cannot be deleted until its events are, and undelivered events never vanish with their meeting.
 
 | Type | Recorded by | Payload |
 | --- | --- | --- |
@@ -437,16 +437,18 @@ The migration's down half drops the table. `api/migrations/down_integration_test
 | `agenda_changed` | `AddAgendaVersion` / `AddAgendaVersionTx`, when it creates version 2 or later | `{"agenda_version_id": "<uuid>", "version": n}` |
 | `transcript_ready` | the job that finishes a transcript, through `RecordMeetingEventTx` | chosen by that job; it must be self-contained, since the outbox does not reference a transcripts table |
 
-An event is written in the same transaction as the change it describes, so a consumer never sees an event for a change that rolled back, and a committed change always has its event. An unchanged agenda adds no version and so no event.
+An event is written in the same transaction as the change it describes, so a consumer never sees an event for a change that rolled back, and a committed change always has its event; if the event insert fails, the version is rolled back with it. An unchanged agenda adds no version and so no event. The outbox has no deduplication key: every call records a new event. The job that records `transcript_ready` must do so only when a transcript actually became ready, in the transaction that makes it so, and not again on a retry that changes nothing.
 
 `internal/store/events.go`:
 
 | Function | Does |
 | --- | --- |
-| `RecordMeetingEventTx(ctx, tx, in)` | Inserts an event from `MeetingEventInput{Type, MeetingID, Payload}` in the caller's transaction and returns it. `Payload` is marshalled to JSON and must be an object (a struct or map); `nil` stores `{}`. An unknown type is `ErrUnknownEventType` and a non-object payload `ErrInvalidPayload`, both before the database is touched. A missing meeting is `ErrNotFound`. There is no variant without a transaction, because an event must commit with its change. |
-| `ListMeetingEvents(ctx, meetingID)` | A meeting's events, oldest first (`occurred_at`, then `id`). Empty for a meeting with none. |
+| `RecordMeetingEventTx(ctx, tx, in)` | Inserts an event from `MeetingEventInput{Type, MeetingID, Payload}` in the caller's transaction and returns it. `Payload` is marshalled to JSON and must be an object (a struct or map); a payload that marshals to JSON `null` (`nil`, a nil pointer or a nil map) stores `{}`. An unknown type is `ErrUnknownEventType` and a non-object payload `ErrInvalidPayload`, both before the database is touched. A missing meeting is `ErrNotFound`; the failed insert has then aborted the caller's transaction, which must be rolled back. There is no variant without a transaction, because an event must commit with its change. |
+| `ListMeetingEvents(ctx, meetingID)` | A meeting's events, in `sequence` order. Empty for a meeting with none. |
 
-The table's check constraints accept only the three types and only a JSON object payload. Indexes on `(occurred_at, id)` and `(meeting_id, occurred_at, id)` serve readers of all events and of one meeting's events. How consumers page through the outbox and track what they have delivered belongs to the RSS and webhook stories.
+The table's check constraints accept only the three types and only a JSON object payload. The unique constraint on `sequence` and the index on `(meeting_id, sequence)` serve readers of all events and of one meeting's events in sequence order.
+
+**Sequence order is assignment order, not commit order.** `sequence` is taken from the identity when the row is inserted, and transactions commit in any order: a transaction that inserted sequence 41 can commit after another that inserted 42. A reader that has seen 42 may therefore see 41 appear later. A consumer must not treat "the highest sequence seen" as a safe cursor without handling transactions still in flight, or it skips events for good. `occurred_at` has the same problem and the uuid `id` has no order at all. How consumers page through the outbox and track what they have delivered belongs to the RSS and webhook stories (CIV-45, CIV-46).
 
 ## Transcription
 

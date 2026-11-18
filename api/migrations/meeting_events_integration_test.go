@@ -14,12 +14,16 @@ import (
 func insertEventMeeting(t *testing.T, pool *pgxpool.Pool, slug string) string {
 	t.Helper()
 	agencyID := insertMeetingAgency(t, pool, slug)
+	ctx := t.Context()
 	var id string
-	if err := pool.QueryRow(t.Context(),
+	if err := pool.QueryRow(ctx,
 		`INSERT INTO meetings (agency_id, title, starts_at, source_id) VALUES ($1, 't', now(), $2) RETURNING id`,
 		agencyID, slug).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.WithoutCancel(ctx), `DELETE FROM meeting_events WHERE meeting_id = $1`, id)
+	})
 	return id
 }
 
@@ -78,22 +82,43 @@ func TestMeetingEventsRejectInvalidRows(t *testing.T) {
 	}
 }
 
-func TestMeetingEventsAreDeletedWithTheirMeeting(t *testing.T) {
+func TestMeetingEventsKeepTheirMeetingFromBeingDeleted(t *testing.T) {
 	ctx := t.Context()
 	pool := testdb.Pool(t)
-	meetingID := insertEventMeeting(t, pool, "migration-test-event-cascade")
+	meetingID := insertEventMeeting(t, pool, "migration-test-event-restrict")
 
 	if err := insertMeetingEvent(ctx, pool, meetingID, "transcript_ready", `{}`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM meetings WHERE id = $1`, meetingID); err != nil {
-		t.Fatalf("delete meeting with events: %v", err)
+	if _, err := pool.Exec(ctx, `DELETE FROM meetings WHERE id = $1`, meetingID); err == nil {
+		t.Error("meeting with events was deleted")
 	}
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM meeting_events WHERE meeting_id = $1`, meetingID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 0 {
-		t.Errorf("%d events left after deleting the meeting, want 0", count)
+	if count != 1 {
+		t.Errorf("%d events after the refused delete, want 1", count)
+	}
+}
+
+func TestMeetingEventsSequenceIsAssignedAndIncreasing(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	meetingID := insertEventMeeting(t, pool, "migration-test-event-sequence")
+
+	var first, second int64
+	for _, dest := range []*int64{&first, &second} {
+		if err := pool.QueryRow(ctx,
+			`INSERT INTO meeting_events (type, meeting_id) VALUES ('transcript_ready', $1) RETURNING sequence`, meetingID).Scan(dest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if first < 1 || second <= first {
+		t.Errorf("sequences = %d, %d; want positive and increasing", first, second)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO meeting_events (sequence, type, meeting_id) VALUES (1, 'transcript_ready', $1)`, meetingID); err == nil {
+		t.Error("an explicit sequence was accepted")
 	}
 }

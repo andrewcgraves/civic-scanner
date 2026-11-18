@@ -27,6 +27,9 @@ func TestEncodeEventPayloadAcceptsOnlyObjects(t *testing.T) {
 		want    string
 	}{
 		"nil":        {nil, "{}"},
+		"nil struct": {(*AgendaEventPayload)(nil), "{}"},
+		"nil map":    {map[string]any(nil), "{}"},
+		"raw null":   {json.RawMessage(`null`), "{}"},
 		"empty map":  {map[string]any{}, "{}"},
 		"map":        {map[string]any{"transcript_url": "https://example.com/t.json"}, `{"transcript_url":"https://example.com/t.json"}`},
 		"struct":     {AgendaEventPayload{Version: 2}, `{"agenda_version_id":"00000000-0000-0000-0000-000000000000","version":2}`},
@@ -39,12 +42,10 @@ func TestEncodeEventPayloadAcceptsOnlyObjects(t *testing.T) {
 	}
 
 	for name, payload := range map[string]any{
-		"string":   "text",
-		"number":   7,
-		"array":    []string{"a"},
-		"null map": map[string]any(nil),
-		"raw null": json.RawMessage(`null`),
-		"func":     func() {},
+		"string": "text",
+		"number": 7,
+		"array":  []string{"a"},
+		"func":   func() {},
 	} {
 		if _, err := encodeEventPayload(payload); !errors.Is(err, ErrInvalidPayload) {
 			t.Errorf("%s: err = %v, want ErrInvalidPayload", name, err)
