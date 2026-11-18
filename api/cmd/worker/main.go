@@ -10,7 +10,9 @@ import (
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
+	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
@@ -45,14 +47,15 @@ func run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
-	client, err := jobs.NewClient(pool, logger)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fetch.New(cfg.Fetch), Clock: sources.SystemClock{}}, adapters)
+	client, err := jobs.NewClient(pool, logger, jobs.Config{Registry: registry, CheckHourUTC: cfg.Ingest.CheckHourUTC})
 	if err != nil {
 		return err
 	}
 	if err := client.Start(context.WithoutCancel(ctx)); err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "worker started")
+	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC)
 
 	<-ctx.Done()
 	logger.InfoContext(ctx, "worker shutting down")

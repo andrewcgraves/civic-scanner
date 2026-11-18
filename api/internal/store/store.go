@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -56,4 +57,17 @@ func (s *Store) ListAgencies(ctx context.Context) ([]Agency, error) {
 		return nil, fmt.Errorf("scan agencies: %w", err)
 	}
 	return agencies, nil
+}
+
+func (s *Store) GetLiveAgency(ctx context.Context, slug string) (Agency, error) {
+	var a Agency
+	err := s.pool.QueryRow(ctx, `SELECT id, slug, name, website, created_at FROM agencies WHERE slug = $1 AND status = 'live'`, slug).
+		Scan(&a.ID, &a.Slug, &a.Name, &a.Website, &a.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Agency{}, ErrNotFound
+	}
+	if err != nil {
+		return Agency{}, fmt.Errorf("get agency: %w", err)
+	}
+	return a, nil
 }

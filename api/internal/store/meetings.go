@@ -83,7 +83,7 @@ VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (agency_id, source_id) DO UPDATE SET
     title = EXCLUDED.title,
     starts_at = EXCLUDED.starts_at,
-    status = EXCLUDED.status,
+    status = CASE WHEN meetings.status = 'held' THEN meetings.status ELSE EXCLUDED.status END,
     source_url = EXCLUDED.source_url,
     updated_at = clock_timestamp()
 RETURNING `+meetingColumns+`, (xmax = 0)`,
