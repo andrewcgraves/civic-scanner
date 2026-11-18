@@ -23,7 +23,7 @@ func TestAgenciesAgainstPostgres(t *testing.T) {
 
 	const slug = "integration-test-agency"
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO agencies (slug, name) VALUES ($1, $2) ON CONFLICT (slug) DO NOTHING`,
+		`INSERT INTO agencies (slug, name, status, website) VALUES ($1, $2, 'live', 'https://example.com') ON CONFLICT (slug) DO NOTHING`,
 		slug, "Integration Test Agency"); err != nil {
 		t.Fatalf("insert agency: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestAgenciesAgainstPostgres(t *testing.T) {
 	getJSON(t, srv.URL+"/v1/agencies", http.StatusOK, &list)
 	for _, a := range list.Agencies {
 		if a.Slug == slug {
-			if a.Name != "Integration Test Agency" || a.Id.String() == "00000000-0000-0000-0000-000000000000" {
+			if a.Name != "Integration Test Agency" || a.Website != "https://example.com" || a.Id.String() == "00000000-0000-0000-0000-000000000000" {
 				t.Errorf("unexpected agency: %+v", a)
 			}
 			return
