@@ -414,7 +414,7 @@ A meeting's agenda is kept as numbered versions in `agenda_versions` (migration 
 
 | Function | Does |
 | --- | --- |
-| `AddAgendaVersion(ctx, in)`, `AddAgendaVersionTx(ctx, tx, in)` | Adds a version from `AgendaVersionInput{MeetingID, SourceURL, Text, ContentHash}`. When the meeting's latest version has the same hash, it adds nothing and returns that version with `created` false; otherwise it inserts the next number and returns `created` true. A missing meeting is `ErrNotFound`. |
+| `AddAgendaVersion(ctx, in)`, `AddAgendaVersionTx(ctx, tx, in)` | Adds a version from `AgendaVersionInput{MeetingID, SourceURL, Text, ContentHash}`. When the meeting's latest version has the same hash, it adds nothing and returns that version with `created` false; otherwise it inserts the next number, records an `agenda_published` (version 1) or `agenda_changed` (later versions) meeting event in the same transaction (see "Meeting events"), and returns `created` true. A missing meeting is `ErrNotFound`. |
 | `LatestAgendaVersion(ctx, meetingID)` | The highest-numbered version, or `ErrNotFound` when the meeting has none. |
 | `ListAgendaVersions(ctx, meetingID)` | Every version, newest first. Empty for a meeting with none. |
 | `SetAgendaSummary`, `SetAgendaChangeNote` (and `...Tx`) | Sets the field on one version by id and returns the updated version. A missing version is `ErrNotFound`. |
@@ -427,9 +427,32 @@ The `...Tx` variants run in the caller's transaction, so a job can add a version
 
 The migration's down half drops the table. `api/migrations/down_integration_test.go` applies every migration in a throwaway schema, rolls back to `00003`, checks the table is gone, and applies it again, without touching the shared tables other tests use.
 
+## Meeting events
+
+`meeting_events` (migration `00006`) is the outbox between the pipeline and delivery: RSS feeds and webhooks read what happened to a meeting from here and nowhere else. Each row has a unique `id` (uuid, the public identifier of the event), a `sequence` (`bigint GENERATED ALWAYS AS IDENTITY`, unique), a `type`, the `meeting_id`, a JSON object `payload`, and `occurred_at` (`clock_timestamp()` at insert). Events are only inserted; nothing updates them. `meeting_id` is a plain foreign key, so a meeting that has events cannot be deleted until its events are, and undelivered events never vanish with their meeting.
+
+| Type | Recorded by | Payload |
+| --- | --- | --- |
+| `agenda_published` | `AddAgendaVersion` / `AddAgendaVersionTx`, when it creates version 1 | `{"agenda_version_id": "<uuid>", "version": 1}` (`store.AgendaEventPayload`) |
+| `agenda_changed` | `AddAgendaVersion` / `AddAgendaVersionTx`, when it creates version 2 or later | `{"agenda_version_id": "<uuid>", "version": n}` |
+| `transcript_ready` | the job that finishes a transcript, through `RecordMeetingEventTx` | chosen by that job; it must be self-contained, since the outbox does not reference a transcripts table |
+
+An event is written in the same transaction as the change it describes, so a consumer never sees an event for a change that rolled back, and a committed change always has its event; if the event insert fails, the version is rolled back with it. An unchanged agenda adds no version and so no event. The outbox has no deduplication key: every call records a new event. The job that records `transcript_ready` must do so only when a transcript actually became ready, in the transaction that makes it so, and not again on a retry that changes nothing.
+
+`internal/store/events.go`:
+
+| Function | Does |
+| --- | --- |
+| `RecordMeetingEventTx(ctx, tx, in)` | Inserts an event from `MeetingEventInput{Type, MeetingID, Payload}` in the caller's transaction and returns it. `Payload` is marshalled to JSON and must be an object (a struct or map); a payload that marshals to JSON `null` (`nil`, a nil pointer or a nil map) stores `{}`. An unknown type is `ErrUnknownEventType` and a non-object payload `ErrInvalidPayload`, both before the database is touched. A missing meeting is `ErrNotFound`; the failed insert has then aborted the caller's transaction, which must be rolled back. There is no variant without a transaction, because an event must commit with its change. |
+| `ListMeetingEvents(ctx, meetingID)` | A meeting's events, in `sequence` order. Empty for a meeting with none. |
+
+The table's check constraints accept only the three types and only a JSON object payload. The unique constraint on `sequence` and the index on `(meeting_id, sequence)` serve readers of all events and of one meeting's events in sequence order.
+
+**Sequence order is assignment order, not commit order.** `sequence` is taken from the identity when the row is inserted, and transactions commit in any order: a transaction that inserted sequence 41 can commit after another that inserted 42. A reader that has seen 42 may therefore see 41 appear later. A consumer must not treat "the highest sequence seen" as a safe cursor without handling transactions still in flight, or it skips events for good. `occurred_at` has the same problem and the uuid `id` has no order at all. How consumers page through the outbox and track what they have delivered belongs to the RSS and webhook stories (CIV-45, CIV-46).
+
 ## Recordings and transcripts
 
-Migration `00005` adds two tables.
+Migration `00007` adds two tables.
 
 - `recordings`: one row per recording of a meeting, unique on `(meeting_id, source_url)`, so a meeting split into several videos has several rows. `source_url` is the original recording URL and cannot be empty. `audio_key` is the [object storage](#object-storage) key of the downloaded audio and `audio_expires_at` is when that audio is due for deletion; both are null until the audio is stored, and a check constraint keeps them null or set together. `audio_deleted_at` is set when the retention job deletes the audio, so deleted audio is told apart from audio never downloaded; a check constraint allows it only while there is no audio. `seq` is an identity column that gives the order recordings were added, even within one transaction, where `created_at` is the same for every row. A partial index on `audio_expires_at` covers only rows with audio, for the retention job.
 - `transcripts`: at most one per recording (unique `recording_id`). `full_text` is the whole transcript, `segments` a JSON array of `{"start_ms", "end_ms", "text", "speaker"}` objects (`speaker` left out when empty; a check constraint requires an array), and `summary` the nullable AI summary.
@@ -456,7 +479,7 @@ The summary check hashes the stored text in Postgres (`sha256` of its UTF-8 byte
 
 A `Recording` without stored audio has a nil `Audio`; `AudioDeletedAt` is set when its audio was stored and later deleted. `store.TranscriptSegment` has the same fields as `transcribe.Segment` (`Start`, `End`, `Text`, `Speaker`), so the store does not import the transcription client. Times are stored to the millisecond, rounded. A segment with a negative start or an end before its start is `ErrInvalidSegment`, returned before the database is touched. Saving no segments stores an empty array, which reads back as an empty, non-nil slice.
 
-`api/migrations/down_integration_test.go` also rolls back to `00004`, checks both tables are gone and `agenda_versions` is not, and applies `00005` again.
+`api/migrations/down_integration_test.go` also rolls back to `00006`, checks both tables are gone and `meeting_events` is not, and applies `00007` again.
 
 ## Transcription
 
@@ -511,6 +534,8 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - **Release:** new code that uses them ships behind a flag.
 - **Contract:** a later migration removes the old structures. Mark the file with a `-- migration: contract` line, which permits dropping columns and tables, and confirm the flag is fully on in production before merging.
 
+Number a new file above every migration already on `main`, and renumber a branch's migration when another lands first. Goose refuses to apply a migration numbered below the database's current version, so a lower number would fail `migrate up` at deploy. Gaps are fine: `00005` is unused because recordings (`00007`) was renumbered after meeting events (`00006`) merged.
+
 `make lint-migrations` runs `.github/scripts/lint-migrations.sh [file...]` (default: every file in `api/migrations/`), which adapts each goose file for Squawk:
 
 - Only the `-- +goose Up` half is linted. A rollback is destructive by design and would always fail.
@@ -537,6 +562,12 @@ Merging to `main` deploys both sides.
   - `/app/migrate up` runs as the pre-deploy step, with a 5-minute limit. A failed migration stops the deploy.
   - A deploy goes live only once `/v1/healthz` returns 200 within 60 seconds.
   - `DATABASE_URL` references the database over Railway's private network.
+- **Worker on Railway**, also in `.railway/railway.ts`: the `civic-scanner-worker` service runs the River worker (`api/cmd/worker`) against the same `Postgres` database. It builds the same `api/Dockerfile` from the same commit, with the same watch paths and Wait for CI, and its start command `/app/worker` replaces the image's `/app/api` entrypoint.
+  - `/app/migrate up` runs as its pre-deploy step too, so the worker never starts new code before its schema exists, whichever service deploys first. Both services may run it at once: `migrations.Up` holds a Postgres advisory lock, so the second run waits and then finds nothing to apply.
+  - No health check and no public domain: the worker serves no HTTP. A deploy goes live once the container starts; a crash restarts it up to 5 times.
+  - One replica. River elects a leader for periodic jobs, so more replicas would be safe, but one is enough for a daily check.
+  - On a redeploy the old worker gets SIGTERM and 30 seconds (`drainingSeconds`) before SIGKILL. The worker stops fetching new jobs and gives running ones 25 seconds to finish. A job cut off stays running in the database until River's rescuer finds it stuck and retries it.
+  - Its variables are `DATABASE_URL`, `APP_ENV` and `LOG_LEVEL`. `INGEST_CHECK_HOUR_UTC` keeps its default. No flag variables are set, so `ingest-check-agencies` is off and the daily check does nothing until the flag is turned on (see [Feature flags](#feature-flags)).
 - **Web on Vercel**, with the project root directory set to `web`. Each pull request gets a preview deploy.
 
 ### Changing Railway configuration
