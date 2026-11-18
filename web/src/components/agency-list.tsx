@@ -8,7 +8,12 @@ export function AgencyList({ agencies }: { agencies: Agency[] }) {
   return (
     <ul className="list-disc pl-5">
       {agencies.map((agency) => (
-        <li key={agency.id}>{agency.name}</li>
+        <li key={agency.id}>
+          {agency.name}{" "}
+          <a href={agency.website} className="underline">
+            {new URL(agency.website).hostname.replace(/^www\./, "")}
+          </a>
+        </li>
       ))}
     </ul>
   );

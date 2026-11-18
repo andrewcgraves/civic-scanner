@@ -33,7 +33,7 @@ export interface paths {
     };
     /**
      * List tracked agencies
-     * @description Returns every agency the tracker follows.
+     * @description Returns every live agency the tracker follows.
      */
     get: operations["listAgencies"];
     put?: never;
@@ -60,6 +60,11 @@ export interface components {
       /** @description URL-safe identifier, e.g. `la-metro`. */
       slug: string;
       name: string;
+      /**
+       * Format: uri
+       * @description The agency's official website.
+       */
+      website: string;
     };
     AgencyList: {
       agencies: components["schemas"]["Agency"][];

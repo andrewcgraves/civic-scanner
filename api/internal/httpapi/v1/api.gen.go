@@ -39,6 +39,9 @@ type Agency struct {
 
 	// Slug URL-safe identifier, e.g. `la-metro`.
 	Slug string `json:"slug"`
+
+	// Website The agency's official website.
+	Website string `json:"website"`
 }
 
 // AgencyList defines model for AgencyList.
