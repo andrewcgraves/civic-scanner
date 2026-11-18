@@ -244,6 +244,99 @@ Errors are `*fetch.Error` values, and `fetch.IsRetryable(err)` tells a worker wh
 
 Tests never call a live site or Firecrawl. `internal/fetch/fetchtest` provides `fetchtest.Fake`, a `fetch.Fetcher` for other packages' tests: `fetchtest.Returning(body)` answers every call with a 200 HTML page, `fetchtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. `Calls()` returns the requests received. The fetchers' own tests run against `httptest` servers.
 
+## Ingestion
+
+The worker checks every live agency once a day for board meetings and records them. This is the first link of the pipeline (check agency, process agenda, download audio, transcribe, summarize). Two River jobs in `internal/jobs` do it, behind the `ingest-check-agencies` feature flag.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `INGEST_CHECK_HOUR_UTC` | `13` | Hour of the day, in UTC, when the daily check runs (13:00 UTC is 05:00 in Los Angeles in winter, 06:00 in summer). An integer from 0 to 23; anything else stops the worker at startup. |
+
+### Jobs
+
+- `enqueue_agency_checks` is a River periodic job. It runs every day at `INGEST_CHECK_HOUR_UTC`:00 UTC, and also when the worker starts, so a run missed while the worker was down happens on the next start. Its args carry the slot it belongs to: the latest scheduled time at or before now. It is unique by slot, so a restart, a deploy or a new River leader inserts it at most once per day. It inserts one `check_agency` job per live agency (`store.ListAgencies`); pending and rejected agencies get none.
+- `check_agency` checks one agency. It is unique by agency slug, queue and UTC day (River `UniqueOpts` `ByArgs`, `ByQueue`, `ByPeriod` of 24 hours), and the enqueuer sets its scheduled time to the slot, so a second enqueue in the same day is skipped as a duplicate. River keeps completed jobs for 24 hours, which is what lets a completed check block a duplicate. The job has a 10 minute timeout, for slow agency sites, and at most 5 attempts.
+
+`check_agency` does this, in order:
+
+1. With the flag off, it completes without doing anything. With the flag off, `enqueue_agency_checks` also inserts nothing. Flags are off unless turned on (see [Feature flags](#feature-flags)).
+2. It looks up the agency's source adapter by slug. An agency with no adapter is skipped: an info log, and the job completes. So is an agency that is no longer live.
+3. It asks the adapter for meetings in the window from 30 days before now to 90 days after. The look-back catches recordings, minutes and status changes posted after a meeting; the look-ahead covers the meeting calendars agencies publish for the coming quarter.
+4. It checks the result with `sources.Validate`. A result that breaks the adapter contract cancels the job and writes nothing.
+5. In one transaction for the agency, it upserts each meeting with `store.UpsertMeetingTx` (unique on agency and source id, so a rerun updates rows instead of duplicating them; a changed title or start time updates the row) and hands each one to the follow-up hook. Any error rolls back the whole agency.
+
+Errors:
+
+- Retryable: `sources.Retryable(err)`, which is `fetch.IsRetryable` (network failures, timeouts, 408, 429, 5xx) plus a canceled context or exceeded deadline, including the job's own timeout. The job returns the error and River retries it with backoff. Database and follow-up errors are retried the same way.
+- Permanent: everything else, such as a 404 or other 4xx, `fetch.ErrTooLarge`, markup the adapter cannot parse, or `sources.ErrInvalidMeeting`. The job is cancelled with `river.JobCancel`; the next day's run tries again.
+
+One agency's failure never affects another: each agency is its own job and its own transaction.
+
+Meeting status: `held` is final. Once a meeting is `held`, the upsert keeps it `held` whatever a source reports later, so a source that misreports a past meeting as `scheduled` cannot undo it. Other changes follow the source: `scheduled` to `cancelled`, `cancelled` back to `scheduled` (reinstated), and either to `held`. The rule lives in the upsert's SQL, so every caller gets it.
+
+### Source adapters
+
+Each agency's site is read by a source adapter in `internal/sources`:
+
+```go
+type Adapter interface {
+	Meetings(ctx context.Context, window Window) ([]Meeting, error)
+}
+
+type Window struct{ From, To time.Time }
+
+type Meeting struct {
+	SourceID     string
+	Title        string
+	StartsAt     time.Time
+	Status       Status
+	PageURL      string
+	AgendaURL    string
+	RecordingURL string
+}
+```
+
+`Status` is `sources.StatusScheduled`, `StatusHeld` or `StatusCancelled`, the values the `meetings` table accepts.
+
+Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock}`: `fetch.New(cfg.Fetch)` and `sources.SystemClock{}`. Adapters get their dependencies only from `Deps`, never from globals. No real adapter is registered yet, so every agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
+
+An adapter must guarantee:
+
+- **Board only.** It returns meetings of the agency's full governing board, including special board meetings, and never committees, subcommittees, advisory groups or workshops of part of the board.
+- **Stable ids.** `SourceID` is the source's own identifier for the meeting (a Legistar event id, a PrimeGov meeting id, a page URL path), the same on every run and never reused for another meeting. Never derive it from the title or the time, which change. Ids are unique within one result.
+- **Idempotent results.** The same source state gives the same result. `Meetings` has no side effects beyond fetching, keeps no state between calls, and is safe to call again after a failure.
+- **Times in UTC.** `StartsAt` is the correct instant, with location `time.UTC`. Parse the source's wall-clock time in the agency's zone (`America/Los_Angeles`) and call `.UTC()`; `sources.Validate` rejects any other location.
+- **Status.** `held` once the source shows the meeting took place (minutes, a recording, or a past date the source marks as held), `cancelled` when the source says so, `scheduled` otherwise.
+- **URLs.** `PageURL` is the meeting's page and is required. `AgendaURL` is the agenda document once it is published and `RecordingURL` the recording once it is available; each is empty until then. Every URL is absolute `http` or `https`.
+- **Window.** It returns the board meetings starting within the window. Extra meetings outside it are stored too, so returning a whole page of a calendar is fine.
+- **HTTP through the fetcher.** Every request goes through `Deps.Fetcher`, and time comes from `Deps.Clock`. Respect `ctx`.
+- **Errors.** Return the fetcher's errors wrapped with `%w`, so `sources.Retryable` can classify them; do not retry inside the adapter, since River does. Any other error, such as markup that no longer parses, is permanent.
+
+Tests never call a live site. `internal/sources/sourcestest` has a fake adapter for other packages' tests: `sourcestest.Returning(meetings...)` answers every call with those meetings, `sourcestest.Failing(err)` returns `err`, `Set` and `Fail` change the answer between runs, `Calls()` returns the windows received, and `sourcestest.Constructor(a)` registers it. `sourcestest.NewClock(t)` is a fake clock with `Set` and `Advance`. An adapter's own tests feed it `fetchtest.Fake` responses and check its result with `sources.Validate`.
+
+### Follow-up jobs
+
+The next stories enqueue `process-agenda` when a meeting has an agenda URL and `download-audio` when it has a recording URL, in the same transaction as the upsert. The seam is `jobs.FollowUp`:
+
+```go
+type FollowUp interface {
+	MeetingUpserted(ctx context.Context, tx pgx.Tx, m UpsertedMeeting) error
+}
+
+type UpsertedMeeting struct {
+	Meeting      store.Meeting
+	Created      bool
+	AgendaURL    string
+	RecordingURL string
+}
+```
+
+`check_agency` calls it for every upserted meeting, inside the upsert transaction; an error rolls back the agency's whole check. Today `jobs.NoFollowUp` does nothing. An implementation inserts its jobs with `river.ClientFromContext[pgx.Tx](ctx).InsertTx(ctx, tx, ...)` and is set through `jobs.Config.FollowUp`.
+
+### Tests
+
+The unit tests use the fake adapter and fake clock. The integration tests run a real River client against Postgres. Each test uses its own random queue (`jobs.Config.Queue`) and turns off the periodic job (`jobs.Config.NoPeriodicJobs`), so tests in other packages, which share the database, never work its jobs. A test that runs a check twice schedules the runs on different days, since a second check the same day is a duplicate.
+
 ## Transcription
 
 `internal/transcribe` turns an audio file into a timestamped transcript through [Groq's](https://console.groq.com/docs/speech-to-text) OpenAI-compatible `POST /audio/transcriptions` endpoint, using only the standard library. `transcribe.New(cfg.Transcription)` returns a `transcribe.Client`, whose one method, `Transcribe(ctx, audioPath)`, takes a file path and returns a `transcribe.Transcript`: the full `Text`, the audio `Duration`, and ordered `Segments`, each with `Start`, `End` and `Text`. There are no speaker labels. A file path, not a reader, is the input so a multi-hundred-MB recording is streamed from disk into the request and never held in memory.

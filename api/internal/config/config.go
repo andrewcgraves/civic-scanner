@@ -18,6 +18,7 @@ type Config struct {
 
 	FeatureFlags  FeatureFlags
 	Transcription Transcription
+	Ingest        Ingest
 }
 
 func Load() (Config, error) {
@@ -47,6 +48,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.FeatureFlags, err = loadFeatureFlags(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Ingest, err = loadIngest(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

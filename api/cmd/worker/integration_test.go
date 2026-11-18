@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"testing"
 	"time"
 
@@ -17,11 +18,11 @@ func TestRunWorksJobsUntilCanceled(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "error")
 	pool := testdb.Pool(t)
 
-	inserter, err := jobs.NewClient(pool, slog.New(slog.DiscardHandler))
+	inserter, err := jobs.NewClient(pool, slog.New(slog.DiscardHandler), jobs.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	inserted, err := inserter.Insert(t.Context(), jobs.CheckAgencyArgs{AgencySlug: "worker-test"}, nil)
+	inserted, err := inserter.Insert(t.Context(), jobs.CheckAgencyArgs{AgencySlug: "worker-test-" + strconv.FormatInt(time.Now().UnixNano(), 36)}, nil)
 	if err != nil {
 		t.Fatalf("insert job: %v", err)
 	}
