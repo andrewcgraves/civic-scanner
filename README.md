@@ -61,12 +61,15 @@ The provider depends on the environment:
 Notes:
 
 - `NEXT_PUBLIC_` values are inlined at `next build`, so changing one needs a new build. On Vercel, set them per environment: the PostHog key for Production, and `NEXT_PUBLIC_FEATURE_FLAGS` for Preview.
-- PostHog serves flags through its official providers, `@posthog/openfeature-node-provider` (over `posthog-node`) and `@posthog/openfeature-web-provider` (over `posthog-js`). PostHog starts for flags only: no `$feature_flag_called` events, page views, autocapture, session recording, or web vitals. Analytics is a separate change.
+- PostHog serves flags through its official providers, `@posthog/openfeature-node-provider` (over `posthog-node`) and `@posthog/openfeature-web-provider` (over `posthog-js`). PostHog starts for flags only: no `$feature_flag_called` events, page views, autocapture, session recording, or web vitals, and `posthog-js` loads no extension scripts. Analytics is a separate change.
+- In PostHog mode, a page whose server components check a flag is rendered on each request (`isFlagEnabled` calls `connection()`), so a change in PostHog applies without a deploy. In-memory flags are fixed at build time, so those pages can stay static.
 - There is no sign-in yet, so the server evaluates every flag for one anonymous distinct ID. Percentage rollouts and person targeting take effect only in the browser; on the server a flag is on or off for everyone.
-- In the browser, PostHog flags arrive after the page loads. The server-rendered HTML and the first client render show PostHog flags as off, and they switch on when PostHog answers. In-memory flags are the same on both renders.
-- Without a personal API key, `posthog-node` asks PostHog on every server evaluation. If PostHog is unreachable, a render that checks a flag waits for its retry (about 3 seconds) before treating the flag as off.
-- To swap providers, change `createProvider` in `web/src/lib/flags/server.ts` and `web/src/lib/flags/client.tsx`.
-- The flags module picks its provider once, when it loads. A test sets `NEXT_PUBLIC_FEATURE_FLAGS` with `vi.stubEnv`, calls `vi.resetModules()`, and imports the module again; see `web/src/lib/flags/*.test.*`. Tests never call PostHog: the PostHog cases mock `posthog-node` and `posthog-js`.
+- The server caches each PostHog flag for 30 seconds per process, so a change in PostHog can take that long to show. A flag request times out after 500 ms and is not retried. A flag PostHog does not answer for is off until its cache entry expires.
+- `posthog-js` keeps its state in memory and sets no cookie or localStorage entry. Each page view gets a new anonymous ID, so a browser-side percentage rollout can change between page views. A follow-up will evaluate flags on the server and pass them to the browser.
+- `posthog-js` and its provider load only in the browser and only when `NEXT_PUBLIC_POSTHOG_KEY` is set; without a key, pages do not download them.
+- In the browser, PostHog flags arrive after the page loads. The server-rendered HTML and the first client render show PostHog flags as off, and they switch on when PostHog answers. If PostHog fails to load, flags stay off and the error is logged. In-memory flags are the same on both renders.
+- To swap providers, change `createProvider` in `web/src/lib/flags/server.ts` and `startPostHog` in `web/src/lib/flags/client.tsx`.
+- The flags module picks its provider once, when it loads. A test sets `NEXT_PUBLIC_FEATURE_FLAGS` with `vi.stubEnv`, calls `vi.resetModules()`, and imports the module again; see `web/src/lib/flags/*.test.*`. Tests never call PostHog: the PostHog cases mock `posthog-node` and `posthog-js`, or stub `fetch` for `posthog-node`.
 
 ## CI
 
