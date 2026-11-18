@@ -14,6 +14,7 @@ type Config struct {
 	AppEnv      string
 	LLM         LLM
 	Storage     Storage
+	Fetch       Fetch
 
 	FeatureFlags FeatureFlags
 }
@@ -36,6 +37,9 @@ func Load() (Config, error) {
 	}
 	cfg.LLM = llm
 	if cfg.Storage, err = loadStorage(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Fetch, err = loadFetch(); err != nil {
 		return Config{}, err
 	}
 	if cfg.FeatureFlags, err = loadFeatureFlags(); err != nil {
