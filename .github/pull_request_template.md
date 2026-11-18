@@ -1,10 +1,4 @@
-## What and why
-
-<!-- What does this change, and why? -->
-
-## How it was tested
-
-<!-- Commands run, manual checks, preview deploy link. -->
+## Summary
 
 ## Checklist
 
