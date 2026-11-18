@@ -1,4 +1,4 @@
-import { defineRailway, github, postgres, project, service, volume } from "railway/iac";
+import { bucket, defineRailway, github, postgres, project, service, volume } from "railway/iac";
 
 export default defineRailway(() => {
   const db = postgres("Postgres", { region: "sfo" });
@@ -10,6 +10,8 @@ export default defineRailway(() => {
     region: "sfo",
     sizeMB: 50000,
   });
+
+  const audio = bucket("audio", { region: "sjc" });
 
   const api = service("civic-scanner", {
     source: github("andrewcgraves/civic-scanner", {
@@ -35,11 +37,16 @@ export default defineRailway(() => {
       APP_ENV: "production",
       LOG_LEVEL: "info",
       PORT: "8080",
+      STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
+      STORAGE_REGION: "${{audio.REGION}}",
+      STORAGE_BUCKET: "${{audio.BUCKET}}",
+      STORAGE_ACCESS_KEY_ID: "${{audio.ACCESS_KEY_ID}}",
+      STORAGE_SECRET_ACCESS_KEY: "${{audio.SECRET_ACCESS_KEY}}",
     },
   });
 
   return project("reliable-flow", {
     variables: { managed: true },
-    resources: [api, db, dbVolume],
+    resources: [api, db, dbVolume, audio],
   });
 });
