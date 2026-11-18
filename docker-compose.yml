@@ -15,5 +15,17 @@ services:
       timeout: 5s
       retries: 15
 
+  objectstore:
+    image: adobe/s3mock:5.2.3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: civic-audio
+    ports:
+      - "127.0.0.1:9090:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://localhost:9090/civic-audio?list-type=2'"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
 volumes:
   pgdata:

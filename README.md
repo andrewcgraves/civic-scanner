@@ -23,7 +23,7 @@ A Go API and a Next.js front end in one repo, both generated from a shared OpenA
 
 ```sh
 make install          # web dependencies
-make dev-db           # Postgres 17 on localhost:5432 (db, user, password: civic)
+make dev-db           # Postgres 17 on localhost:5432 (db, user, password: civic) and an S3-compatible store on localhost:9090
 make migrate          # apply migrations
 make test             # unit tests
 make ci               # everything CI runs
@@ -85,12 +85,18 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | --- | --- |
 | `POSTHOG_API_KEY` | PostHog project API key. When set, PostHog decides every flag and `FEATURE_FLAGS` is ignored. |
 | `POSTHOG_HOST` | PostHog host. Empty means `https://us.i.posthog.com`; EU projects use `https://eu.i.posthog.com`. With a PostHog key set, anything other than an `http` or `https` URL with a host (for example `us.i.posthog.com` without a scheme) stops the binary at startup. |
-| `POSTHOG_FLAG_TIMEOUT` | How long one PostHog flag check may take, as a Go duration such as `500ms`. Default `1s`. A value that does not parse, or is not positive, stops the binary at startup. |
+| `POSTHOG_FLAG_TIMEOUT` | How long one PostHog request for flags may take, as a Go duration such as `500ms`. Default `1s`. A value that does not parse, or is not positive, stops the binary at startup. |
+| `POSTHOG_FLAG_CACHE_TTL` | How long the provider reuses one PostHog answer, as a Go duration such as `10s`. Default `30s`. `0` turns the cache off, so every check is a request. A value that does not parse, or is negative, stops the binary at startup. |
 | `FEATURE_FLAGS` | Used only without a PostHog key. A comma-separated list of the flags that are on, such as `new-search,digest-emails`. `*` turns every flag on, for staging-like runs. Empty means every flag is off. |
 
 - A flag is off unless the provider says it is on. These all evaluate to off: an unknown flag, a PostHog error, an unreachable or slow PostHog, a flag PostHog failed to evaluate, a quota-limited project, and a multivariate flag (whatever its variant, since `Enabled` answers only boolean flags).
 - What gets logged at `warn`: request errors, timeouts, context deadlines and multivariate flags, all by the provider. posthog-go logs quota limits and responses that report `errorsWhileComputingFlags` itself, through the service logger. posthog-go returns the same `ErrFlagNotFound` for an unknown flag, a flag that failed to evaluate and a quota-limited project, and does not expose which one happened. So the provider logs none of those three itself, and a failed flag is logged only when PostHog also reports `errorsWhileComputingFlags`.
-- PostHog evaluates each call remotely, through its `/flags` endpoint. A check makes one attempt, without retries, limited by `POSTHOG_FLAG_TIMEOUT`, and returns off as soon as the caller's context ends, whichever comes first. posthog-go does not take a context, so a request abandoned at the caller's deadline keeps running in the background until `POSTHOG_FLAG_TIMEOUT`. The distinct ID is `civic-scanner-server`, or the OpenFeature targeting key when a caller passes one, so a percentage rollout gives the same answer to every call that has no targeting key. No `$feature_flag_called` events are sent.
+- PostHog evaluates flags remotely, through its `/flags` endpoint, and one response holds every flag for one identity. The provider caches that whole response per identity for `POSTHOG_FLAG_CACHE_TTL`, so repeated checks of any flag make no request. The identity is the OpenFeature targeting key, or `civic-scanner-server` when a caller passes none, so a percentage rollout gives the same answer to every call that has no targeting key. A change in PostHog can take up to the TTL to show.
+- At most one request per identity is in flight: checks that arrive while it runs wait for that answer. The request runs on its own, so a caller whose context ends stops waiting and gets off, and the request still finishes and fills the cache for the next check. One attempt, no retries, limited by `POSTHOG_FLAG_TIMEOUT`. posthog-go does not take a context, so this is how the caller's deadline is honoured.
+- The cache holds at most 1024 identities. Adding one past that evicts the identity checked longest ago.
+- When a request fails, the provider serves the last good answer for that identity while it is at most 5 times the TTL old (150 s by default), then evaluates every flag to off. A flag that was never fetched is off at once. Failures are not retried within one TTL, so an outage costs one request per identity per TTL, not one per check. Off after a bounded grace period, not stale forever, because a rollout that was turned off in PostHog must not stay on indefinitely behind an outage; a short grace keeps a brief PostHog blip from flipping every flag. Each failed request is logged once at `warn`.
+- With `POSTHOG_FLAG_CACHE_TTL=0` there is no cache, no sharing and no grace: every check makes its own request. No `$feature_flag_called` events are sent.
+- Not done: PostHog local evaluation, where the client downloads flag definitions and evaluates them in process. It needs a personal API key, a secret that can read the whole project, in every binary. The cache gets the call volume down without one.
 - The PostHog provider (`internal/featureflags/posthog.go`) is a thin layer over the official `posthog-go` client, because no maintained OpenFeature Go provider for PostHog exists. Another vendor means another provider in that package; callers do not change.
 - OpenFeature's provider is process-wide. A test that calls `featureflags.Init` with `config.FeatureFlags{On: ...}` must not run in parallel with other flag tests. Parallel tests can register OpenFeature's `openfeature/testing` provider instead, which keys flags by test.
 
@@ -102,8 +108,9 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | --- | --- |
 | `openapi-lint` | Redocly lint of `openapi/*.yaml` |
 | `api` | build, vet, golangci-lint, unit tests with `-race` and coverage, codegen drift |
-| `api-integration` | unit and integration tests with `-race` and coverage, against a Postgres 17 container; fails below the coverage minimum |
+| `api-integration` | unit and integration tests with `-race` and coverage, against Postgres 17 and S3Mock containers; fails below the coverage minimum |
 | `migrations-lint` | Squawk on changed migrations |
+| `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database |
 | `web` | lint, format, typecheck, tests with coverage, codegen drift, build |
 | `coverage-comment` | posts or updates the coverage comment on the pull request; not part of `ci-ok` |
 | `ci-ok` | passes when none of the above failed; the one required check on `main` |
@@ -116,7 +123,7 @@ Notes on the workflow:
 - A new push to a pull request cancels the run for the previous push. Runs on `main` are keyed by commit and never cancelled.
 - `migrations-lint` lints the migrations added or modified by the change. If none were (only the linter config or the workflow changed), it lints all of them.
 - Tool versions (Redocly CLI, Squawk, golangci-lint) and `GO_COVERAGE_MIN` are pinned in the workflow `env` and mirrored in the `Makefile` and `.github/scripts/lint-migrations.sh`. Bump them together.
-- **Planned: compatibility test.** Once there is a production version, add a job that applies the pull request's migrations, checks out the deployed commit (for example a `production` tag moved on deploy) into a second directory, and runs its `go test -tags=integration ./...` against that database. This proves each migration is backward compatible with the code in production. Add the job to the `needs` list of `ci-ok`.
+- `migrations-compat` runs `.github/scripts/check-migration-compat.sh`; see "Backward compatibility check" under Migrations. It runs only on pull requests that change `api/migrations/**` (a change to only the workflow or the script does not trigger it), never on pushes to `main`. A skipped job counts as passing in `ci-ok`; a failure fails it.
 
 ## Coverage
 
@@ -180,6 +187,35 @@ When a reply is truncated, filtered or empty, `Complete` returns the error toget
 A River job's own timeout (one minute unless the worker overrides `Timeout`) also cancels the call, so a worker that calls the gateway should set a `Timeout` longer than `LLM_TIMEOUT`.
 
 Tests never call the gateway. `internal/llm/llmtest` provides `llmtest.Fake`, an `llm.Client` for other packages' tests: `llmtest.Returning(text)` answers every call with `text` and finish reason `stop`, `llmtest.Failing(err)` returns `err`, and a `Respond` function can build a response per request. A zero `Fake` replies `fake reply`. `Calls()` returns the requests received. Like the real client, the fake rejects an unknown tier, returns a retryable `*llm.Error` for a canceled context, and runs `llm.CheckReply` on the responses `Respond` builds. The client's own tests run against an `httptest` server.
+
+## Object storage
+
+`internal/storage` stores the audio track of meeting recordings in a [Railway bucket](https://docs.railway.com/storage-buckets), which speaks the S3 API. `storage.New(cfg.Storage)` returns a `storage.Store` with five methods: `Put` (streams from an `io.Reader`), `Get` (returns a streaming `io.ReadCloser`), `Delete` (a missing key is not an error), `Stat` (key, size, last modified) and `ListOlderThan` (keys last modified before a time, for the retention job). Keys are chosen by the caller. Nothing calls the store yet.
+
+It uses [`minio-go`](https://github.com/minio/minio-go) rather than the AWS SDK for Go v2: it takes any S3-compatible endpoint, streams an unsized `io.Reader` as a multipart upload without a seekable body, switches between path-style and virtual-hosted-style addressing with one option, and pulls in far fewer dependencies.
+
+Errors:
+
+- `storage.ErrNotFound` marks a missing key (from `Get` and `Stat`); test with `errors.Is`.
+- `storage.ErrNotConfigured` comes from every method when none of the variables below is set. The binaries still start.
+- `storage.IsRetryable(err)` is true for network errors, cancelled contexts, HTTP 408, 429 and 5xx, so a River job can return the error and retry. Everything else (bad credentials, missing bucket) is permanent. The client itself retries a failed request twice.
+
+Tests of code that uses a store use `storage/storagetest`: `storagetest.New()` is an in-memory store with a settable clock (`Now`), and `storagetest.Failing(err)` fails every operation with `err`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `STORAGE_ENDPOINT` | | S3 endpoint as `http(s)://host[:port]`, no path. Unset (with the rest) means not configured. |
+| `STORAGE_REGION` | `auto` | Signing region. Railway buckets use `auto`. |
+| `STORAGE_BUCKET` | | Bucket name for the S3 API (Railway's `BUCKET`, not `RAILWAY_BUCKET_NAME`) |
+| `STORAGE_ACCESS_KEY_ID` | | Access key |
+| `STORAGE_SECRET_ACCESS_KEY` | | Secret key |
+| `STORAGE_PATH_STYLE` | `false` | Use path-style URLs. Railway buckets use virtual-hosted-style, except ones created long ago, whose Credentials tab says so. |
+
+Setting any of the variables without a valid endpoint, bucket, access key and secret makes `storage.New` fail.
+
+In production the `audio` bucket is defined in `.railway/railway.ts` and the API service's `STORAGE_*` variables reference it. Objects are meant to be deleted after about six months; the retention job that does it is not built yet, and Railway buckets have no lifecycle rules.
+
+Locally, `make dev-db` also starts [Adobe S3Mock](https://github.com/adobe/S3Mock) on `localhost:9090` with a `civic-audio` bucket (the image is small, needs no start arguments so it works as a CI service container, and accepts any credentials). The Makefile exports matching `STORAGE_*` defaults, which `make test-integration` and `make coverage` use. The `api-integration` CI job runs the same image as a service container.
 
 ## Fetching
 
@@ -274,6 +310,15 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - In a contract file, `ban-drop-column` and `ban-drop-table` are excluded. Everything else is still checked.
 
 `.squawk.toml` excludes `require-lock-timeout` and `require-statement-timeout`: timeouts are a connection-level concern for the migrate command, not something to repeat in every file. `--exclude` on the command line replaces the config list, so `CONTRACT_EXCLUDE` in the script repeats those two rules. Keep the two lists in sync.
+
+## Backward compatibility check
+
+Railway runs migrations before the new code starts, so for a short window the old code runs against the new schema. Squawk catches risky statements; the `migrations-compat` CI job proves the result. It applies the pull request's migrations (goose and River, as `make migrate` does) to a fresh Postgres 17, checks out the pull request's base commit into `base/`, and runs that code's `go test -tags=integration ./...` against the migrated database. If the old tests fail, the migration is not backward compatible and the job says so.
+
+- The old tests call `testdb.Pool`, which runs the old code's own `migrations.Up`. Against the new schema that is a no-op: goose has nothing to apply when every source migration is already recorded, and it ignores recorded versions it has no file for. The database keeps the new schema while the old tests run.
+- The check is skipped when every added or modified migration file contains a `-- migration: contract` line, since destructive changes are expected to break old code. A pull request that mixes contract and ordinary files is still checked.
+- Run it locally against an empty database: `DATABASE_URL=... BASE_REF=origin/main .github/scripts/check-migration-compat.sh [api/migrations/NNNNN_name.sql ...]`. Set `BASE_DIR` instead of `BASE_REF` to use an existing checkout.
+- Limits: the base commit is the pull request's base when the event fired, which approximates production (`main` after the latest deploy). If the base tests need something the pull request removes, they fail, and that is the signal. Editing an already applied migration file is not modelled.
 
 ## Deploy
 

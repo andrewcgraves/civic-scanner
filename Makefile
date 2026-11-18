@@ -4,6 +4,13 @@ GO_COVERAGE_MIN ?= 90
 DATABASE_URL ?= postgres://civic:civic@localhost:5432/civic?sslmode=disable
 export DATABASE_URL
 
+STORAGE_ENDPOINT ?= http://localhost:9090
+STORAGE_BUCKET ?= civic-audio
+STORAGE_ACCESS_KEY_ID ?= civic
+STORAGE_SECRET_ACCESS_KEY ?= civic-secret
+STORAGE_PATH_STYLE ?= true
+export STORAGE_ENDPOINT STORAGE_BUCKET STORAGE_ACCESS_KEY_ID STORAGE_SECRET_ACCESS_KEY STORAGE_PATH_STYLE
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -15,11 +22,11 @@ install: ## Install web dependencies
 	cd web && pnpm install --frozen-lockfile
 
 .PHONY: dev-db
-dev-db: ## Start local Postgres (docker compose) and wait until healthy
-	docker compose up -d --wait postgres
+dev-db: ## Start local Postgres and S3-compatible object store (docker compose) and wait until healthy
+	docker compose up -d --wait postgres objectstore
 
 .PHONY: dev-db-down
-dev-db-down: ## Stop local Postgres (the data volume is kept)
+dev-db-down: ## Stop local Postgres and object store (the Postgres data volume is kept)
 	docker compose down
 
 .PHONY: migrate
@@ -69,7 +76,7 @@ test: ## Unit tests (api with -race, web)
 	cd web && pnpm test
 
 .PHONY: test-integration
-test-integration: migrate ## Migrate, then run api integration tests (needs Postgres: make dev-db)
+test-integration: migrate ## Migrate, then run api integration tests (needs Postgres and the object store: make dev-db)
 	cd api && go test -tags=integration ./...
 
 .PHONY: coverage
