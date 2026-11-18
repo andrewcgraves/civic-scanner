@@ -92,3 +92,32 @@ func TestAgendaVersionsMigrationRollsBackAndReapplies(t *testing.T) {
 		t.Error("agenda_versions missing after reapplying")
 	}
 }
+
+func TestMeetingEventsMigrationRollsBackAndReapplies(t *testing.T) {
+	ctx := t.Context()
+	provider, pool, schema := isolatedProvider(t)
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if !tableExists(t, pool, schema, "meeting_events") {
+		t.Fatal("meeting_events missing after Up")
+	}
+
+	if _, err := provider.DownTo(ctx, 5); err != nil {
+		t.Fatalf("DownTo(5): %v", err)
+	}
+	if tableExists(t, pool, schema, "meeting_events") {
+		t.Error("meeting_events still exists after rolling back 00006")
+	}
+	if !tableExists(t, pool, schema, "agenda_versions") {
+		t.Error("agenda_versions missing after rolling back only 00006")
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	if !tableExists(t, pool, schema, "meeting_events") {
+		t.Error("meeting_events missing after reapplying")
+	}
+}
