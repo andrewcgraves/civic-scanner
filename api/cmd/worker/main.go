@@ -47,8 +47,9 @@ func run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
-	registry := sources.NewRegistry(sources.Deps{Fetcher: fetch.New(cfg.Fetch), Clock: sources.SystemClock{}}, adapters)
-	client, err := jobs.NewClient(pool, logger, jobs.Config{Registry: registry, CheckHourUTC: cfg.Ingest.CheckHourUTC})
+	fetcher := fetch.New(cfg.Fetch)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fetcher, Clock: sources.SystemClock{}}, adapters)
+	client, err := jobs.NewClient(pool, logger, jobs.Config{Registry: registry, Fetcher: fetcher, CheckHourUTC: cfg.Ingest.CheckHourUTC})
 	if err != nil {
 		return err
 	}
