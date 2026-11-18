@@ -1,3 +1,5 @@
+import { readPostHogProject } from "@/lib/posthog/config";
+
 export type FlagsOn = "all" | readonly string[];
 
 export type FlagSource =
@@ -5,17 +7,11 @@ export type FlagSource =
   | { kind: "memory"; on: FlagsOn };
 
 const ALL_FLAGS = "*";
-const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 
 export function readFlagSource(): FlagSource {
-  const key = process.env.NEXT_PUBLIC_POSTHOG_KEY?.trim() ?? "";
-  if (key !== "") {
-    const host = process.env.NEXT_PUBLIC_POSTHOG_HOST?.trim() ?? "";
-    return {
-      kind: "posthog",
-      key,
-      host: host === "" ? DEFAULT_POSTHOG_HOST : host,
-    };
+  const posthog = readPostHogProject();
+  if (posthog !== undefined) {
+    return { kind: "posthog", ...posthog };
   }
 
   const listed = (process.env.NEXT_PUBLIC_FEATURE_FLAGS ?? "")

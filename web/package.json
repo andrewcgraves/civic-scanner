@@ -24,6 +24,9 @@
     "onlyBuiltDependencies": [
       "sharp",
       "unrs-resolver"
+    ],
+    "ignoredBuiltDependencies": [
+      "core-js"
     ]
   },
   "dependencies": {
@@ -31,6 +34,7 @@
     "@openfeature/server-sdk": "^1.23.0",
     "next": "^16.4.6",
     "openapi-fetch": "^0.17.0",
+    "posthog-js": "^1.445.6",
     "posthog-node": "^6.0.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

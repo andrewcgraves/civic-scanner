@@ -46,6 +46,49 @@ describe("RootLayout", () => {
     expect(metadata.title).toBe("Civic Scanner");
   });
 
+  describe("analytics", () => {
+    async function renderWithAnalyticsMarker(
+      env: Record<string, string | undefined>,
+    ) {
+      vi.doMock("@/lib/analytics/analytics", () => ({
+        Analytics: ({
+          project,
+        }: {
+          project: { key: string; host: string };
+        }) => <i data-key={project.key} data-host={project.host} />,
+      }));
+      try {
+        return await renderLayoutWithFlags(env);
+      } finally {
+        vi.doUnmock("@/lib/analytics/analytics");
+      }
+    }
+
+    it("is left out when there is no PostHog key", async () => {
+      const doc = await renderWithAnalyticsMarker({
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      });
+
+      expect(doc.querySelector("i")).toBeNull();
+    });
+
+    it("gets the PostHog project when there is a key", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() => Promise.resolve(Response.json({ flags: {} }))),
+      );
+
+      const doc = await renderWithAnalyticsMarker({
+        NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
+        NEXT_PUBLIC_POSTHOG_HOST: "https://eu.i.posthog.com",
+      });
+
+      const marker = doc.querySelector("i");
+      expect(marker?.dataset.key).toBe("phc_test");
+      expect(marker?.dataset.host).toBe("https://eu.i.posthog.com");
+    });
+  });
+
   it("gives client components the in-memory flags", async () => {
     const doc = await renderLayoutWithFlags({
       NEXT_PUBLIC_POSTHOG_KEY: undefined,
