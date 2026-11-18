@@ -18,6 +18,8 @@ tags:
     description: Tracked public agencies.
   - name: meetings
     description: Meetings of tracked agencies.
+  - name: users
+    description: Signed-in users.
 paths:
   /healthz:
     get:
@@ -184,6 +186,38 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /me:
+    get:
+      operationId: getMe
+      summary: Get the signed-in user
+      description: >-
+        Returns the user the bearer token belongs to, a WorkOS access token.
+        The first request with a valid token creates the user. Returns 404
+        while accounts are turned off.
+      tags: [users]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The signed-in user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     AgencySlug:
@@ -193,7 +227,36 @@ components:
       description: The agency's slug, e.g. `la-metro`.
       schema:
         type: string
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: A WorkOS AuthKit access token.
   responses:
+    Unauthorized:
+      description: >-
+        The request has no bearer token, or the token is not valid. `code` is
+        `unauthorized`; the message does not say why the token was rejected.
+      headers:
+        WWW-Authenticate:
+          description: Always `Bearer`.
+          required: true
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    AuthUnavailable:
+      description: >-
+        The token cannot be checked right now. `code` is
+        `auth_not_configured` when the API has no WorkOS client id and
+        `auth_unavailable` when WorkOS's signing keys cannot be fetched.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     BadRequest:
       description: >-
         A query parameter is invalid. `code` is `invalid_cursor` for a bad
@@ -204,8 +267,8 @@ components:
             $ref: "#/components/schemas/Error"
     NotFound:
       description: >-
-        No live agency has this slug, or no meeting of a live agency has this
-        id.
+        No live agency has this slug, no meeting of a live agency has this
+        id, or the route is turned off.
       content:
         application/json:
           schema:
@@ -412,6 +475,24 @@ components:
             Opaque speaker label. Segments with the same label have the same
             speaker, but two labels may still be the same person. Absent when
             the speaker is unknown.
+    User:
+      type: object
+      required: [id, email, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The user's id in this service.
+        email:
+          type: string
+          nullable: true
+          description: >-
+            The email address from the latest access token that carried one,
+            or null when none has. Not an identifier: it can change.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the user was first seen.
     Error:
       type: object
       required: [code, message]

@@ -15,7 +15,7 @@ import (
 
 func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger))
+	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), authenticate(h.auth, logger))
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	})

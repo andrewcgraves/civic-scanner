@@ -44,7 +44,7 @@ Generated files are committed and never edited by hand. CI regenerates them and 
 
 ## API
 
-Every route is under `/v1`, public and unauthenticated. `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
+Every route is under `/v1`. All are public except `GET /v1/me`, which needs a WorkOS access token (see [Authentication](#authentication)). `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
 
 | Route | Returns |
 | --- | --- |
@@ -53,6 +53,7 @@ Every route is under `/v1`, public and unauthenticated. `openapi/v1.yaml` is the
 | `GET /v1/agencies/{slug}` | one live agency, the same shape as a list item |
 | `GET /v1/agencies/{slug}/meetings` | one page of the agency's meetings, newest first |
 | `GET /v1/meetings/{id}` | one meeting of a live agency, with its agency, latest agenda version and recordings with their transcripts |
+| `GET /v1/me` | the signed-in user (`id`, `email`, `createdAt`), creating it on first sight; behind the `accounts` flag |
 
 - **Not live is not found:** an unknown slug and a pending or rejected agency get the same 404 (`not_found`), so a caller cannot tell whether an unpublished agency exists. A live agency with no meetings returns an empty list.
 - **Meeting items** carry `id`, `title`, `startsAt` (UTC), `status` (`scheduled`, `held`, `cancelled`) and `sourceUrl`, the agency's page for the meeting, left out when the source gave none. New optional fields, such as agenda or summary links, can be added later without breaking clients, which must ignore fields they do not know.
@@ -68,6 +69,52 @@ Every route is under `/v1`, public and unauthenticated. `openapi/v1.yaml` is the
   - The 404 rule is the agencies': an unknown id and a meeting of an agency that is not live get the same `not_found`. An id that is not a UUID is a 400 (`invalid_parameter`), like any other parameter the router cannot parse.
   - `store.GetLiveMeetingDetail` reads it in three queries (meeting joined with its live agency, latest agenda version, recordings left-joined with transcripts) in one read-only `REPEATABLE READ` transaction, so the parts are consistent with each other and the query count does not grow with the number of recordings. The agenda and transcript it returns leave `Text` empty. The unique constraints on `(meeting_id, version)`, `(meeting_id, source_url)` and `recording_id` serve the queries.
 - **Caching:** the routes set no `Cache-Control` or validators, the same as `GET /v1/agencies`. A caching policy for the public reads is a separate decision.
+
+## Authentication
+
+The web app signs users in with WorkOS AuthKit and sends the AuthKit access token to the API as `Authorization: Bearer <token>`. The API verifies the token itself, against the WorkOS key set, and never calls WorkOS per request. `internal/auth` does the verification with the standard library only.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `WORKOS_CLIENT_ID` | none | The WorkOS client id (`client_...`) of the environment. Unset means not configured: the API starts, public routes work, and signed-in routes answer 503 `auth_not_configured`. Not a secret. |
+| `WORKOS_ISSUER` | `https://api.workos.com/user_management/<client id>` | Comma-separated list of accepted `iss` values, matched exactly. WorkOS environments created before mid-2025 issue `https://api.workos.com`, and a custom auth domain issues its own; copy the value from a decoded token. |
+| `WORKOS_AUDIENCE` | none | When set, the token's `aud` must contain it. AuthKit session tokens carry no `aud` unless a JWT template adds one; add `"aud": "<API URL>"` to the template, then set this. |
+| `WORKOS_BASE_URL` | `https://api.workos.com` | Origin the key set is read from (`<base>/sso/jwks/<client id>`). Must be a bare `https` origin, or the binaries stop at startup. |
+
+A token is accepted only when all of these hold (sources: the WorkOS [session tokens reference](https://workos.com/docs/reference/authkit/session-tokens), the guide [How to verify WorkOS access tokens in your own API](https://workos.com/blog/verify-workos-access-tokens-in-your-own-api), and the user-token checks of `verifyAccessToken` in `@workos-inc/node`):
+
+- It is a compact JWS of at most 8 KiB, with strict unpadded base64url, header `alg` exactly `RS256` (so `none`, `HS256` signed with the public key, `RS512` and `PS256` are refused before any key is looked up), a `kid`, and no `crit`.
+- The RS256 signature verifies against the key with that `kid` in the WorkOS key set.
+- `iss` is one of `WORKOS_ISSUER`, `client_id` equals `WORKOS_CLIENT_ID`, and `aud` contains `WORKOS_AUDIENCE` when that is set. The `client_id` check binds the token to this environment even when the issuer is the shared `https://api.workos.com`.
+- `exp` and `iat` are present and numeric; `exp` is in the future, and `iat` and `nbf` (when present) are not, each with 10 seconds of leeway for clock skew.
+- It is a user access token: `sub` and `sid` are non-empty, `sub_profile` is absent or `user`, and there is no `sub_type`. Agent and widget tokens signed by the same environment carry those claims and are refused.
+
+The key set:
+
+- Keys are kept only when they are RSA, have a `kid`, are for signing (`use` absent or `sig`, `alg` absent or `RS256`), and have a 2048 to 8192-bit modulus and an odd exponent. A duplicate `kid` keeps the first.
+- It is fetched on first use with a 5 second timeout, over `https` only, without following redirects, and refused when the body is over 1 MiB or not 200.
+- It is fresh for an hour. After that a token whose `kid` is known is still accepted while the set is refreshed in the background.
+- A `kid` that is not in the set triggers one refresh, which the request waits for. Refreshes start at most once every 10 seconds, so a flood of tokens with made-up `kid`s costs WorkOS at most six requests a minute; within that window an unknown `kid` is rejected at once. Concurrent requests share one fetch.
+- When a refresh fails, the last good set is used for up to 24 hours after it was fetched (stale-if-error), so a WorkOS outage does not sign everyone out. Past that, or with no set at all, tokens cannot be checked and signed-in routes answer 503 `auth_unavailable`. A WorkOS key that was revoked therefore stays trusted for at most 24 hours while WorkOS is unreachable; tokens themselves still expire on their own `exp`.
+
+Requests:
+
+- `internal/httpapi` runs the `authenticate` middleware on every route. Without an `Authorization` header it does nothing but record that there is no token. With one, it verifies the token and stores the result, an `auth.Identity` (WorkOS user id, session id, organization, role, permissions, email, expiry) or the error, in the request context. It never rejects a request itself, so public routes answer the same whether the token is valid, expired, garbage or not checkable.
+- A valid token also sets the WorkOS user id as the OpenFeature targeting key for the request (`featureflags.WithIdentity`), so flags checked later in the request can be rolled out per user.
+- Signed-in handlers call `h.requireUser(ctx)`, which returns the `store.User`, creating it on first sight, or an error to map: `ErrNoCredentials` and `auth.ErrInvalidToken` to 401, `auth.ErrNotConfigured` and `auth.ErrUnavailable` to 503. `httpapi.IdentityFrom(ctx)` returns the verified identity without touching the database.
+- 401 is always `{"code":"unauthorized","message":"a valid bearer token is required"}` with `WWW-Authenticate: Bearer`, whatever the reason; the reason is logged at `debug`. 503 means the token could not be checked, not that it is bad, so a client must not sign the user out on it. Tokens are never logged.
+- `GET /v1/me` is behind the `accounts` flag, evaluated for the signed-in user. With the flag off it answers 404 `not_found` and creates no user.
+
+Users (`users`, migration `00009`):
+
+- One row per WorkOS user, unique on `workos_user_id` (the token's `sub`), with our own `id` (uuid), a nullable `email`, `created_at` and `updated_at`. The WorkOS id is the only identity key; `GET /v1/me` returns our `id`, not the WorkOS id.
+- AuthKit access tokens carry no email. The API reads an optional `email` claim, which the environment's [JWT template](https://workos.com/docs/authkit/jwt-templates) adds with `{"email": {{ user.email }}}`. Without the template `email` stays null; the API does not call the WorkOS user API, so it needs no WorkOS secret. Email is mutable data: it is not unique, a token with a different email updates it, and a token without one leaves it alone.
+- `store.EnsureUser` reads the row first and writes only when the user is new or the email changed. The write is `INSERT ... ON CONFLICT (workos_user_id) DO UPDATE`, so concurrent first requests for one user create exactly one row and all get it back.
+- Role (CIV-25) and plan (CIV-37) are later columns on `users` and later optional fields on `GET /v1/me`.
+
+`.railway/railway.ts` sets no `WORKOS_*` variables yet, so in production signed-in routes answer 503 `auth_not_configured` until the client id is added there.
+
+Not verified against a real WorkOS environment: the tests sign tokens with generated RSA keys and serve the key set from `httptest`.
 
 ## Feature flags
 
@@ -675,7 +722,7 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - **Release:** new code that uses them ships behind a flag.
 - **Contract:** a later migration removes the old structures. Mark the file with a `-- migration: contract` line, which permits dropping columns and tables, and confirm the flag is fully on in production before merging.
 
-Number a new file above every migration already on `main`, and renumber a branch's migration when another lands first. Goose refuses to apply a migration numbered below the database's current version, so a lower number would fail `migrate up` at deploy. Gaps are fine: `00005` is unused because recordings (`00007`) was renumbered after meeting events (`00006`) merged.
+Number a new file above every migration already on `main`, and renumber a branch's migration when another lands first. Goose refuses to apply a migration numbered below the database's current version, so a lower number would fail `migrate up` at deploy. Gaps are fine: `00005` is unused because recordings (`00007`) was renumbered after meeting events (`00006`) merged, and users (`00009`) skipped `00008`, which another branch held.
 
 `make lint-migrations` runs `.github/scripts/lint-migrations.sh [file...]` (default: every file in `api/migrations/`), which adapts each goose file for Squawk:
 
