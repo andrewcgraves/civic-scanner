@@ -117,31 +117,157 @@ func TestEventAndItsClipInOneReadAreOneMeeting(t *testing.T) {
 	assertMeetings(t, got, []sources.Meeting{heldBoardMeeting(1438, time.Date(2026, 11, 13, 18, 0, 0, 0, time.UTC))})
 }
 
-func TestTwoSameNamedMeetingsOnOneDay(t *testing.T) {
-	got := meetingsFrom(t,
-		[]entry{clipItem(1450, "2026-11-13 14:00"), clipItem(1449, "2026-11-13 09:00")},
-		[]entry{videoItem(1449, "2026-11-13 09:00"), videoItem(1450, "2026-11-13 14:00")})
-	if len(got) != 2 {
-		t.Fatalf("meetings = %+v, want two", got)
+func onlyMeeting(t *testing.T, agendas, vod []entry) sources.Meeting {
+	t.Helper()
+	got := meetingsFrom(t, agendas, vod)
+	if len(got) != 1 {
+		t.Fatalf("meetings = %+v, want exactly one", got)
 	}
-	if got[0].SourceID != "board-of-directors/2026-11-13" || got[0].RecordingURL != mediaPlayer(1449) ||
-		got[1].SourceID != "board-of-directors/2026-11-13/2" || got[1].RecordingURL != mediaPlayer(1450) {
-		t.Errorf("meetings = %+v, want the morning clip as the plain id and the afternoon clip as /2", got)
-	}
+	return got[0]
+}
 
-	events := meetingsFrom(t, []entry{eventItem(613, "2026-12-11", "2026-12-04 09:00"), eventItem(612, "2026-12-11", "2026-12-04 09:00")}, nil)
-	if len(events) != 2 || events[0].AgendaURL != eventAgenda(612) || events[1].SourceID != "board-of-directors/2026-12-11/2" {
-		t.Errorf("events = %+v, want two meetings numbered by event id", events)
+func TestOneBoardOnOneDayIsOneMeetingAcrossRuns(t *testing.T) {
+	const id = "board-of-directors/2026-11-13"
+	revised := eventItem(615, "2026-11-13", "2026-11-11 16:00").titled("Board of Directors - REVISED AGENDA - Nov 13, 2026")
+	corrected := clipItem(1439, "2026-11-13 14:00").titled("Board of Directors - CORRECTED AGENDA - Nov 13, 2026")
+	correctedVideo := videoItem(1439, "2026-11-13 14:00").titled("Board of Directors - CORRECTED AGENDA - Nov 13, 2026")
+	runs := []struct {
+		name         string
+		agendas, vod []entry
+		want         sources.Meeting
+	}{
+		{
+			name:    "upcoming event",
+			agendas: []entry{eventItem(612, "2026-11-13", "2026-11-06 15:57")},
+			want: sources.Meeting{
+				SourceID: id, Title: "Board of Directors", StartsAt: time.Date(2026, 11, 13, 18, 0, 0, 0, time.UTC),
+				Status: sources.StatusScheduled, PageURL: eventAgenda(612), AgendaURL: eventAgenda(612),
+			},
+		},
+		{
+			name:    "revised agenda as a second event",
+			agendas: []entry{revised, eventItem(612, "2026-11-13", "2026-11-06 15:57")},
+			want: sources.Meeting{
+				SourceID: id, Title: "Board of Directors", StartsAt: time.Date(2026, 11, 13, 18, 0, 0, 0, time.UTC),
+				Status: sources.StatusScheduled, PageURL: eventAgenda(615), AgendaURL: eventAgenda(615),
+			},
+		},
+		{
+			name:    "archived clip next to the events",
+			agendas: []entry{revised, clipItem(1438, "2026-11-13 10:15"), eventItem(612, "2026-11-13", "2026-11-06 15:57")},
+			vod:     []entry{videoItem(1438, "2026-11-13 10:15")},
+			want: sources.Meeting{
+				SourceID: id, Title: "Board of Directors", StartsAt: time.Date(2026, 11, 13, 18, 15, 0, 0, time.UTC),
+				Status: sources.StatusHeld, PageURL: mediaPlayer(1438), AgendaURL: clipAgenda(1438), RecordingURL: mediaPlayer(1438),
+			},
+		},
+		{
+			name:    "corrected agenda clip with a different start",
+			agendas: []entry{corrected, clipItem(1438, "2026-11-13 10:15")},
+			vod:     []entry{correctedVideo, videoItem(1438, "2026-11-13 10:15")},
+			want: sources.Meeting{
+				SourceID: id, Title: "Board of Directors", StartsAt: time.Date(2026, 11, 13, 18, 15, 0, 0, time.UTC),
+				Status: sources.StatusHeld, PageURL: mediaPlayer(1438), AgendaURL: clipAgenda(1439), RecordingURL: mediaPlayer(1438),
+			},
+		},
+	}
+	for _, run := range runs {
+		t.Run(run.name, func(t *testing.T) {
+			assertMeetings(t, []sources.Meeting{onlyMeeting(t, run.agendas, run.vod)}, []sources.Meeting{run.want})
+		})
 	}
 }
 
-func TestClipsOnOneDayWithTheSameStartAreOneMeeting(t *testing.T) {
-	corrected := clipItem(1439, "2026-11-13 10:00").titled("Board of Directors - CORRECTED AGENDA - Nov 13, 2026")
-	got := meetingsFrom(t,
-		[]entry{clipItem(1438, "2026-11-13 10:00"), corrected},
-		[]entry{videoItem(1438, "2026-11-13 10:00")})
-	if len(got) != 1 || got[0].AgendaURL != clipAgenda(1439) || got[0].RecordingURL != mediaPlayer(1438) {
-		t.Errorf("meetings = %+v, want one meeting with the corrected agenda and the first recording", got)
+func TestSameNamedItemsOnOneDayCollapseInEveryArrivalOrder(t *testing.T) {
+	agendas := []entry{
+		clipItem(1449, "2026-11-13 09:00"),
+		clipItem(1450, "2026-11-13 14:00"),
+		eventItem(612, "2026-11-13", "2026-11-06 15:57"),
+	}
+	videos := []entry{videoItem(1449, "2026-11-13 09:00"), videoItem(1450, "2026-11-13 14:00")}
+	want := sources.Meeting{
+		SourceID: "board-of-directors/2026-11-13", Title: "Board of Directors", StartsAt: time.Date(2026, 11, 13, 17, 0, 0, 0, time.UTC),
+		Status: sources.StatusHeld, PageURL: mediaPlayer(1449), AgendaURL: clipAgenda(1450), RecordingURL: mediaPlayer(1449),
+	}
+	orders := [][]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}
+	for _, order := range orders {
+		for _, reverseVideo := range []bool{false, true} {
+			t.Run(fmt.Sprint(order, reverseVideo), func(t *testing.T) {
+				var a []entry
+				for _, i := range order {
+					a = append(a, agendas[i])
+				}
+				v := []entry{videos[0], videos[1]}
+				if reverseVideo {
+					v[0], v[1] = v[1], v[0]
+				}
+				assertMeetings(t, []sources.Meeting{onlyMeeting(t, a, v)}, []sources.Meeting{want})
+			})
+		}
+	}
+	for _, partial := range [][]entry{{agendas[0]}, {agendas[1]}, {agendas[2]}, {agendas[1], agendas[2]}} {
+		if got := onlyMeeting(t, partial, nil); got.SourceID != want.SourceID {
+			t.Errorf("source id = %q from %+v, want %q", got.SourceID, partial, want.SourceID)
+		}
+	}
+}
+
+func TestClipsOfOneMeetingWithDifferentStartsAreLogged(t *testing.T) {
+	var logs bytes.Buffer
+	a, err := granicus.New(granicus.Metrolink, sources.Deps{
+		Fetcher: serving(rss(clipItem(1449, "2026-11-13 09:00"), clipItem(1450, "2026-11-13 14:00")), rss()),
+		Clock:   sourcestest.NewClock(recordedAt),
+		Logger:  slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.Meetings(t.Context(), checkWindow(recordedAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.Contains(logs.String(), "different start times") ||
+		!strings.Contains(logs.String(), "1449") || !strings.Contains(logs.String(), "1450") {
+		t.Errorf("meetings = %+v, logs = %s, want one meeting and a warning naming both clips", got, logs.String())
+	}
+}
+
+func TestClipsOfOneMeetingWithTheSameStartAreNotLogged(t *testing.T) {
+	var logs bytes.Buffer
+	a, err := granicus.New(granicus.Metrolink, sources.Deps{
+		Fetcher: serving(rss(clipItem(1438, "2026-11-13 10:00"), clipItem(1439, "2026-11-13 10:00")), rss()),
+		Clock:   sourcestest.NewClock(recordedAt),
+		Logger:  slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := a.Meetings(t.Context(), checkWindow(recordedAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].AgendaURL != clipAgenda(1439) || logs.Len() != 0 {
+		t.Errorf("meetings = %+v, logs = %s, want one meeting with the later agenda and no warning", got, logs.String())
+	}
+}
+
+func TestDistinctBoardNamesOnOneDayStayDistinct(t *testing.T) {
+	special := eventItem(613, "2026-11-13", "2026-11-06 15:57").titled("Special Board of Directors - Nov 13, 2026")
+	got := meetingsFrom(t, []entry{eventItem(612, "2026-11-13", "2026-11-06 15:57"), special}, nil)
+	if len(got) != 2 || got[0].SourceID != "board-of-directors/2026-11-13" || got[1].SourceID != "special-board-of-directors/2026-11-13" {
+		t.Errorf("meetings = %+v, want one per board name", got)
+	}
+}
+
+func TestClipWhoseDatePartsAreOnAnotherDayStartsAtTheDefaultTime(t *testing.T) {
+	item := clipItem(1304, "2025-04-01 09:15").titled("Board of Directors - Mar 28, 2025")
+	window := sources.Window{From: time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2025, 5, 1, 0, 0, 0, 0, time.UTC)}
+	got, err := metrolink(t, serving(rss(item), rss())).Meetings(t.Context(), window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].SourceID != "board-of-directors/2025-03-28" || !got[0].StartsAt.Equal(time.Date(2025, 3, 28, 17, 0, 0, 0, time.UTC)) {
+		t.Errorf("meetings = %+v, want 10:00 local on the title's date", got)
 	}
 }
 

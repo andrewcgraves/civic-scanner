@@ -130,6 +130,15 @@ func TestMetrolinkBoardMeetingsFromRecordedFeeds(t *testing.T) {
 	}
 }
 
+func TestRecordedClipWithDatePartsDaysAfterItsTitleStartsAtTheDefaultTime(t *testing.T) {
+	window := sources.Window{From: time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC), To: time.Date(2025, 5, 1, 0, 0, 0, 0, time.UTC)}
+	got, err := metrolink(t, recorded(t)).Meetings(t.Context(), window)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMeetings(t, got, []sources.Meeting{heldBoardMeeting(1304, time.Date(2025, 3, 28, 17, 0, 0, 0, time.UTC))})
+}
+
 func TestDailyCheckWindowKeepsOnlyMeetingsInside(t *testing.T) {
 	got, err := metrolink(t, recorded(t)).Meetings(t.Context(), checkWindow(recordedAt))
 	if err != nil {

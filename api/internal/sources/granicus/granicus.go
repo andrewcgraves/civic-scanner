@@ -121,13 +121,36 @@ type entry struct {
 	clipID    int
 	eventID   int
 	startsAt  time.Time
+	dayStart  time.Time
+	clipTime  bool
 	link      string
 	agenda    bool
 	media     bool
 }
 
-type tally struct {
-	good, bad int
+func (e entry) rank(o entry) int {
+	return cmp.Or(cmp.Compare(e.clipID, o.clipID), cmp.Compare(e.eventID, o.eventID))
+}
+
+type category string
+
+const (
+	agendaClips  category = "agenda feed clips"
+	agendaEvents category = "agenda feed events"
+	videoClips   category = "video feed clips"
+)
+
+type tally map[category]*struct{ good, bad int }
+
+func (t tally) add(c category, good bool) {
+	if t[c] == nil {
+		t[c] = &struct{ good, bad int }{}
+	}
+	if good {
+		t[c].good++
+	} else {
+		t[c].bad++
+	}
 }
 
 func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]sources.Meeting, error) {
@@ -139,19 +162,25 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 	if err != nil {
 		return nil, err
 	}
-	var inWindow tally
-	entries := a.entries(ctx, agendas, true, window, &inWindow)
-	entries = append(entries, a.entries(ctx, videos, false, window, &inWindow)...)
-	if inWindow.bad > 0 && inWindow.good == 0 {
-		return nil, fmt.Errorf("%w: %s: all %d board items in the window are unreadable", ErrMalformed, a.cfg.Host, inWindow.bad)
+	now := a.clock.Now()
+	inWindow := tally{}
+	entries := a.entries(ctx, agendas, true, window, now, inWindow)
+	entries = append(entries, a.entries(ctx, videos, false, window, now, inWindow)...)
+	for _, c := range []category{agendaClips, agendaEvents, videoClips} {
+		if n := inWindow[c]; n != nil && n.good == 0 {
+			return nil, fmt.Errorf("%w: %s: all %d board items among the %s in the window are unreadable", ErrMalformed, a.cfg.Host, n.bad, c)
+		}
 	}
 
-	now := a.clock.Now()
+	groups := map[string][]entry{}
+	for _, e := range entries {
+		groups[e.key] = append(groups[e.key], e)
+	}
 	var meetings []sources.Meeting
-	for _, m := range group(entries) {
-		meeting := m.meeting(now)
-		if window.Contains(meeting.StartsAt) {
-			meetings = append(meetings, meeting)
+	for key, group := range groups {
+		m := a.meeting(ctx, key, group, now)
+		if window.Contains(m.StartsAt) {
+			meetings = append(meetings, m)
 		}
 	}
 	slices.SortFunc(meetings, func(x, y sources.Meeting) int {
@@ -176,7 +205,7 @@ func (a *Adapter) items(ctx context.Context, mode string) ([]item, error) {
 	return f.Channel.Items, nil
 }
 
-func (a *Adapter) entries(ctx context.Context, items []item, agendaFeed bool, window sources.Window, inWindow *tally) []entry {
+func (a *Adapter) entries(ctx context.Context, items []item, agendaFeed bool, window sources.Window, now time.Time, inWindow tally) []entry {
 	var out []entry
 	for _, it := range items {
 		t := parseTitle(it.Title)
@@ -188,27 +217,42 @@ func (a *Adapter) entries(ctx context.Context, items []item, agendaFeed bool, wi
 			continue
 		}
 		e, err := a.entry(it, t, name, agendaFeed)
+		if !agendaFeed && err == nil && e.clipID == 0 {
+			continue
+		}
 		inside := e.startsAt.IsZero() || window.Contains(e.startsAt)
+		if inside {
+			inWindow.add(categorize(e, agendaFeed, now), err == nil)
+		}
 		switch {
 		case err != nil && inside:
-			inWindow.bad++
 			a.logger.WarnContext(ctx, "granicus: skipped an unreadable board item", "host", a.cfg.Host, "title", it.Title, "error", err)
 		case err != nil:
 			a.logger.DebugContext(ctx, "granicus: skipped an unreadable board item outside the window", "host", a.cfg.Host, "title", it.Title, "error", err)
 		default:
-			if inside {
-				inWindow.good++
-			}
-			if agendaFeed || e.clipID > 0 {
-				out = append(out, e)
-			}
+			out = append(out, e)
 		}
 	}
 	return out
 }
 
+func categorize(e entry, agendaFeed bool, now time.Time) category {
+	switch {
+	case !agendaFeed:
+		return videoClips
+	case e.clipID > 0 || strings.Contains(e.link, "clip_id="):
+		return agendaClips
+	case e.eventID > 0 || strings.Contains(e.link, "event_id="):
+		return agendaEvents
+	case !e.startsAt.IsZero() && e.startsAt.Before(now):
+		return agendaClips
+	default:
+		return agendaEvents
+	}
+}
+
 func (a *Adapter) entry(it item, t title, name string, agendaFeed bool) (entry, error) {
-	e := entry{name: name, cancelled: t.cancelled, link: strings.TrimSpace(it.Link)}
+	e := entry{name: name, cancelled: t.cancelled, link: strings.TrimSpace(it.Link), agenda: agendaFeed}
 	clipID, eventID, idErr := ids(e.link)
 	e.clipID, e.eventID = clipID, eventID
 	parts, partsOK := a.parts(it.DateParts)
@@ -220,17 +264,21 @@ func (a *Adapter) entry(it item, t title, name string, agendaFeed bool) (entry, 
 	default:
 		return e, errors.Join(idErr, errors.New("no meeting date in the title"))
 	}
-	e.startsAt = time.Date(day.Year(), day.Month(), day.Day(), a.startHour, a.startMin, 0, 0, a.loc).UTC()
-	if clipID > 0 && partsOK {
-		e.startsAt = parts.UTC()
+	e.dayStart = time.Date(day.Year(), day.Month(), day.Day(), a.startHour, a.startMin, 0, 0, a.loc).UTC()
+	e.startsAt = e.dayStart
+	if clipID > 0 && partsOK && sameDay(parts, day) {
+		e.startsAt, e.clipTime = parts.UTC(), true
 	}
 	if idErr != nil {
 		return e, idErr
 	}
 	e.key = slug(name) + "/" + day.Format(time.DateOnly)
-	e.agenda = agendaFeed
 	e.media = !agendaFeed && it.Enclosure != nil && strings.TrimSpace(it.Enclosure.URL) != ""
 	return e, nil
+}
+
+func sameDay(x, y time.Time) bool {
+	return x.Year() == y.Year() && x.Month() == y.Month() && x.Day() == y.Day()
 }
 
 func ids(link string) (clipID, eventID int, err error) {
@@ -280,106 +328,66 @@ func (a *Adapter) boardName(name string) (string, bool) {
 	return "", false
 }
 
-type meeting struct {
-	sourceID string
-	entries  []entry
-}
-
-func group(entries []entry) []meeting {
-	byKey := map[string][]entry{}
-	var keys []string
-	for _, e := range entries {
-		if _, ok := byKey[e.key]; !ok {
-			keys = append(keys, e.key)
-		}
-		byKey[e.key] = append(byKey[e.key], e)
-	}
-	var out []meeting
-	for _, key := range keys {
-		for i, entries := range sessions(byKey[key]) {
-			id := key
-			if i > 0 {
-				id = key + "/" + strconv.Itoa(i+1)
-			}
-			out = append(out, meeting{sourceID: id, entries: entries})
-		}
-	}
-	return out
-}
-
-func sessions(entries []entry) [][]entry {
-	var clips, events []entry
-	for _, e := range entries {
-		if e.clipID > 0 {
-			clips = append(clips, e)
-		} else {
-			events = append(events, e)
-		}
-	}
-	if len(clips) == 0 {
-		slices.SortFunc(events, func(x, y entry) int { return cmp.Compare(x.eventID, y.eventID) })
-		var out [][]entry
-		for _, e := range events {
-			if len(out) == 0 || out[len(out)-1][0].eventID != e.eventID {
-				out = append(out, []entry{e})
-			}
-		}
-		return out
-	}
-	slices.SortFunc(clips, func(x, y entry) int {
-		return cmp.Or(x.startsAt.Compare(y.startsAt), cmp.Compare(x.clipID, y.clipID))
-	})
-	var out [][]entry
-	for _, c := range clips {
-		if n := len(out); n > 0 && out[n-1][0].startsAt.Equal(c.startsAt) {
-			out[n-1] = append(out[n-1], c)
-			continue
-		}
-		out = append(out, []entry{c})
-	}
-	for _, s := range out {
-		slices.SortStableFunc(s, func(x, y entry) int { return cmp.Compare(x.clipID, y.clipID) })
-	}
-	return out
-}
-
-func (m meeting) meeting(now time.Time) sources.Meeting {
-	first := m.entries[0]
-	var agendaURL, recordingURL, anyLink string
-	cancelled := false
-	for _, e := range m.entries {
-		if anyLink == "" {
-			anyLink = e.link
-		}
+func (a *Adapter) meeting(ctx context.Context, key string, group []entry, now time.Time) sources.Meeting {
+	slices.SortStableFunc(group, entry.rank)
+	first := group[0]
+	startsAt := first.dayStart
+	var agenda *entry
+	var recordingURL string
+	clipStarts := map[int]time.Time{}
+	timed := false
+	for i := range group {
+		e := group[i]
 		if e.agenda {
-			agendaURL = e.link
-			cancelled = e.cancelled
+			agenda = &group[i]
 		}
 		if e.media && recordingURL == "" {
 			recordingURL = e.link
 		}
+		if e.clipTime {
+			clipStarts[e.clipID] = e.startsAt
+			if !timed {
+				startsAt, timed = e.startsAt, true
+			}
+		}
 	}
-	if agendaURL == "" {
-		cancelled = m.entries[len(m.entries)-1].cancelled
+	if distinct(clipStarts) {
+		a.logger.WarnContext(ctx, "granicus: clips of one board meeting have different start times", "host", a.cfg.Host, "source_id", key, "clip_starts", fmt.Sprint(clipStarts))
+	}
+	cancelled := group[len(group)-1].cancelled
+	agendaURL := ""
+	if agenda != nil {
+		cancelled = agenda.cancelled
+		agendaURL = agenda.link
 	}
 	if cancelled {
 		recordingURL = ""
 	}
-	pageURL := cmp.Or(recordingURL, agendaURL, anyLink)
 	status := sources.StatusScheduled
 	switch {
 	case cancelled:
 		status = sources.StatusCancelled
-	case recordingURL != "" && !first.startsAt.After(now):
+	case recordingURL != "" && !startsAt.After(now):
 		status = sources.StatusHeld
 	}
 	return sources.Meeting{
-		SourceID:     m.sourceID,
+		SourceID:     key,
 		Title:        first.name,
-		StartsAt:     first.startsAt,
+		StartsAt:     startsAt,
 		Status:       status,
-		PageURL:      pageURL,
+		PageURL:      cmp.Or(recordingURL, agendaURL, first.link),
 		AgendaURL:    agendaURL,
 		RecordingURL: recordingURL,
 	}
+}
+
+func distinct(starts map[int]time.Time) bool {
+	var seen time.Time
+	for _, s := range starts {
+		if !seen.IsZero() && !s.Equal(seen) {
+			return true
+		}
+		seen = s
+	}
+	return false
 }

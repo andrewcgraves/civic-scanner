@@ -98,7 +98,10 @@ func unreadable() map[string]entry {
 	eventWithoutDate := eventItem(612, "2026-12-11", "2026-12-04 09:00").titled("Board of Directors")
 	clipWithoutAnyDate := good.titled("Board of Directors")
 	clipWithoutAnyDate.parts = ""
+	upcomingWithoutID := eventItem(612, "2026-12-11", "2026-12-04 09:00")
+	upcomingWithoutID.link = "https://metrolink.granicus.com/AgendaViewer.php?view_id=8&meeting=612"
 	return map[string]entry{
+		"upcoming link without an id":     upcomingWithoutID,
 		"relative link":                   relative,
 		"link without an id":              noID,
 		"link with bad ids":               badID,
@@ -123,9 +126,11 @@ func TestUnreadableBoardItemInTheWindowIsSkippedWhenOthersAreReadable(t *testing
 		t.Run(name, func(t *testing.T) {
 			var logs bytes.Buffer
 			a, err := granicus.New(granicus.Metrolink, sources.Deps{
-				Fetcher: serving(rss(bad, clipItem(1436, "2026-10-23 10:15")), rss(videoItem(1436, "2026-10-23 10:15"))),
-				Clock:   sourcestest.NewClock(recordedAt),
-				Logger:  slog.New(slog.NewTextHandler(&logs, nil)),
+				Fetcher: serving(
+					rss(bad, clipItem(1436, "2026-10-23 10:15"), eventItem(700, "2026-12-11", "2026-12-04 09:00")),
+					rss(videoItem(1436, "2026-10-23 10:15"))),
+				Clock:  sourcestest.NewClock(recordedAt),
+				Logger: slog.New(slog.NewTextHandler(&logs, nil)),
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -134,13 +139,48 @@ func TestUnreadableBoardItemInTheWindowIsSkippedWhenOthersAreReadable(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(got) != 1 || got[0].SourceID != "board-of-directors/2026-10-23" {
-				t.Errorf("meetings = %+v, want only the readable one", got)
+			if len(got) != 2 || got[0].SourceID != "board-of-directors/2026-10-23" || got[1].SourceID != "board-of-directors/2026-12-11" {
+				t.Errorf("meetings = %+v, want only the readable ones", got)
 			}
 			if !strings.Contains(logs.String(), "skipped an unreadable board item") {
 				t.Errorf("logs = %s, want the skipped item logged", logs.String())
 			}
 		})
+	}
+}
+
+func TestFormatChangeConfinedToOneKindOfItemIsPermanent(t *testing.T) {
+	clip := clipItem(1436, "2026-10-23 10:15")
+	video := videoItem(1436, "2026-10-23 10:15")
+	event := eventItem(700, "2026-12-11", "2026-12-04 09:00")
+	newVideoLink := video
+	newVideoLink.link = "https://metrolink.granicus.com/MediaPlayer.php?view_id=8&clip=1436"
+	newEventLink := event
+	newEventLink.link = "https://metrolink.granicus.com/AgendaViewer.php?view_id=8&meeting=700"
+	newClipLink := clip
+	newClipLink.link = "https://metrolink.granicus.com/AgendaViewer.php?view_id=8&clip_id=new-1436"
+	tests := []struct {
+		name         string
+		agendas, vod []entry
+	}{
+		{"video links", []entry{clip, event}, []entry{newVideoLink}},
+		{"upcoming event links", []entry{clip, newEventLink}, []entry{video}},
+		{"archived clip links in the agenda feed", []entry{newClipLink, event}, []entry{video}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := metrolink(t, serving(rss(tc.agendas...), rss(tc.vod...))).Meetings(t.Context(), checkWindow(recordedAt))
+			if !errors.Is(err, granicus.ErrMalformed) || sources.Retryable(err) {
+				t.Errorf("err = %v, want permanent ErrMalformed", err)
+			}
+		})
+	}
+}
+
+func TestAKindOfItemWithNoItemsIsFine(t *testing.T) {
+	got, err := metrolink(t, serving(rss(eventItem(700, "2026-12-11", "2026-12-04 09:00")), rss())).Meetings(t.Context(), checkWindow(recordedAt))
+	if err != nil || len(got) != 1 {
+		t.Errorf("meetings = %+v, err = %v, want the event and no error", got, err)
 	}
 }
 

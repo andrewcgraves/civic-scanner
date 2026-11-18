@@ -105,5 +105,21 @@ The agenda for Board of Directors dated Friday, 24 July 2026  has been archived.
   </description>
   <enclosure url='https://metrolink.granicus.com/DownloadFile.php?view_id=8&amp;clip_id=1405' type="video/x-ms-wmv" />
 </item>
+<item>
+  <guid isPermaLink="false">8ba50476-d390-43fc-88d6-ca143f47ae95</guid>
+  <title>Board of Directors - Mar 28, 2025</title>
+  <pubDate>Tue, 01 Apr 2025 09:15:00 -0800</pubDate>
+  <gran:pubDateParts yr='2025' mo='04' day='01' hr='09' min='15' sec='0' tz='7' />
+  <link>https://metrolink.granicus.com/MediaPlayer.php?view_id=8&amp;clip_id=1304</link>
+  <description>
+    <![CDATA[
+      <p style='margin-top:2px;'>
+The agenda for Board of Directors dated Friday, 28 March 2025  has been archived. Access it here:<br />      <a href="https://metrolink.granicus.com/MediaPlayer.php?view_id=8&amp;clip_id=1304" style='margin-right:50px;'>https://metrolink.granicus.com/MediaPlayer.php?view_id=8&amp;clip_id=1304</a>
+      <a href="https://metrolink.granicus.com/DownloadFile.php?view_id=8&amp;clip_id=1304">Download File</a>
+      </p>
+    ]]>
+  </description>
+  <enclosure url='https://metrolink.granicus.com/DownloadFile.php?view_id=8&amp;clip_id=1304' type="video/x-ms-wmv" />
+</item>
 </channel>
 </rss>
