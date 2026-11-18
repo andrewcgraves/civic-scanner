@@ -15,7 +15,7 @@ A Go API and a Next.js front end in one repo, both generated from a shared OpenA
 ## Prerequisites
 
 - Go (version in `api/go.mod`) and [golangci-lint v2](https://golangci-lint.run)
-- Node (version in `web/.nvmrc`) and pnpm (version in `web/package.json`; `corepack enable` picks it up)
+- Node (version in `web/.nvmrc`) and pnpm (version in `web/package.json`). Node 25 and later no longer bundle Corepack; install pnpm with `npm install --global corepack && corepack enable`, Homebrew, or the standalone installer. pnpm switches itself to the pinned version.
 - Docker, for local Postgres
 
 ## Quickstart
