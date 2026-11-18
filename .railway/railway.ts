@@ -19,7 +19,6 @@ export default defineRailway(() => {
     }),
     build: {
       buildEnvironment: "V3",
-      builder: "DOCKERFILE",
       watchPatterns: ["/api/**"],
     },
     preDeploy: "/app/migrate up",
