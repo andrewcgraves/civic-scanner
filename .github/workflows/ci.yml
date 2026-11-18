@@ -76,7 +76,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: web/.nvmrc
       - name: Lint OpenAPI specs
         run: npx --yes "@redocly/cli@${REDOCLY_CLI_VERSION}" lint openapi/*.yaml --format=github-actions
 
@@ -183,7 +183,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: web/.nvmrc
       - name: Install Squawk
         run: npm install --global "squawk-cli@${SQUAWK_VERSION}"
       - name: Lint migrations
