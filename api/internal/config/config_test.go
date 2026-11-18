@@ -32,3 +32,13 @@ func TestLoadErrors(t *testing.T) {
 		t.Error("expected error for invalid LOG_LEVEL")
 	}
 }
+
+func TestNewLogger(t *testing.T) {
+	logger := NewLogger(Config{LogLevel: slog.LevelWarn, AppEnv: "test"})
+	if logger.Enabled(t.Context(), slog.LevelInfo) {
+		t.Error("info enabled at warn level")
+	}
+	if !logger.Enabled(t.Context(), slog.LevelWarn) {
+		t.Error("warn disabled at warn level")
+	}
+}

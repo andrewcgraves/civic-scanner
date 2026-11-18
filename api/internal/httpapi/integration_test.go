@@ -8,31 +8,18 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/httpapi"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
-	"github.com/andrewcgraves/civic-scanner/api/migrations"
+	"github.com/andrewcgraves/civic-scanner/api/internal/testdb"
 )
 
 func TestAgenciesAgainstPostgres(t *testing.T) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		t.Fatal("DATABASE_URL must be set for integration tests")
-	}
 	ctx := t.Context()
 	logger := slog.New(slog.DiscardHandler)
-
-	pool, err := store.Open(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	if err := migrations.Up(ctx, pool, logger); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	pool := testdb.Pool(t)
 
 	const slug = "integration-test-agency"
 	if _, err := pool.Exec(ctx,
