@@ -1,7 +1,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -106,22 +108,34 @@ func (s *Store) GetMeeting(ctx context.Context, id uuid.UUID) (Meeting, error) {
 }
 
 type meetingCursor struct {
+	AgencyID uuid.UUID `json:"a"`
 	StartsAt time.Time `json:"s"`
 	ID       uuid.UUID `json:"i"`
 }
 
-func encodeMeetingCursor(m Meeting) string {
-	raw, _ := json.Marshal(meetingCursor{StartsAt: m.StartsAt.UTC(), ID: m.ID})
-	return base64.RawURLEncoding.EncodeToString(raw)
+const meetingCursorChecksumSize = 8
+
+func meetingCursorChecksum(payload []byte) []byte {
+	sum := sha256.Sum256(payload)
+	return sum[:meetingCursorChecksumSize]
 }
 
-func decodeMeetingCursor(cursor string) (meetingCursor, error) {
+func encodeMeetingCursor(m Meeting) string {
+	payload, _ := json.Marshal(meetingCursor{AgencyID: m.AgencyID, StartsAt: m.StartsAt.UTC(), ID: m.ID})
+	return base64.RawURLEncoding.EncodeToString(append(payload, meetingCursorChecksum(payload)...))
+}
+
+func decodeMeetingCursor(cursor string, agencyID uuid.UUID) (meetingCursor, error) {
 	var c meetingCursor
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
-	if err != nil {
+	if err != nil || len(raw) <= meetingCursorChecksumSize {
 		return c, ErrInvalidCursor
 	}
-	if err := json.Unmarshal(raw, &c); err != nil || c.StartsAt.IsZero() || c.ID == uuid.Nil {
+	payload, checksum := raw[:len(raw)-meetingCursorChecksumSize], raw[len(raw)-meetingCursorChecksumSize:]
+	if !bytes.Equal(checksum, meetingCursorChecksum(payload)) {
+		return c, ErrInvalidCursor
+	}
+	if err := json.Unmarshal(payload, &c); err != nil || c.StartsAt.IsZero() || c.ID == uuid.Nil || c.AgencyID != agencyID {
 		return meetingCursor{}, ErrInvalidCursor
 	}
 	return c, nil
@@ -144,7 +158,7 @@ func (s *Store) ListMeetings(ctx context.Context, agencyID uuid.UUID, params Lis
 	query := `SELECT ` + meetingColumns + ` FROM meetings WHERE agency_id = $1`
 	args := []any{agencyID}
 	if params.Cursor != "" {
-		c, err := decodeMeetingCursor(params.Cursor)
+		c, err := decodeMeetingCursor(params.Cursor, agencyID)
 		if err != nil {
 			return MeetingPage{}, err
 		}

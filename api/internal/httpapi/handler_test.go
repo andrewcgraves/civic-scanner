@@ -16,15 +16,43 @@ import (
 )
 
 type fakeStore struct {
-	pingErr  error
-	agencies []store.Agency
-	listErr  error
+	pingErr     error
+	agencies    []store.Agency
+	listErr     error
+	live        map[string]store.Agency
+	getErr      error
+	page        store.MeetingPage
+	meetingsErr error
+	listed      *listMeetingsCall
+}
+
+type listMeetingsCall struct {
+	agencyID uuid.UUID
+	params   store.ListMeetingsParams
 }
 
 func (f fakeStore) Ping(context.Context) error { return f.pingErr }
 
 func (f fakeStore) ListAgencies(context.Context) ([]store.Agency, error) {
 	return f.agencies, f.listErr
+}
+
+func (f fakeStore) GetLiveAgency(_ context.Context, slug string) (store.Agency, error) {
+	if f.getErr != nil {
+		return store.Agency{}, f.getErr
+	}
+	a, ok := f.live[slug]
+	if !ok {
+		return store.Agency{}, store.ErrNotFound
+	}
+	return a, nil
+}
+
+func (f fakeStore) ListMeetings(_ context.Context, agencyID uuid.UUID, params store.ListMeetingsParams) (store.MeetingPage, error) {
+	if f.listed != nil {
+		*f.listed = listMeetingsCall{agencyID: agencyID, params: params}
+	}
+	return f.page, f.meetingsErr
 }
 
 func get(t *testing.T, s Store, path string, out any) int {

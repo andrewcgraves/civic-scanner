@@ -56,7 +56,7 @@ func serveRequest(method, path string) *httptest.ResponseRecorder {
 }
 
 func TestRouterRejectsWrongMethodWithErrorJSON(t *testing.T) {
-	for _, path := range []string{"/v1/agencies", "/v1/healthz"} {
+	for _, path := range []string{"/v1/agencies", "/v1/healthz", "/v1/agencies/la-metro", "/v1/agencies/la-metro/meetings"} {
 		rec := serveRequest(http.MethodPost, path)
 
 		if rec.Code != http.StatusMethodNotAllowed {

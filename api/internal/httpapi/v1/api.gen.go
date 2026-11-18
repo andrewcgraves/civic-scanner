@@ -7,10 +7,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/oapi-codegen/runtime"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
@@ -26,6 +29,27 @@ func (e HealthStatus) Valid() bool {
 	case Degraded:
 		return true
 	case Ok:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MeetingStatus.
+const (
+	Cancelled MeetingStatus = "cancelled"
+	Held      MeetingStatus = "held"
+	Scheduled MeetingStatus = "scheduled"
+)
+
+// Valid indicates whether the value is a known member of the MeetingStatus enum.
+func (e MeetingStatus) Valid() bool {
+	switch e {
+	case Cancelled:
+		return true
+	case Held:
+		return true
+	case Scheduled:
 		return true
 	default:
 		return false
@@ -69,14 +93,62 @@ type Health struct {
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// MeetingList defines model for MeetingList.
+type MeetingList struct {
+	Meetings []MeetingSummary `json:"meetings"`
+
+	// NextCursor Pass as `cursor` to get the next page. Null on the last page.
+	NextCursor *string `json:"nextCursor"`
+}
+
+// MeetingStatus defines model for MeetingStatus.
+type MeetingStatus string
+
+// MeetingSummary A meeting as listed on its agency's page. New optional fields may be added; clients must ignore fields they do not know.
+type MeetingSummary struct {
+	Id openapi_types.UUID `json:"id"`
+
+	// SourceUrl The agency's own page for the meeting. Absent when the source gave none.
+	SourceUrl *string `json:"sourceUrl,omitempty"`
+
+	// StartsAt When the meeting starts.
+	StartsAt time.Time     `json:"startsAt"`
+	Status   MeetingStatus `json:"status"`
+	Title    string        `json:"title"`
+}
+
+// AgencySlug defines model for AgencySlug.
+type AgencySlug = string
+
+// BadRequest defines model for BadRequest.
+type BadRequest = Error
+
 // MethodNotAllowed defines model for MethodNotAllowed.
 type MethodNotAllowed = Error
+
+// NotFound defines model for NotFound.
+type NotFound = Error
+
+// ListAgencyMeetingsParams defines parameters for ListAgencyMeetings.
+type ListAgencyMeetingsParams struct {
+	// Cursor Opaque cursor from a previous page's `nextCursor`. Omit for the first page. A cursor that is malformed, altered, or from another agency is rejected with 400.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum number of meetings to return.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// ListAgencies List tracked agencies
 	// (GET /agencies)
 	ListAgencies(w http.ResponseWriter, r *http.Request)
+	// GetAgency Get a tracked agency
+	// (GET /agencies/{slug})
+	GetAgency(w http.ResponseWriter, r *http.Request, slug AgencySlug)
+	// ListAgencyMeetings List an agency's meetings
+	// (GET /agencies/{slug}/meetings)
+	ListAgencyMeetings(w http.ResponseWriter, r *http.Request, slug AgencySlug, params ListAgencyMeetingsParams)
 	// GetHealth Liveness and readiness probe
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
@@ -89,6 +161,18 @@ type Unimplemented struct{}
 // ListAgencies List tracked agencies
 // (GET /agencies)
 func (_ Unimplemented) ListAgencies(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetAgency Get a tracked agency
+// (GET /agencies/{slug})
+func (_ Unimplemented) GetAgency(w http.ResponseWriter, r *http.Request, slug AgencySlug) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListAgencyMeetings List an agency's meetings
+// (GET /agencies/{slug}/meetings)
+func (_ Unimplemented) ListAgencyMeetings(w http.ResponseWriter, r *http.Request, slug AgencySlug, params ListAgencyMeetingsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -112,6 +196,87 @@ func (siw *ServerInterfaceWrapper) ListAgencies(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ListAgencies(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetAgency operation middleware
+func (siw *ServerInterfaceWrapper) GetAgency(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slug" -------------
+	var slug AgencySlug
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slug", chi.URLParam(r, "slug"), &slug, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slug", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetAgency(w, r, slug)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListAgencyMeetings operation middleware
+func (siw *ServerInterfaceWrapper) ListAgencyMeetings(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slug" -------------
+	var slug AgencySlug
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slug", chi.URLParam(r, "slug"), &slug, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slug", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListAgencyMeetingsParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListAgencyMeetings(w, r, slug, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -254,9 +419,17 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/agencies", wrapper.ListAgencies)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/agencies/{slug}", wrapper.GetAgency)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/agencies/{slug}/meetings", wrapper.ListAgencyMeetings)
+	})
 
 	return r
 }
+
+type BadRequestJSONResponse Error
 
 type MethodNotAllowedResponseHeaders struct {
 	Allow *string
@@ -266,6 +439,8 @@ type MethodNotAllowedJSONResponse struct {
 
 	Headers MethodNotAllowedResponseHeaders
 }
+
+type NotFoundJSONResponse Error
 
 type ListAgenciesRequestObject struct {
 }
@@ -311,6 +486,161 @@ type ListAgenciesdefaultJSONResponse struct {
 }
 
 func (response ListAgenciesdefaultJSONResponse) VisitListAgenciesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAgencyRequestObject struct {
+	Slug AgencySlug `json:"slug"`
+}
+
+type GetAgencyResponseObject interface {
+	VisitGetAgencyResponse(w http.ResponseWriter) error
+}
+
+type GetAgency200JSONResponse Agency
+
+func (response GetAgency200JSONResponse) VisitGetAgencyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAgency404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetAgency404JSONResponse) VisitGetAgencyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAgency405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response GetAgency405JSONResponse) VisitGetAgencyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAgencydefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response GetAgencydefaultJSONResponse) VisitGetAgencyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAgencyMeetingsRequestObject struct {
+	Slug   AgencySlug `json:"slug"`
+	Params ListAgencyMeetingsParams
+}
+
+type ListAgencyMeetingsResponseObject interface {
+	VisitListAgencyMeetingsResponse(w http.ResponseWriter) error
+}
+
+type ListAgencyMeetings200JSONResponse MeetingList
+
+func (response ListAgencyMeetings200JSONResponse) VisitListAgencyMeetingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAgencyMeetings400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response ListAgencyMeetings400JSONResponse) VisitListAgencyMeetingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAgencyMeetings404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response ListAgencyMeetings404JSONResponse) VisitListAgencyMeetingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAgencyMeetings405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response ListAgencyMeetings405JSONResponse) VisitListAgencyMeetingsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListAgencyMeetingsdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ListAgencyMeetingsdefaultJSONResponse) VisitListAgencyMeetingsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -379,6 +709,12 @@ type StrictServerInterface interface {
 	// ListAgencies List tracked agencies
 	// (GET /agencies)
 	ListAgencies(ctx context.Context, request ListAgenciesRequestObject) (ListAgenciesResponseObject, error)
+	// GetAgency Get a tracked agency
+	// (GET /agencies/{slug})
+	GetAgency(ctx context.Context, request GetAgencyRequestObject) (GetAgencyResponseObject, error)
+	// ListAgencyMeetings List an agency's meetings
+	// (GET /agencies/{slug}/meetings)
+	ListAgencyMeetings(ctx context.Context, request ListAgencyMeetingsRequestObject) (ListAgencyMeetingsResponseObject, error)
 	// GetHealth Liveness and readiness probe
 	// (GET /healthz)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
@@ -440,6 +776,59 @@ func (sh *strictHandler) ListAgencies(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListAgenciesResponseObject); ok {
 		if err := validResponse.VisitListAgenciesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetAgency operation middleware
+func (sh *strictHandler) GetAgency(w http.ResponseWriter, r *http.Request, slug AgencySlug) {
+	var request GetAgencyRequestObject
+
+	request.Slug = slug
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetAgency(ctx, request.(GetAgencyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetAgency")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetAgencyResponseObject); ok {
+		if err := validResponse.VisitGetAgencyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListAgencyMeetings operation middleware
+func (sh *strictHandler) ListAgencyMeetings(w http.ResponseWriter, r *http.Request, slug AgencySlug, params ListAgencyMeetingsParams) {
+	var request ListAgencyMeetingsRequestObject
+
+	request.Slug = slug
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListAgencyMeetings(ctx, request.(ListAgencyMeetingsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListAgencyMeetings")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListAgencyMeetingsResponseObject); ok {
+		if err := validResponse.VisitListAgencyMeetingsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
