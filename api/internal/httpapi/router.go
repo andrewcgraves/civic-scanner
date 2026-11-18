@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -15,8 +16,21 @@ import (
 func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger))
+	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
+		writeError(w, http.StatusNotFound, "not_found", "not found")
+	})
+	r.MethodNotAllowed(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Allow", http.MethodGet)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	})
 	v1.HandlerFromMuxWithBaseURL(v1.NewStrictHandler(h, nil), r, "/v1")
 	return r
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v1.Error{Code: code, Message: message})
 }
 
 func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {

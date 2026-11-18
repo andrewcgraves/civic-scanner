@@ -52,7 +52,7 @@ func (h *Handler) ListAgencies(ctx context.Context, _ v1.ListAgenciesRequestObje
 
 	agencies := make([]v1.Agency, 0, len(rows))
 	for _, a := range rows {
-		agencies = append(agencies, v1.Agency{Id: a.ID, Slug: a.Slug, Name: a.Name})
+		agencies = append(agencies, v1.Agency{Id: a.ID, Slug: a.Slug, Name: a.Name, Website: a.Website})
 	}
 	return v1.ListAgencies200JSONResponse{Agencies: agencies}, nil
 }
