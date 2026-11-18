@@ -21,6 +21,7 @@ type Config struct {
 	Ingest        Ingest
 	Extract       Extract
 	WorkOS        WorkOS
+	Summary       Summary
 }
 
 func Load() (Config, error) {
@@ -59,6 +60,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.WorkOS, err = loadWorkOS(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Summary, err = loadSummary(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

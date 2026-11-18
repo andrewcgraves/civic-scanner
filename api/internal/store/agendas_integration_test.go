@@ -469,6 +469,101 @@ func TestSetAgendaFieldsTxRollBackWithCaller(t *testing.T) {
 	}
 }
 
+func TestGetAgendaVersionReadsOneVersionByID(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	meetingID := seedMeeting(t, pool, "store-test-agenda-get")
+	first, _, err := s.AddAgendaVersion(ctx, agendaInput(meetingID, "agenda one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AddAgendaVersion(ctx, agendaInput(meetingID, "agenda two")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetAgendaVersion(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("GetAgendaVersion: %v", err)
+	}
+	if got.ID != first.ID || got.Version != 1 || got.Text != "agenda one" || got.ContentHash != first.ContentHash || got.Summary != nil {
+		t.Errorf("GetAgendaVersion = %+v, want version 1", got)
+	}
+	if _, err := s.GetAgendaVersion(ctx, uuid.New()); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("missing version: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSetAgendaSummaryIfUnsetWritesOnce(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	meetingID := seedMeeting(t, pool, "store-test-agenda-summary-once")
+	v, _, err := s.AddAgendaVersion(ctx, agendaInput(meetingID, "agenda"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first, written, err := s.SetAgendaSummaryIfUnset(ctx, v.ID, "first")
+	if err != nil || !written || first.Summary == nil || *first.Summary != "first" {
+		t.Fatalf("first write = (%+v, %v, %v), want written", first, written, err)
+	}
+	second, written, err := s.SetAgendaSummaryIfUnset(ctx, v.ID, "second")
+	if err != nil || written || second.Summary == nil || *second.Summary != "first" || !second.UpdatedAt.Equal(first.UpdatedAt) {
+		t.Errorf("second write = (%+v, %v, %v), want the first summary unchanged", second, written, err)
+	}
+	if _, _, err := s.SetAgendaSummaryIfUnset(ctx, uuid.New(), "s"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("missing version: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSetAgendaSummaryIfUnsetConcurrentWritersKeepOne(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	meetingID := seedMeeting(t, pool, "store-test-agenda-summary-race")
+	v, _, err := s.AddAgendaVersion(ctx, agendaInput(meetingID, "agenda"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const writers = 8
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		winners []string
+	)
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			summary := fmt.Sprintf("summary %d", i)
+			got, written, err := s.SetAgendaSummaryIfUnset(ctx, v.ID, summary)
+			if err != nil {
+				t.Errorf("writer %d: %v", i, err)
+				return
+			}
+			if got.Summary == nil {
+				t.Errorf("writer %d: returned version without a summary", i)
+			}
+			if written {
+				mu.Lock()
+				winners = append(winners, summary)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	latest, err := s.LatestAgendaVersion(ctx, meetingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(winners) != 1 || latest.Summary == nil || *latest.Summary != winners[0] {
+		t.Errorf("winners = %v, stored = %v; want exactly one write, the stored one", winners, latest.Summary)
+	}
+}
+
 func TestAgendaReadsAndWritesFailOnClosedPool(t *testing.T) {
 	ctx := t.Context()
 	pool, err := store.Open(ctx, testdb.URL(t))
@@ -481,7 +576,9 @@ func TestAgendaReadsAndWritesFailOnClosedPool(t *testing.T) {
 	failures := map[string]error{}
 	_, failures["latest"] = s.LatestAgendaVersion(ctx, uuid.New())
 	_, failures["list"] = s.ListAgendaVersions(ctx, uuid.New())
+	_, failures["get"] = s.GetAgendaVersion(ctx, uuid.New())
 	_, failures["summary"] = s.SetAgendaSummary(ctx, uuid.New(), "s")
+	_, _, failures["summary if unset"] = s.SetAgendaSummaryIfUnset(ctx, uuid.New(), "s")
 	_, failures["change note"] = s.SetAgendaChangeNote(ctx, uuid.New(), "n")
 	for name, err := range failures {
 		if err == nil || errors.Is(err, store.ErrNotFound) {
