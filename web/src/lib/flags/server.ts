@@ -1,62 +1,52 @@
 import "server-only";
 
 import { OpenFeature, type Provider } from "@openfeature/server-sdk";
-import { PostHogServerProvider } from "@posthog/openfeature-node-provider";
 import { connection } from "next/server";
-import { PostHog } from "posthog-node";
+import { cache } from "react";
 
 import { readFlagSource, type FlagSource } from "./config";
-import { memoryServerProvider } from "./memory";
+import { memoryProvider } from "./memory";
+import { PostHogProvider } from "./posthog";
+import { FLAG_KEYS, type FlagKey } from "./registry";
 
 const ANONYMOUS_DISTINCT_ID = "anonymous";
-const POSTHOG_TIMEOUT_MS = 500;
-const POSTHOG_CACHE_TTL_MS = 30_000;
 
 const source = readFlagSource();
 
-let ready: Promise<void> | undefined;
-
-const cache = new Map<string, { value: Promise<boolean>; expiresAt: number }>();
+let registered: Promise<void> | undefined;
 
 function createProvider(source: FlagSource): Provider {
   if (source.kind === "memory") {
-    return memoryServerProvider(source.on);
+    return memoryProvider(source.on);
   }
-  return new PostHogServerProvider(
-    new PostHog(source.key, {
-      host: source.host,
-      featureFlagsRequestTimeoutMs: POSTHOG_TIMEOUT_MS,
-      featureFlagsRequestMaxRetries: 0,
-    }),
-    { defaultDistinctId: ANONYMOUS_DISTINCT_ID, sendFeatureFlagEvents: false },
-  );
+  return new PostHogProvider({
+    key: source.key,
+    host: source.host,
+    distinctId: ANONYMOUS_DISTINCT_ID,
+  });
 }
 
-async function evaluate(flag: string): Promise<boolean> {
-  ready ??= OpenFeature.setProviderAndWait(createProvider(source)).catch(
+function registerProvider(): Promise<void> {
+  registered ??= OpenFeature.setProviderAndWait(createProvider(source)).catch(
     (error: unknown) => {
       console.error("Feature flag provider failed to start", error);
     },
   );
-  await ready;
-  return OpenFeature.getClient().getBooleanValue(flag, false);
+  return registered;
 }
 
-function evaluateCached(flag: string): Promise<boolean> {
-  const now = Date.now();
-  const hit = cache.get(flag);
-  if (hit !== undefined && hit.expiresAt > now) {
-    return hit.value;
+export const getFlagsOn = cache(async (): Promise<readonly FlagKey[]> => {
+  if (source.kind === "posthog") {
+    await connection();
   }
-  const value = evaluate(flag);
-  cache.set(flag, { value, expiresAt: now + POSTHOG_CACHE_TTL_MS });
-  return value;
-}
+  await registerProvider();
+  const client = OpenFeature.getClient();
+  const answers = await Promise.all(
+    FLAG_KEYS.map((flag) => client.getBooleanValue(flag, false)),
+  );
+  return FLAG_KEYS.filter((_flag, index) => answers[index]);
+});
 
-export async function isFlagEnabled(flag: string): Promise<boolean> {
-  if (source.kind === "memory") {
-    return evaluate(flag);
-  }
-  await connection();
-  return evaluateCached(flag);
+export async function isFlagEnabled(flag: FlagKey): Promise<boolean> {
+  return (await getFlagsOn()).includes(flag);
 }

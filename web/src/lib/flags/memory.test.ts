@@ -1,38 +1,38 @@
-import { OpenFeature as ServerFeature } from "@openfeature/server-sdk";
-import { OpenFeature as WebFeature } from "@openfeature/web-sdk";
+import { OpenFeature } from "@openfeature/server-sdk";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { memoryServerProvider, memoryWebProvider } from "./memory";
+import type { FlagsOn } from "./config";
+import { memoryProvider } from "./memory";
 
-describe("in-memory providers", () => {
+async function flagsClient(on: FlagsOn) {
+  await OpenFeature.setProviderAndWait("memory-test", memoryProvider(on));
+  return OpenFeature.getClient("memory-test");
+}
+
+describe("memoryProvider", () => {
   afterEach(async () => {
-    await ServerFeature.clearProviders();
-    await WebFeature.clearProviders();
+    await OpenFeature.clearProviders();
   });
 
-  it("serve only boolean flags on the server", async () => {
-    await ServerFeature.setProviderAndWait(
-      "memory-test",
-      memoryServerProvider("all"),
-    );
-    const client = ServerFeature.getClient("memory-test");
+  it("turns on only the listed flags", async () => {
+    const client = await flagsClient(["new-search", "meeting-alerts"]);
 
-    expect(await client.getBooleanValue("theme", false)).toBe(true);
+    expect(await client.getBooleanValue("new-search", false)).toBe(true);
+    expect(await client.getBooleanValue("meeting-alerts", false)).toBe(true);
+    expect(await client.getBooleanValue("new-search-v2", false)).toBe(false);
+  });
+
+  it("turns on every flag when all are on", async () => {
+    const client = await flagsClient("all");
+
+    expect(await client.getBooleanValue("anything-at-all", false)).toBe(true);
+  });
+
+  it("serves only boolean flags", async () => {
+    const client = await flagsClient("all");
+
     expect(await client.getStringValue("theme", "light")).toBe("light");
     expect(await client.getNumberValue("theme", 3)).toBe(3);
     expect(await client.getObjectValue("theme", { a: 1 })).toEqual({ a: 1 });
-  });
-
-  it("serve only boolean flags in the browser", async () => {
-    await WebFeature.setProviderAndWait(
-      "memory-test",
-      memoryWebProvider("all"),
-    );
-    const client = WebFeature.getClient("memory-test");
-
-    expect(client.getBooleanValue("theme", false)).toBe(true);
-    expect(client.getStringValue("theme", "light")).toBe("light");
-    expect(client.getNumberValue("theme", 3)).toBe(3);
-    expect(client.getObjectValue("theme", { a: 1 })).toEqual({ a: 1 });
   });
 });
