@@ -47,33 +47,34 @@ Unfinished work ships dark behind a flag. Both sides evaluate flags through [Ope
 
 ### Web
 
-The web app evaluates flags through OpenFeature: `@openfeature/server-sdk` on the server and `@openfeature/react-sdk` in the browser. `web/src/lib/flags/` wraps both. Callers import only from there, never from OpenFeature or PostHog, so the provider can change without touching them.
+The web app evaluates every flag on the server, through `@openfeature/server-sdk`, and hands the results to client components. `web/src/lib/flags/` wraps it. Callers import only from there, never from OpenFeature or PostHog.
 
+- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `test-only-flag` exists only for the module's own tests.
 - **Server components:** `await isFlagEnabled("flag-key")` from `@/lib/flags/server`.
-- **Client components:** `useFlag("flag-key")` from `@/lib/flags/client`. The root layout wraps the app in `FlagsProvider`, which supplies it.
+- **Client components:** `useFlag("flag-key")` from `@/lib/flags/client`. The root layout calls `getFlagsOn()` from `@/lib/flags/server`, which evaluates each registered key with the OpenFeature client, and passes the keys that are on to `FlagsProvider`, a plain React context that supplies `useFlag`. A client component's server-rendered HTML and its first render in the browser therefore already show the right value: a flag that is on does not flash off, and hydration does not mismatch.
 
-Every flag is a boolean and defaults to off. An unknown flag, a provider that fails to start, and an evaluation error all evaluate to off.
+Every flag is a boolean and defaults to off. An unregistered or unknown flag, a multivariate PostHog flag, a PostHog error, a slow or unreachable PostHog, a provider that fails to start, and a client component outside `FlagsProvider` all evaluate to off.
 
 The provider depends on the environment:
 
 | Variable | Meaning |
 | --- | --- |
-| `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project API key. When set, PostHog serves flags on both sides and `NEXT_PUBLIC_FEATURE_FLAGS` is ignored. |
+| `NEXT_PUBLIC_POSTHOG_KEY` | PostHog project API key. When set, PostHog serves flags and `NEXT_PUBLIC_FEATURE_FLAGS` is ignored. |
 | `NEXT_PUBLIC_POSTHOG_HOST` | PostHog API host. Defaults to `https://us.i.posthog.com`. |
-| `NEXT_PUBLIC_FEATURE_FLAGS` | Used when there is no PostHog key: a comma-separated list of flags that are on, or `*` for all on. Unset or empty means all off. For local development, tests, and preview deploys. |
+| `NEXT_PUBLIC_FEATURE_FLAGS` | Used when there is no PostHog key: a comma-separated list of flags that are on, or `*` for every registered flag. Unset or empty means all off. For local development, tests, and preview deploys. |
 
 Notes:
 
-- `NEXT_PUBLIC_` values are inlined at `next build`, so changing one needs a new build. On Vercel, set them per environment: the PostHog key for Production, and `NEXT_PUBLIC_FEATURE_FLAGS` for Preview.
-- PostHog serves flags through its official providers, `@posthog/openfeature-node-provider` (over `posthog-node`) and `@posthog/openfeature-web-provider` (over `posthog-js`). PostHog starts for flags only: no `$feature_flag_called` events, page views, autocapture, session recording, or web vitals, and `posthog-js` loads no extension scripts. Analytics is a separate change.
-- In PostHog mode, a page whose server components check a flag is rendered on each request (`isFlagEnabled` calls `connection()`), so a change in PostHog applies without a deploy. In-memory flags are fixed at build time, so those pages can stay static.
-- There is no sign-in yet, so the server evaluates every flag for one anonymous distinct ID. Percentage rollouts and person targeting take effect only in the browser; on the server a flag is on or off for everyone.
-- The server caches each PostHog flag for 30 seconds per process, so a change in PostHog can take that long to show. A flag request times out after 500 ms and is not retried. A flag PostHog does not answer for is off until its cache entry expires.
-- `posthog-js` keeps its state in memory and sets no cookie or localStorage entry. Each page view gets a new anonymous ID, so a browser-side percentage rollout can change between page views. A follow-up will evaluate flags on the server and pass them to the browser.
-- `posthog-js` and its provider load only in the browser and only when `NEXT_PUBLIC_POSTHOG_KEY` is set; without a key, pages do not download them.
-- In the browser, PostHog flags arrive after the page loads. The server-rendered HTML and the first client render show PostHog flags as off, and they switch on when PostHog answers. If PostHog fails to load, flags stay off and the error is logged. In-memory flags are the same on both renders.
-- To swap providers, change `createProvider` in `web/src/lib/flags/server.ts` and `startPostHog` in `web/src/lib/flags/client.tsx`.
-- The flags module picks its provider once, when it loads. A test sets `NEXT_PUBLIC_FEATURE_FLAGS` with `vi.stubEnv`, calls `vi.resetModules()`, and imports the module again; see `web/src/lib/flags/*.test.*`. Tests never call PostHog: the PostHog cases mock `posthog-node` and `posthog-js`, or stub `fetch` for `posthog-node`.
+- **Swapping vendors:** `createProvider` in `web/src/lib/flags/server.ts` is the only place a provider is chosen, and it is registered with OpenFeature once per process. Moving to another vendor, such as LaunchDarkly, means returning that vendor's OpenFeature server provider from `createProvider`. Callers, the registry and `client.tsx` do not change.
+- `NEXT_PUBLIC_` values are inlined at `next build`, so changing one needs a new build. On Vercel, set them per environment: the PostHog key for Production, and `NEXT_PUBLIC_FEATURE_FLAGS` for Preview. Only server code reads them.
+- The PostHog provider is ours, `PostHogProvider` in `web/src/lib/flags/posthog.ts`, a thin OpenFeature provider over `posthog-node`. It does not use PostHog's `@posthog/openfeature-node-provider`, which sends one `/flags` request per flag and caches nothing. Ours asks `evaluateFlags` once for every flag of the identity, keeps the answer for 30 seconds per process, and serves each boolean evaluation from it. So the layout and any number of `isFlagEnabled` calls cost at most one PostHog request per process every 30 seconds, and a change in PostHog can take that long to show. The request times out after 500 ms and is not retried. If it fails, every flag is off until the cache entry expires, and the error is logged as `Feature flags could not be evaluated`. Nothing else is sent to PostHog: no `$feature_flag_called` events, page views, or other analytics. Analytics is a separate change.
+- The in-memory list is an OpenFeature provider too (`web/src/lib/flags/memory.ts`), so both modes go through the same OpenFeature client.
+- Within one request, `getFlagsOn` is memoised with React's `cache`, so the layout, server components and client components see the same values even if the 30-second entry expires mid-render.
+- Rendering: in PostHog mode `getFlagsOn` calls `connection()` before asking PostHog, and the root layout calls `getFlagsOn`, so every page is rendered on each request, including pages that check no flag. That is the price of client components getting PostHog values in their first render, and it keeps a change in PostHog live without a deploy. It adds a server render per page view, not a PostHog request. In in-memory mode `getFlagsOn` does not call `connection()`, so pages stay static.
+- Identity: there is no sign-in yet, and the app stores no visitor identifier, so the server evaluates every flag for one anonymous distinct ID, `anonymous`, and the browser uses the server's values. Both sides always agree, but a percentage rollout or person targeting is on or off for everyone. Per-user flags later mean evaluating for the user's distinct ID per request instead of reading the shared cache, and passing the result through the same `FlagsProvider`; callers do not change.
+- The browser loads no PostHog or OpenFeature code and makes no `/flags` request. The layout sends the registered keys that are on, and only those, in the page payload, so anyone can read them in the page source: a flag key must not be secret.
+- Navigating between pages in the browser does not render the root layout again, so client components keep the values from the last full page load, while server components on the new page read current values. After a flag changes in PostHog, the two can disagree until the visitor reloads.
+- The flags module picks its provider once, when it loads. A test sets `NEXT_PUBLIC_FEATURE_FLAGS` with `vi.stubEnv`, calls `vi.resetModules()`, and imports the module again; see `web/src/lib/flags/*.test.*` and `web/src/app/layout.test.tsx`. Tests never call PostHog: the PostHog cases stub `fetch`, which `posthog-node` uses.
 
 ### API
 
