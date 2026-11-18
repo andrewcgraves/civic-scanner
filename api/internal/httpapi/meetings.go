@@ -42,7 +42,7 @@ func apiMeetingDetail(d store.MeetingDetail) v1.MeetingDetail {
 			DocumentUrl: a.SourceURL,
 			Summary:     a.Summary,
 			ChangeNote:  a.ChangeNote,
-			PublishedAt: a.CreatedAt.UTC(),
+			FoundAt:     a.CreatedAt.UTC(),
 		}
 	}
 	for _, r := range d.Recordings {
@@ -63,5 +63,5 @@ func apiTranscript(t *store.Transcript) *v1.Transcript {
 		}
 		segments = append(segments, segment)
 	}
-	return &v1.Transcript{Summary: t.Summary, Segments: segments, UpdatedAt: t.UpdatedAt.UTC()}
+	return &v1.Transcript{Summary: t.Summary, Segments: segments}
 }

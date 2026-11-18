@@ -81,8 +81,8 @@ type Agenda struct {
 	// DocumentUrl The agency's original agenda document.
 	DocumentUrl string `json:"documentUrl"`
 
-	// PublishedAt When this version was found.
-	PublishedAt time.Time `json:"publishedAt"`
+	// FoundAt When this version was first found by the service.
+	FoundAt time.Time `json:"foundAt"`
 
 	// Summary AI summary of the agenda. Null until it is written.
 	Summary *string `json:"summary"`
@@ -171,9 +171,6 @@ type Transcript struct {
 
 	// Summary AI summary of the transcript. Null until it is written.
 	Summary *string `json:"summary"`
-
-	// UpdatedAt When the transcript was last saved or summarized.
-	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 // TranscriptSegment defines model for TranscriptSegment.

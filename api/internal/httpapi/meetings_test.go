@@ -59,7 +59,7 @@ func TestGetMeetingWithNothingYet(t *testing.T) {
 }
 
 func TestGetMeetingWithEverything(t *testing.T) {
-	published := time.Date(2026, 3, 20, 1, 2, 3, 0, time.FixedZone("PDT", -7*3600))
+	found := time.Date(2026, 3, 20, 1, 2, 3, 0, time.FixedZone("PDT", -7*3600))
 	transcribed := time.Date(2026, 3, 27, 4, 5, 6, 0, time.UTC)
 	d := store.MeetingDetail{
 		Meeting: boardMeeting,
@@ -70,7 +70,7 @@ func TestGetMeetingWithEverything(t *testing.T) {
 			Text:       "full agenda text that is never returned",
 			Summary:    strPtr("Fare changes."),
 			ChangeNote: strPtr("Item 5 added."),
-			CreatedAt:  published,
+			CreatedAt:  found,
 		},
 		Recordings: []store.RecordingDetail{
 			{
@@ -84,15 +84,13 @@ func TestGetMeetingWithEverything(t *testing.T) {
 						{Start: 0, End: 1500 * time.Millisecond, Text: "Call to order.", Speaker: "c0/speaker_0"},
 						{Start: 1500 * time.Millisecond, End: 3 * time.Second, Text: "Roll call."},
 					},
-					Summary:   strPtr("The board met."),
-					UpdatedAt: transcribed,
+					Summary: strPtr("The board met."),
 				},
 			},
 			{
 				Recording: store.Recording{SourceURL: "https://metro.granicus.com/player/clip/2"},
 				Transcript: &store.Transcript{
-					Segments:  []store.TranscriptSegment{},
-					UpdatedAt: transcribed,
+					Segments: []store.TranscriptSegment{},
 				},
 			},
 			{
@@ -101,10 +99,10 @@ func TestGetMeetingWithEverything(t *testing.T) {
 		},
 	}
 	body := getMeetingBody(t, meetingStore(d))
-	want := `{` + laMetroJSON + `,"agenda":{"changeNote":"Item 5 added.","documentUrl":"https://metro.legistar1.com/agenda.pdf","publishedAt":"2026-03-20T08:02:03Z","summary":"Fare changes.","version":2},` +
+	want := `{` + laMetroJSON + `,"agenda":{"changeNote":"Item 5 added.","documentUrl":"https://metro.legistar1.com/agenda.pdf","foundAt":"2026-03-20T08:02:03Z","summary":"Fare changes.","version":2},` +
 		`"id":"0b6c1f0e-8a8d-4b1e-9b8f-1f2a3b4c5d6e","recordings":[` +
-		`{"sourceUrl":"https://metro.granicus.com/player/clip/1","transcript":{"segments":[{"endMs":1500,"speaker":"c0/speaker_0","startMs":0,"text":"Call to order."},{"endMs":3000,"startMs":1500,"text":"Roll call."}],"summary":"The board met.","updatedAt":"2026-03-27T04:05:06Z"}},` +
-		`{"sourceUrl":"https://metro.granicus.com/player/clip/2","transcript":{"segments":[],"summary":null,"updatedAt":"2026-03-27T04:05:06Z"}},` +
+		`{"sourceUrl":"https://metro.granicus.com/player/clip/1","transcript":{"segments":[{"endMs":1500,"speaker":"c0/speaker_0","startMs":0,"text":"Call to order."},{"endMs":3000,"startMs":1500,"text":"Roll call."}],"summary":"The board met."}},` +
+		`{"sourceUrl":"https://metro.granicus.com/player/clip/2","transcript":{"segments":[],"summary":null}},` +
 		`{"sourceUrl":"https://metro.granicus.com/player/clip/3","transcript":null}` +
 		`],"sourceUrl":"https://metro.legistar.com/m/1","startsAt":"2026-03-26T17:00:00Z","status":"held","title":"Board of Directors"}` + "\n"
 	if body != want {
@@ -119,7 +117,7 @@ func TestGetMeetingAgendaWithoutSummaryOrChangeNote(t *testing.T) {
 		Agenda:  &store.AgendaVersion{Version: 1, SourceURL: "https://example.com/a.pdf", CreatedAt: time.Date(2026, 3, 20, 0, 0, 0, 0, time.UTC)},
 	}
 	body := getMeetingBody(t, meetingStore(d))
-	want := `,"agenda":{"changeNote":null,"documentUrl":"https://example.com/a.pdf","publishedAt":"2026-03-20T00:00:00Z","summary":null,"version":1},`
+	want := `,"agenda":{"changeNote":null,"documentUrl":"https://example.com/a.pdf","foundAt":"2026-03-20T00:00:00Z","summary":null,"version":1},`
 	if !strings.Contains(body, want) {
 		t.Errorf("body = %s, want it to contain %s", body, want)
 	}

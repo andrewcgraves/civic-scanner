@@ -192,9 +192,9 @@ export interface components {
       changeNote: string | null;
       /**
        * Format: date-time
-       * @description When this version was found.
+       * @description When this version was first found by the service.
        */
-      publishedAt: string;
+      foundAt: string;
     };
     Recording: {
       /**
@@ -210,11 +210,6 @@ export interface components {
       summary: string | null;
       /** @description The full transcript as timestamped segments, in order. */
       segments: components["schemas"]["TranscriptSegment"][];
-      /**
-       * Format: date-time
-       * @description When the transcript was last saved or summarized.
-       */
-      updatedAt: string;
     };
     TranscriptSegment: {
       /**

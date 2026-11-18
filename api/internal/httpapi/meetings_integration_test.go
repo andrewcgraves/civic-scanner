@@ -76,7 +76,7 @@ func TestGetMeetingAgainstPostgres(t *testing.T) {
 	if detail.Id != full || detail.Agency.Id != agencyID || detail.Title != "detail-full" || detail.Status != v1.Scheduled {
 		t.Errorf("meeting = %+v", detail)
 	}
-	if a := detail.Agenda; a == nil || a.Version != 1 || a.DocumentUrl != "https://example.com/agenda.pdf" || a.Summary == nil || *a.Summary != "Two items." || a.ChangeNote != nil {
+	if a := detail.Agenda; a == nil || a.Version != 1 || a.DocumentUrl != "https://example.com/agenda.pdf" || a.Summary == nil || *a.Summary != "Two items." || a.ChangeNote != nil || !a.FoundAt.Equal(v.CreatedAt) {
 		t.Errorf("agenda = %+v", a)
 	}
 	if len(detail.Recordings) != 2 {
