@@ -73,6 +73,24 @@ type AgencyList struct {
 	Agencies []Agency `json:"agencies"`
 }
 
+// Agenda defines model for Agenda.
+type Agenda struct {
+	// ChangeNote What changed from the previous version. Null for the first version and until it is written.
+	ChangeNote *string `json:"changeNote"`
+
+	// DocumentUrl The agency's original agenda document.
+	DocumentUrl string `json:"documentUrl"`
+
+	// FoundAt When this version was first found by the service.
+	FoundAt time.Time `json:"foundAt"`
+
+	// Summary AI summary of the agenda. Null until it is written.
+	Summary *string `json:"summary"`
+
+	// Version The version number, 1 for the first agenda published.
+	Version int64 `json:"version"`
+}
+
 // Error defines model for Error.
 type Error struct {
 	// Code Stable machine-readable error code.
@@ -92,6 +110,26 @@ type Health struct {
 
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
+
+// MeetingDetail A meeting with its agenda and transcripts. New optional fields may be added; clients must ignore fields they do not know.
+type MeetingDetail struct {
+	Agency Agency `json:"agency"`
+
+	// Agenda The latest agenda version. Null until an agenda is published.
+	Agenda *Agenda            `json:"agenda"`
+	Id     openapi_types.UUID `json:"id"`
+
+	// Recordings The meeting's recordings in the order they were found. Empty until a recording is available; a meeting split into several videos has several.
+	Recordings []Recording `json:"recordings"`
+
+	// SourceUrl The agency's own page for the meeting. Absent when the source gave none.
+	SourceUrl *string `json:"sourceUrl,omitempty"`
+
+	// StartsAt When the meeting starts.
+	StartsAt time.Time     `json:"startsAt"`
+	Status   MeetingStatus `json:"status"`
+	Title    string        `json:"title"`
+}
 
 // MeetingList defines model for MeetingList.
 type MeetingList struct {
@@ -115,6 +153,37 @@ type MeetingSummary struct {
 	StartsAt time.Time     `json:"startsAt"`
 	Status   MeetingStatus `json:"status"`
 	Title    string        `json:"title"`
+}
+
+// Recording defines model for Recording.
+type Recording struct {
+	// SourceUrl The agency's original recording.
+	SourceUrl string `json:"sourceUrl"`
+
+	// Transcript The recording's transcript. Null until it is ready.
+	Transcript *Transcript `json:"transcript"`
+}
+
+// Transcript defines model for Transcript.
+type Transcript struct {
+	// Segments The full transcript as timestamped segments, in order.
+	Segments []TranscriptSegment `json:"segments"`
+
+	// Summary AI summary of the transcript. Null until it is written.
+	Summary *string `json:"summary"`
+}
+
+// TranscriptSegment defines model for TranscriptSegment.
+type TranscriptSegment struct {
+	// EndMs End, in milliseconds from the start of the recording.
+	EndMs int64 `json:"endMs"`
+
+	// Speaker Opaque speaker label. Segments with the same label have the same speaker, but two labels may still be the same person. Absent when the speaker is unknown.
+	Speaker *string `json:"speaker,omitempty"`
+
+	// StartMs Start, in milliseconds from the start of the recording.
+	StartMs int64  `json:"startMs"`
+	Text    string `json:"text"`
 }
 
 // AgencySlug defines model for AgencySlug.
@@ -152,6 +221,9 @@ type ServerInterface interface {
 	// GetHealth Liveness and readiness probe
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
+	// GetMeeting Get a meeting
+	// (GET /meetings/{id})
+	GetMeeting(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -179,6 +251,12 @@ func (_ Unimplemented) ListAgencyMeetings(w http.ResponseWriter, r *http.Request
 // GetHealth Liveness and readiness probe
 // (GET /healthz)
 func (_ Unimplemented) GetHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetMeeting Get a meeting
+// (GET /meetings/{id})
+func (_ Unimplemented) GetMeeting(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -291,6 +369,32 @@ func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetHealth(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMeeting operation middleware
+func (siw *ServerInterfaceWrapper) GetMeeting(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMeeting(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -424,6 +528,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/agencies/{slug}/meetings", wrapper.ListAgencyMeetings)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/meetings/{id}", wrapper.GetMeeting)
 	})
 
 	return r
@@ -704,6 +811,90 @@ func (response GetHealth503JSONResponse) VisitGetHealthResponse(w http.ResponseW
 	return err
 }
 
+type GetMeetingRequestObject struct {
+	Id openapi_types.UUID `json:"id"`
+}
+
+type GetMeetingResponseObject interface {
+	VisitGetMeetingResponse(w http.ResponseWriter) error
+}
+
+type GetMeeting200JSONResponse MeetingDetail
+
+func (response GetMeeting200JSONResponse) VisitGetMeetingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMeeting400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetMeeting400JSONResponse) VisitGetMeetingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMeeting404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetMeeting404JSONResponse) VisitGetMeetingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMeeting405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response GetMeeting405JSONResponse) VisitGetMeetingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMeetingdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response GetMeetingdefaultJSONResponse) VisitGetMeetingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// ListAgencies List tracked agencies
@@ -718,6 +909,9 @@ type StrictServerInterface interface {
 	// GetHealth Liveness and readiness probe
 	// (GET /healthz)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
+	// GetMeeting Get a meeting
+	// (GET /meetings/{id})
+	GetMeeting(ctx context.Context, request GetMeetingRequestObject) (GetMeetingResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -853,6 +1047,32 @@ func (sh *strictHandler) GetHealth(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetHealthResponseObject); ok {
 		if err := validResponse.VisitGetHealthResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMeeting operation middleware
+func (sh *strictHandler) GetMeeting(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
+	var request GetMeetingRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMeeting(ctx, request.(GetMeetingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMeeting")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMeetingResponseObject); ok {
+		if err := validResponse.VisitGetMeetingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
