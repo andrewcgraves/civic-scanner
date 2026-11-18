@@ -20,7 +20,8 @@ func TestHashContentIsSHA256Hex(t *testing.T) {
 }
 
 func TestContentHashesCompareByValue(t *testing.T) {
-	if HashContent("agenda") != HashContent("agenda") {
+	first, second := HashContent("agenda"), HashContent("agenda")
+	if first != second {
 		t.Error("equal content gave different hashes")
 	}
 	if HashContent("agenda") == HashContent("agenda v2") {
