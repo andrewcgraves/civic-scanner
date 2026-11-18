@@ -223,6 +223,14 @@ func TestInitRejectsInvalidPostHogHost(t *testing.T) {
 	}
 }
 
+func TestInitAcceptsEmptyPostHogHost(t *testing.T) {
+	shutdown, err := Init(t.Context(), postHogConfig(""), slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("Init with an empty POSTHOG_HOST: %v", err)
+	}
+	shutdown()
+}
+
 func TestPostHogUnreachableIsOff(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	srv.Close()
