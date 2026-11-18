@@ -15,7 +15,7 @@ Do not add a comment to satisfy a linter. The doc-comment lint rules are disable
 
 - `openapi/`: the API contract (`v1.yaml`). Source of truth for both sides.
 - `api/`: Go API. Binaries in `api/cmd/` (`api`, `migrate`, `worker`), goose migrations in `api/migrations/`.
-- `web/`: Next.js front end (pnpm, Node 24).
+- `web/`: Next.js front end (pnpm, Node 26).
 - `.github/`: CI workflow, scripts, Dependabot, ruleset for `main`.
 
 ## OpenAPI-first workflow
