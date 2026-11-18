@@ -1,22 +1,34 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 type FeatureFlags struct {
-	PostHogKey  string
-	PostHogHost string
-	On          []string
+	PostHogKey     string
+	PostHogHost    string
+	PostHogTimeout time.Duration
+	On             []string
 }
 
-func loadFeatureFlags() FeatureFlags {
-	return FeatureFlags{
-		PostHogKey:  os.Getenv("POSTHOG_API_KEY"),
-		PostHogHost: os.Getenv("POSTHOG_HOST"),
-		On:          splitList(os.Getenv("FEATURE_FLAGS")),
+func loadFeatureFlags() (FeatureFlags, error) {
+	timeout, err := time.ParseDuration(envOr("POSTHOG_FLAG_TIMEOUT", "1s"))
+	if err == nil && timeout <= 0 {
+		err = errors.New("must be positive")
 	}
+	if err != nil {
+		return FeatureFlags{}, fmt.Errorf("POSTHOG_FLAG_TIMEOUT: %w", err)
+	}
+	return FeatureFlags{
+		PostHogKey:     os.Getenv("POSTHOG_API_KEY"),
+		PostHogHost:    os.Getenv("POSTHOG_HOST"),
+		PostHogTimeout: timeout,
+		On:             splitList(os.Getenv("FEATURE_FLAGS")),
+	}, nil
 }
 
 func splitList(s string) []string {

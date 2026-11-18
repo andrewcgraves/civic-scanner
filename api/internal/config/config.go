@@ -21,14 +21,16 @@ func Load() (Config, error) {
 		Port:        envOr("PORT", "8080"),
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		AppEnv:      envOr("APP_ENV", "development"),
-
-		FeatureFlags: loadFeatureFlags(),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")
 	}
 	if err := cfg.LogLevel.UnmarshalText([]byte(envOr("LOG_LEVEL", "info"))); err != nil {
 		return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
+	}
+	var err error
+	if cfg.FeatureFlags, err = loadFeatureFlags(); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }
