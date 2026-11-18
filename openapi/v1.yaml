@@ -1,0 +1,101 @@
+openapi: 3.0.3
+info:
+  title: Civic Scanner API
+  version: 1.0.0
+  description: >-
+    Public meeting tracker API. This file is the single source of truth for the
+    v1 contract; Go server types and the TypeScript client are generated from it.
+  license:
+    name: Proprietary
+    url: https://github.com/andrewcgraves/civic-scanner
+servers:
+  - url: /v1
+    description: Version 1
+tags:
+  - name: system
+    description: Operational endpoints.
+  - name: agencies
+    description: Tracked public agencies.
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness and readiness probe
+      description: Reports whether the API is up and can reach its database.
+      tags: [system]
+      security: []
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: Service is unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /agencies:
+    get:
+      operationId: listAgencies
+      summary: List tracked agencies
+      description: Returns every agency the tracker follows.
+      tags: [agencies]
+      security: []
+      responses:
+        "200":
+          description: The tracked agencies.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgencyList"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        version:
+          type: string
+          description: Build version (git SHA) of the running API.
+    Agency:
+      type: object
+      required: [id, slug, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          description: URL-safe identifier, e.g. `la-metro`.
+        name:
+          type: string
+    AgencyList:
+      type: object
+      required: [agencies]
+      properties:
+        agencies:
+          type: array
+          items:
+            $ref: "#/components/schemas/Agency"
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+        message:
+          type: string
+          description: Human-readable explanation.

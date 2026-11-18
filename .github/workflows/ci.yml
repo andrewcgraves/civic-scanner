@@ -1,0 +1,322 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REDOCLY_CLI_VERSION: "2.78.0"
+  SQUAWK_VERSION: "2.72.0"
+  GOLANGCI_LINT_VERSION: "v2.15.0"
+  GO_COVERAGE_MIN: "90"
+  REDOCLY_TELEMETRY: "off"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      web: ${{ steps.filter.outputs.web }}
+      openapi: ${{ steps.filter.outputs.openapi }}
+      migrations: ${{ steps.filter.outputs.migrations }}
+      migration_files: ${{ steps.filter.outputs.migration_files_files }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          list-files: json
+          filters: |
+            ci: &ci
+              - '.github/workflows/ci.yml'
+            api:
+              - *ci
+              - 'api/**'
+              - 'openapi/**'
+              - '.github/scripts/go-coverage.sh'
+            web:
+              - *ci
+              - 'web/**'
+              - 'openapi/**'
+            openapi:
+              - *ci
+              - 'openapi/**'
+              - 'redocly.yaml'
+            migrations:
+              - *ci
+              - 'api/migrations/**'
+              - '.squawk.toml'
+              - '.github/scripts/lint-migrations.sh'
+            migration_files:
+              - added|modified: 'api/migrations/*.sql'
+
+  openapi-lint:
+    needs: changes
+    if: needs.changes.outputs.openapi == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Lint OpenAPI specs
+        run: npx --yes "@redocly/cli@${REDOCLY_CLI_VERSION}" lint openapi/*.yaml --format=github-actions
+
+  api:
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: api
+      - name: Unit tests with coverage
+        env:
+          GO_COVERAGE_MIN: "0"
+        run: ../.github/scripts/go-coverage.sh "Go unit" coverage.unit.out
+      - name: Upload unit coverage
+        if: ${{ !cancelled() && hashFiles('api/coverage.unit.out') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: go-coverage-unit
+          path: |
+            api/coverage.unit.out
+            api/coverage.unit.html
+            api/coverage.unit.total
+      - name: Generated code is up to date (oapi-codegen)
+        run: |
+          go generate ./...
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Generated Go code is out of date. Run 'make generate' and commit the result."
+            git status --short
+            git diff
+            exit 1
+          fi
+
+  api-integration:
+    needs: changes
+    if: needs.changes.outputs.api == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: api
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: civic
+          POSTGRES_USER: civic
+          POSTGRES_PASSWORD: civic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U civic -d civic"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://civic:civic@localhost:5432/civic?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+      - name: Unit and integration tests with coverage
+        run: ../.github/scripts/go-coverage.sh "Go unit + integration" coverage.out integration
+      - name: Upload coverage
+        if: ${{ !cancelled() && hashFiles('api/coverage.out') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: go-coverage
+          path: |
+            api/coverage.out
+            api/coverage.html
+            api/coverage.total
+
+  migrations-lint:
+    needs: changes
+    if: needs.changes.outputs.migrations == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Install Squawk
+        run: npm install --global "squawk-cli@${SQUAWK_VERSION}"
+      - name: Lint migrations
+        env:
+          MIGRATION_FILES: ${{ needs.changes.outputs.migration_files }}
+        run: |
+          files=()
+          if [ -n "$MIGRATION_FILES" ]; then
+            mapfile -t files < <(jq -r '.[]' <<<"$MIGRATION_FILES")
+          fi
+          .github/scripts/lint-migrations.sh "${files[@]}"
+
+  web:
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Format check
+        run: pnpm format:check
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test with coverage
+        run: pnpm test:coverage
+      - name: Coverage summary
+        if: ${{ !cancelled() && hashFiles('web/coverage/coverage-summary.json') != '' }}
+        run: |
+          jq -r '.total
+            | "### Web coverage: \(.lines.pct)% of lines",
+              "",
+              "| Metric | Covered | Total | % |",
+              "| --- | --- | --- | --- |",
+              (to_entries[] | select(.key != "branchesTrue") | "| \(.key) | \(.value.covered) | \(.value.total) | \(.value.pct) |")
+          ' coverage/coverage-summary.json >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage
+        if: ${{ !cancelled() && hashFiles('web/coverage/coverage-summary.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web-coverage
+          path: web/coverage/
+      - name: Generated types are up to date (openapi-typescript)
+        run: |
+          pnpm generate
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Generated TypeScript types are out of date. Run 'make generate' and commit the result."
+            git status --short
+            git diff
+            exit 1
+          fi
+      - name: Build
+        run: pnpm build
+
+  coverage-comment:
+    needs:
+      - api
+      - api-integration
+      - web
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download this run's coverage
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: "*coverage*"
+          path: coverage/current
+      - name: Download the base branch's coverage
+        run: .github/scripts/coverage-baseline.sh coverage/baseline
+      - name: Write the comment
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: .github/scripts/coverage-comment.sh coverage/current coverage/baseline | tee coverage/comment.md
+      - name: Post or update the comment
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("### Coverage"))) | .id' | tail -n 1)"
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@coverage/comment.md >/dev/null
+            echo "Updated comment $existing."
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F body=@coverage/comment.md >/dev/null
+            echo "Posted a new comment."
+          fi
+
+  ci-ok:
+    if: always()
+    needs:
+      - changes
+      - openapi-lint
+      - api
+      - api-integration
+      - migrations-lint
+      - web
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check results of all jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          if jq -e 'any(.[]; .result == "failure" or .result == "cancelled")' <<<"$NEEDS" >/dev/null; then
+            echo "::error::At least one CI job failed or was cancelled."
+            exit 1
+          fi

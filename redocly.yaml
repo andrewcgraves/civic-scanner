@@ -1,0 +1,6 @@
+extends:
+  - recommended
+
+apis:
+  v1:
+    root: openapi/v1.yaml
