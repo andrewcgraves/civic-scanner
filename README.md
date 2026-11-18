@@ -73,9 +73,9 @@ Notes on the workflow:
 
 Each job writes its totals to the run summary and uploads the reports as artifacts: `go-coverage-unit`, `go-coverage` (profile, `coverage.html`, and the total in `coverage.total`), and `web-coverage` (HTML, lcov, and `coverage-summary.json`). Locally, open `api/coverage.html` and `web/coverage/index.html`.
 
-On pull requests, the `coverage-comment` job keeps one comment up to date, starting with `### Coverage`. It shows each total for the pull request, the same total on the default branch, and the change. It edits that comment on every push instead of adding new ones.
+On pull requests, the `coverage-comment` job keeps one comment up to date, starting with `### Coverage`. It shows each total for the pull request, the same total on the pull request's base branch, and the change. It edits that comment on every push instead of adding new ones.
 
-- `.github/scripts/coverage-baseline.sh` downloads the default branch's reports. It picks the newest unexpired artifact of each name from a default-branch run, so a push that skipped the Go jobs does not erase the Go baseline. Artifacts expire after 90 days; with no recent default-branch run, the comment says there is no baseline.
+- `.github/scripts/coverage-baseline.sh` downloads the base branch's reports. It picks the newest unexpired artifact of each name from a run on the base branch, so a push that skipped the Go jobs does not erase the Go baseline. Artifacts expire after 90 days; with no recent run on the base branch, the comment says there is no baseline.
 - `.github/scripts/coverage-comment.sh` renders the comment. A row is "not run" when path filtering skipped its job.
 - The job runs only for pull requests from this repository, since a fork's token cannot write comments. It needs `pull-requests: write` and `actions: read`, granted to that job only.
 

@@ -6,7 +6,7 @@ current="${1:?$usage}"
 baseline="${2:?$usage}"
 needs="${NEEDS:-"{}"}"
 go_min="${GO_COVERAGE_MIN:-0}"
-default_branch="${DEFAULT_BRANCH:-main}"
+base_branch="${BASE_BRANCH:-main}"
 
 go_total() {
   if [ -f "$1" ]; then tr -d '[:space:]' <"$1"; fi
@@ -55,11 +55,11 @@ baseline_shas() {
     fi
   done
   if [ "${#parts[@]}" -eq 0 ]; then
-    echo "No \`$default_branch\` baseline yet. It appears once CI has run on \`$default_branch\`."
+    echo "No \`$base_branch\` baseline yet. It appears once CI has run on \`$base_branch\`."
   else
     local joined
     joined="$(printf '%s, ' "${parts[@]}")"
-    echo "\`$default_branch\` column: latest report from \`$default_branch\` for each row (${joined%, })."
+    echo "\`$base_branch\` column: latest report from \`$base_branch\` for each row (${joined%, })."
   fi
 }
 
@@ -68,7 +68,7 @@ web_before="$baseline/web-coverage/coverage-summary.json"
 
 echo "### Coverage"
 echo
-echo "| | This PR | \`$default_branch\` | Change | |"
+echo "| | This PR | \`$base_branch\` | Change | |"
 echo "| --- | --- | --- | --- | --- |"
 row "Go, unit + integration" api-integration \
   "$(go_total "$current/go-coverage/coverage.total")" "$(go_total "$baseline/go-coverage/coverage.total")"
