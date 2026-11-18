@@ -1,0 +1,98 @@
+//go:build integration
+
+package legistar_test
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/riverqueue/river"
+
+	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources/legistar"
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
+	"github.com/andrewcgraves/civic-scanner/api/internal/store"
+	"github.com/andrewcgraves/civic-scanner/api/internal/testdb"
+)
+
+func TestCheckAgencyStoresLAMetroBoardMeetingsFromRecordedResponse(t *testing.T) {
+	ctx := context.WithoutCancel(t.Context())
+	pool := testdb.Pool(t)
+	suffix := make([]byte, 4)
+	if _, err := rand.Read(suffix); err != nil {
+		t.Fatal(err)
+	}
+	slug := "legistar-test-" + hex.EncodeToString(suffix)
+
+	var agencyID uuid.UUID
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO agencies (slug, name, status, website) VALUES ($1, $1, 'live', 'https://www.metro.net') RETURNING id`,
+		slug).Scan(&agencyID); err != nil {
+		t.Fatalf("insert agency: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM meetings WHERE agency_id = $1`, agencyID)
+		_, _ = pool.Exec(ctx, `DELETE FROM agencies WHERE id = $1`, agencyID)
+	})
+
+	fake := serving(fixture(t, "metro_board_events.json"))
+	clock := sourcestest.NewClock(recordedAt)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fake, Clock: clock},
+		map[string]sources.Constructor{slug: legistar.Constructor(legistar.LAMetro)})
+	queue := "legistar_test_" + hex.EncodeToString(suffix)
+	client, err := jobs.NewClient(pool, slog.New(slog.DiscardHandler), jobs.Config{
+		Registry:       registry,
+		Clock:          clock,
+		Enabled:        func(context.Context, string) bool { return true },
+		Queue:          queue,
+		NoPeriodicJobs: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Stop(ctx) })
+
+	inserted, err := client.Insert(ctx, jobs.CheckAgencyArgs{AgencySlug: slug}, &river.InsertOpts{Queue: queue})
+	if err != nil {
+		t.Fatalf("insert check job: %v", err)
+	}
+	testdb.WaitForJobState(t, pool, inserted.Job.ID, "completed")
+
+	page, err := store.New(pool).ListMeetings(ctx, agencyID, store.ListMeetingsParams{Limit: store.MaxMeetingsLimit})
+	if err != nil {
+		t.Fatalf("list meetings: %v", err)
+	}
+	stored := map[string]store.Meeting{}
+	for _, m := range page.Meetings {
+		stored[m.SourceID] = m
+	}
+	if len(stored) != 6 {
+		t.Fatalf("stored %d meetings, want 6: %v", len(stored), stored)
+	}
+	want := map[string]struct {
+		startsAt time.Time
+		status   string
+	}{
+		"3549": {time.Date(2026, 10, 22, 17, 0, 0, 0, time.UTC), "held"},
+		"3666": {time.Date(2027, 1, 20, 17, 0, 0, 0, time.UTC), "cancelled"},
+		"3354": {time.Date(2026, 1, 22, 18, 0, 0, 0, time.UTC), "held"},
+	}
+	for id, w := range want {
+		m := stored[id]
+		if !m.StartsAt.Equal(w.startsAt) || m.Status != w.status || m.SourceURL != metroPage(id) || m.Title == "" {
+			t.Errorf("meeting %s = %+v, want start %s, status %s, page %s", id, m, w.startsAt, w.status, metroPage(id))
+		}
+	}
+	if calls := fake.Calls(); len(calls) != 1 {
+		t.Errorf("requests = %d, want 1", len(calls))
+	}
+}

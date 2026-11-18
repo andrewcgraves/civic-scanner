@@ -1,5 +1,12 @@
 package main
 
-import "github.com/andrewcgraves/civic-scanner/api/internal/sources"
+import (
+	_ "time/tzdata"
 
-var adapters = map[string]sources.Constructor{}
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources/legistar"
+)
+
+var adapters = map[string]sources.Constructor{
+	"la-metro": legistar.Constructor(legistar.LAMetro),
+}

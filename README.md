@@ -130,7 +130,7 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | `api` | build, vet, golangci-lint, unit tests with `-race` and coverage, codegen drift |
 | `api-integration` | unit and integration tests with `-race` and coverage, against Postgres 17 and S3Mock containers; fails below the coverage minimum |
 | `migrations-lint` | Squawk on changed migrations |
-| `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database |
+| `migrations-compat` | pull requests that change `api/migrations/**`: applies the migrations, then runs the base branch's integration tests against that database, with Postgres 17 and S3Mock containers like `api-integration` |
 | `web` | lint, format, typecheck, tests with coverage, codegen drift, build |
 | `coverage-comment` | posts or updates the coverage comment on the pull request; not part of `ci-ok` |
 | `ci-ok` | passes when none of the above failed; the one required check on `main` |
@@ -324,7 +324,7 @@ type Meeting struct {
 
 `Status` is `sources.StatusScheduled`, `StatusHeld` or `StatusCancelled`, the values the `meetings` table accepts.
 
-Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock}`: `fetch.New(cfg.Fetch)` and `sources.SystemClock{}`. Adapters get their dependencies only from `Deps`, never from globals. No real adapter is registered yet, so every agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
+Adapters are registered by agency slug in `cmd/worker/adapters.go`, a map from slug to `sources.Constructor` (`func(sources.Deps) sources.Adapter`). At startup the worker builds the registry with `sources.NewRegistry(deps, adapters)`, which calls each constructor once with `sources.Deps{Fetcher, Clock}`: `fetch.New(cfg.Fetch)` and `sources.SystemClock{}`. Adapters get their dependencies only from `Deps`, never from globals. Registered today: `la-metro` (the Legistar adapter below). Every other agency is skipped until its adapter lands. The worker logs the registered slugs when it starts.
 
 An adapter must guarantee:
 
@@ -339,6 +339,49 @@ An adapter must guarantee:
 - **Errors.** Return the fetcher's errors wrapped with `%w`, so `sources.Retryable` can classify them; do not retry inside the adapter, since River does. Any other error, such as markup that no longer parses, is permanent.
 
 Tests never call a live site. `internal/sources/sourcestest` has a fake adapter for other packages' tests: `sourcestest.Returning(meetings...)` answers every call with those meetings, `sourcestest.Failing(err)` returns `err`, `Set` and `Fail` change the answer between runs, `Calls()` returns the windows received, and `sourcestest.Constructor(a)` registers it. `sourcestest.NewClock(t)` is a fake clock with `Set` and `Advance`. An adapter's own tests feed it `fetchtest.Fake` responses and check its result with `sources.Validate`.
+
+### Legistar
+
+`internal/sources/legistar` reads any agency that publishes through the [Legistar Web API](https://webapi.legistar.com/Help) (`https://webapi.legistar.com/v1/{client}/events`). One agency is one `legistar.Config`:
+
+```go
+var LAMetro = legistar.Config{
+	Client:   "metro",
+	BodyIDs:  []int{138, 199},
+	TimeZone: "America/Los_Angeles",
+	Granicus: legistar.Granicus{Host: "metro.granicus.com", ViewID: 2},
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `Client` | The Legistar client name, the path segment after `/v1/`. |
+| `BodyIDs` | The `EventBodyId`s of the full board: regular and special board meetings, no committees. |
+| `TimeZone` | IANA zone of the agency's wall-clock times. |
+| `Granicus` | Host and `view_id` of the agency's Granicus media player, for the recording URL. Leave it empty if the agency has none. |
+| `BaseURL` | Defaults to `https://webapi.legistar.com`. Tests point it elsewhere. |
+| `PageSize` | Defaults to 1000, Legistar's largest page. |
+
+To add a Legistar agency:
+
+1. List its bodies: `GET https://webapi.legistar.com/v1/{client}/bodies`. Pick the full board's ids by name, not by `BodyTypeName`: "Primary Legislative Body" also covers test bodies, workshops and public hearings. Skip the `(SAP)` bodies, which are Spanish audio copies of the same meetings.
+2. Add a `Config` next to `LAMetro` in `internal/sources/legistar/agencies.go`, and register `legistar.Constructor(cfg)` under the agency's slug in `cmd/worker/adapters.go`. `Constructor` panics on an invalid config, so a bad config stops the worker at startup; `legistar.New` returns the error instead.
+3. Record one real events response (step 1's GET, with our User-Agent), trim it, save it under `internal/sources/legistar/testdata/`, and add a test like `TestLAMetroBoardMeetingsFromRecordedResponse`.
+
+For LA Metro, body 138 is "Board of Directors - Regular Board Meeting" and 199 "Board of Directors - Special Board Meeting". Not included: the committees, the `(SAP)` copies, the service councils, the taxpayer oversight committees, the public hearings, the test bodies (300 to 303), and the board workshops ("Special Board Budget Workshop" 306, "Special Board Member Workshop" 310).
+
+How the adapter reads Legistar:
+
+- **Query.** One `GET /v1/{client}/events` with `$filter=EventDate ge datetime'{from}' and EventDate le datetime'{to}' and (EventBodyId eq … or …)`, `$orderby=EventDate,EventId`, `$top` and `$skip`. `{from}` and `{to}` are the window's ends as dates in the agency's zone, since `EventDate` is a local date. It pages with `$skip` until a page is shorter than `$top`; an event repeated across pages is returned once, and a full page with no new events is a malformed response. Events of other bodies are dropped in code as well.
+- **Ids and titles.** `SourceID` is `EventId`. `Title` is `EventBodyName`.
+- **Time.** `EventDate` holds the local date (its time part is always midnight) and `EventTime` the local wall-clock time as text, such as `10:00 AM`. The two are joined in the agency's zone and converted to UTC, so daylight saving time is applied for that date. Accepted time forms are `3:04 PM`, `3:04PM` and `15:04`, in either case. A missing, empty or unparseable `EventTime` gives local midnight of the date: the date is right, and when the agency fixes the time the next check moves the meeting.
+- **Status.** `cancelled` when `EventAgendaStatusName` contains "cancel" in any case (LA Metro writes `Canceled`, OCTA `CANCELLED`). Otherwise `held` when the start time has passed and there is evidence the meeting took place: a recording (`EventMedia` or `EventVideoPath`), a minutes file (`EventMinutesFile`), or minutes status `Final`. Otherwise `scheduled`, which includes a past meeting with no such evidence. A past date alone is not evidence: LA Metro's minutes stay `Draft` with no file in Legistar, so for LA Metro the recording is the evidence.
+- **URLs.** `PageURL` is `EventInSiteURL`. `AgendaURL` is `EventAgendaFile`, empty until the agenda is published. `RecordingURL` is `EventVideoPath` when set; otherwise, when `EventMedia` (a Granicus clip id) is set and `Granicus` is configured, `https://{host}/MediaPlayer.php?view_id={view}&clip_id={EventMedia}`; otherwise empty. The adapter never fetches the player page or the media; resolving the media file belongs to the recording download.
+- **Errors.** Fetch errors are wrapped with `%w` and keep their retryability. A body that is not a JSON list of events, or an event without an id, a parseable date, a body name, an absolute `EventInSiteURL`, or with a relative agenda or video URL, is `legistar.ErrMalformed`, which is permanent. If Legistar answers 401, 403, 406 or 429 and Firecrawl is configured, `fetch.New` falls back to Firecrawl, whose markdown is not JSON, so that check is cancelled as malformed and the next day's check tries again.
+
+The daily check calls only the API host, which has no `robots.txt`. The agenda host `metro.legistar1.com` and the player host `metro.granicus.com` disallow crawlers. The check does not touch them; the later stages that do identify themselves with `FETCH_USER_AGENT` (see [Fetching](#fetching)).
+
+The fixtures in `internal/sources/legistar/testdata` are real LA Metro responses recorded on 2026-11-17 and trimmed to a few events and fields: `metro_board_events.json` (the board-only query for 2026-01-01 to 2027-01-31) and `metro_events_with_committee.json` (a board meeting and a Planning and Programming Committee meeting from an unfiltered query). LA Metro had no upcoming board meeting without an agenda that day, so that case, the time edge cases and the status edge cases use events built in the tests.
 
 ### Follow-up jobs
 
@@ -362,6 +405,27 @@ type UpsertedMeeting struct {
 ### Tests
 
 The unit tests use the fake adapter and fake clock. The integration tests run a real River client against Postgres. Each test uses its own random queue (`jobs.Config.Queue`) and turns off the periodic job (`jobs.Config.NoPeriodicJobs`), so tests in other packages, which share the database, never work its jobs. A test that runs a check twice schedules the runs on different days, since a second check the same day is a duplicate.
+
+## Agendas
+
+A meeting's agenda is kept as numbered versions in `agenda_versions` (migration `00004`). Each row belongs to one meeting and holds the source document URL, the extracted text, a content hash, a nullable AI summary, a nullable change note, and `created_at`/`updated_at`. `version` starts at 1 for each meeting and is unique per meeting. The latest version, the highest number, is the one shown. Versions are never deleted or rewritten; only the summary and the change note are set after the insert.
+
+`internal/store/agendas.go`:
+
+| Function | Does |
+| --- | --- |
+| `AddAgendaVersion(ctx, in)`, `AddAgendaVersionTx(ctx, tx, in)` | Adds a version from `AgendaVersionInput{MeetingID, SourceURL, Text, ContentHash}`. When the meeting's latest version has the same hash, it adds nothing and returns that version with `created` false; otherwise it inserts the next number and returns `created` true. A missing meeting is `ErrNotFound`. |
+| `LatestAgendaVersion(ctx, meetingID)` | The highest-numbered version, or `ErrNotFound` when the meeting has none. |
+| `ListAgendaVersions(ctx, meetingID)` | Every version, newest first. Empty for a meeting with none. |
+| `SetAgendaSummary`, `SetAgendaChangeNote` (and `...Tx`) | Sets the field on one version by id and returns the updated version. A missing version is `ErrNotFound`. |
+
+The `...Tx` variants run in the caller's transaction, so a job can add a version and enqueue its follow-up River job atomically.
+
+**Content hash.** The caller chooses what is hashed; the store chooses how. `store.ContentHash` can only be made with `store.HashContent(s)`, which returns the SHA-256 of `s` as lowercase hex, so a caller cannot pass an arbitrary string, a different algorithm or a hash of the wrong thing by accident. Its zero value is rejected with `ErrZeroContentHash` before the database is touched, and the column's check constraint accepts only 64 lowercase hex characters. Hash the text in the form that decides whether the agenda changed (for example, the normalized text, so a whitespace-only change is not a new version) and store the extracted text as `Text`. Compare hashes with `==`; `String()` gives the hex.
+
+**Concurrency.** Two jobs may add a version for the same meeting at once. `AddAgendaVersion` locks the meeting row with `SELECT ... FOR NO KEY UPDATE` before it reads the latest version, then inserts. Adds for one meeting run one at a time; adds for different meetings never wait for each other. `FOR NO KEY UPDATE` does not block inserts elsewhere that only reference the meeting by foreign key. The lock is held until the transaction ends, which for the `...Tx` variants is when the caller commits or rolls back, so keep that transaction short. It also waits on a concurrent `UpsertMeetingTx` of the same meeting. The `...Tx` variants need the transaction at `READ COMMITTED`, Postgres's default and what `pool.Begin` gives: under `REPEATABLE READ` the waiting transaction would not see the version committed ahead of it, and the unique constraint on `(meeting_id, version)` would reject its insert instead of silently duplicating a number. `TestAddAgendaVersionConcurrentAddsGetDistinctNumbers` runs concurrent adds, through both variants, and checks the numbers are 1 to N with none lost; without the lock it fails with unique violations.
+
+The migration's down half drops the table. `api/migrations/down_integration_test.go` applies every migration in a throwaway schema, rolls back to `00003`, checks the table is gone, and applies it again, without touching the shared tables other tests use.
 
 ## Transcription
 
