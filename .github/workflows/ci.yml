@@ -32,6 +32,7 @@ jobs:
       web: ${{ steps.filter.outputs.web }}
       openapi: ${{ steps.filter.outputs.openapi }}
       migrations: ${{ steps.filter.outputs.migrations }}
+      migration_compat: ${{ steps.filter.outputs.migration_compat }}
       migration_files: ${{ steps.filter.outputs.migration_files_files }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,6 +63,8 @@ jobs:
               - 'api/migrations/**'
               - '.squawk.toml'
               - '.github/scripts/lint-migrations.sh'
+            migration_compat:
+              - 'api/migrations/**'
             migration_files:
               - added|modified: 'api/migrations/*.sql'
 
@@ -196,6 +199,53 @@ jobs:
           fi
           .github/scripts/lint-migrations.sh "${files[@]}"
 
+  migrations-compat:
+    needs: changes
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.migration_compat == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: civic
+          POSTGRES_USER: civic
+          POSTGRES_PASSWORD: civic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U civic -d civic"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://civic:civic@localhost:5432/civic?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: |
+            api/go.sum
+            base/api/go.sum
+      - name: Old code passes against the new schema
+        env:
+          BASE_DIR: ${{ github.workspace }}/base
+          MIGRATION_FILES: ${{ needs.changes.outputs.migration_files }}
+        run: |
+          files=()
+          if [ -n "$MIGRATION_FILES" ]; then
+            mapfile -t files < <(jq -r '.[]' <<<"$MIGRATION_FILES")
+          fi
+          .github/scripts/check-migration-compat.sh "${files[@]}"
+
   web:
     needs: changes
     if: needs.changes.outputs.web == 'true'
@@ -307,6 +357,7 @@ jobs:
       - api
       - api-integration
       - migrations-lint
+      - migrations-compat
       - web
     runs-on: ubuntu-latest
     timeout-minutes: 5
