@@ -52,6 +52,17 @@ func TestLoadLLMOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadLLMBaseURLErrors(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("LLM_TIMEOUT", "")
+	for _, v := range []string{"ai-gateway.vercel.sh/v1", "ftp://ai-gateway.vercel.sh/v1", "https:///v1", "http://bad host/v1", "://"} {
+		t.Setenv("AI_GATEWAY_BASE_URL", v)
+		if _, err := Load(); err == nil {
+			t.Errorf("expected error for AI_GATEWAY_BASE_URL=%q", v)
+		}
+	}
+}
+
 func TestLoadLLMTimeoutErrors(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost/test")
 	for _, v := range []string{"soon", "0s", "-5s"} {
