@@ -1,0 +1,1875 @@
+[
+ {
+  "id": 24950,
+  "title": {
+   "rendered": "Commission Meeting – November 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 24063,
+  "title": {
+   "rendered": "Commission Meeting – October 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 23860,
+  "title": {
+   "rendered": "Commission Meeting – September 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 22913,
+  "title": {
+   "rendered": "Commission Meeting – July 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 23053,
+  "title": {
+   "rendered": "Commission Meeting – June 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 23052,
+  "title": {
+   "rendered": "Commission Meeting – May 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1116,
+  "title": {
+   "rendered": "Commission Meeting – April 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1206,
+  "title": {
+   "rendered": "Commission Meeting – March 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1145,
+  "title": {
+   "rendered": "Commission Meeting – February 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1160,
+  "title": {
+   "rendered": "Commission Meeting – January 2026"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1038,
+  "title": {
+   "rendered": "Commission Meeting – December 2025 (Cancelled)"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1235,
+  "title": {
+   "rendered": "Commission Meeting – November 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1250,
+  "title": {
+   "rendered": "Commission Meeting – October 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1266,
+  "title": {
+   "rendered": "Commission Meeting – September 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1175,
+  "title": {
+   "rendered": "Commission Meeting – July 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1190,
+  "title": {
+   "rendered": "Commission Meeting – June 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1221,
+  "title": {
+   "rendered": "Commission Meeting – May 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1115,
+  "title": {
+   "rendered": "Commission Meeting – April 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1205,
+  "title": {
+   "rendered": "Commission Meeting – March 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1144,
+  "title": {
+   "rendered": "Commission Meeting – February 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1159,
+  "title": {
+   "rendered": "Commission Meeting – January 2025"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1130,
+  "title": {
+   "rendered": "Commission Meeting – December 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1234,
+  "title": {
+   "rendered": "Commission Meeting – November 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1249,
+  "title": {
+   "rendered": "Commission Meeting – October 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1265,
+  "title": {
+   "rendered": "Commission Meeting – September 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1039,
+  "title": {
+   "rendered": "Commission Meeting – July 2024 (Cancelled)"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1189,
+  "title": {
+   "rendered": "Commission Meeting – June 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1220,
+  "title": {
+   "rendered": "Commission Meeting – May 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1114,
+  "title": {
+   "rendered": "Commission Meeting – April 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1204,
+  "title": {
+   "rendered": "Commission Meeting – March 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1143,
+  "title": {
+   "rendered": "Commission Meeting – February 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1158,
+  "title": {
+   "rendered": "Commission Meeting – January 2024"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1129,
+  "title": {
+   "rendered": "Commission Meeting – December 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1233,
+  "title": {
+   "rendered": "Commission Meeting – November 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1248,
+  "title": {
+   "rendered": "Commission Meeting – October 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1264,
+  "title": {
+   "rendered": "Commission Meeting – September 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1174,
+  "title": {
+   "rendered": "Commission Meeting – July 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1188,
+  "title": {
+   "rendered": "Commission Meeting – June 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1219,
+  "title": {
+   "rendered": "Commission Meeting – May 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1113,
+  "title": {
+   "rendered": "Commission Meeting – April 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1203,
+  "title": {
+   "rendered": "Commission Meeting – March 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1142,
+  "title": {
+   "rendered": "Commission Meeting – February 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1157,
+  "title": {
+   "rendered": "Commission Meeting – January 2023"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1128,
+  "title": {
+   "rendered": "Commission Meeting – December 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1232,
+  "title": {
+   "rendered": "Commission Meeting – November 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1247,
+  "title": {
+   "rendered": "Commission Meeting – October 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1263,
+  "title": {
+   "rendered": "Commission Meeting – September 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1173,
+  "title": {
+   "rendered": "Commission Meeting – July 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1187,
+  "title": {
+   "rendered": "Commission Meeting – June 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1218,
+  "title": {
+   "rendered": "Commission Meeting – May 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1112,
+  "title": {
+   "rendered": "Commission Meeting – April 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1202,
+  "title": {
+   "rendered": "Commission Meeting – March 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1141,
+  "title": {
+   "rendered": "Commission Meeting – February 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1156,
+  "title": {
+   "rendered": "Commission Meeting – January 2022"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1126,
+  "title": {
+   "rendered": "Commission Meeting – December 2021 (2)"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1127,
+  "title": {
+   "rendered": "Commission Meeting – December 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1231,
+  "title": {
+   "rendered": "Commission Meeting – November 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1246,
+  "title": {
+   "rendered": "Commission Meeting – October 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1262,
+  "title": {
+   "rendered": "Commission Meeting – September 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1172,
+  "title": {
+   "rendered": "Commission Meeting – July 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1186,
+  "title": {
+   "rendered": "Commission Meeting – June 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1217,
+  "title": {
+   "rendered": "Commission Meeting – May 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1111,
+  "title": {
+   "rendered": "Commission Meeting – April 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1201,
+  "title": {
+   "rendered": "Commission Meeting – March 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1140,
+  "title": {
+   "rendered": "Commission Meeting – February 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1155,
+  "title": {
+   "rendered": "Commission Meeting – January 2021"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1125,
+  "title": {
+   "rendered": "Commission Meeting – December 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1230,
+  "title": {
+   "rendered": "Commission Meeting – November 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1245,
+  "title": {
+   "rendered": "Commission Meeting – October 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1261,
+  "title": {
+   "rendered": "Commission Meeting – September 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1171,
+  "title": {
+   "rendered": "Commission Meeting – July 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1185,
+  "title": {
+   "rendered": "Commission Meeting – June 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1216,
+  "title": {
+   "rendered": "Commission Meeting – May 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1110,
+  "title": {
+   "rendered": "Commission Meeting – April 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1200,
+  "title": {
+   "rendered": "Commission Meeting – March 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1139,
+  "title": {
+   "rendered": "Commission Meeting – February 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1154,
+  "title": {
+   "rendered": "Commission Meeting – January 2020"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1124,
+  "title": {
+   "rendered": "Commission Meeting – December 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1229,
+  "title": {
+   "rendered": "Commission Meeting – November 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1244,
+  "title": {
+   "rendered": "Commission Meeting – October 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1260,
+  "title": {
+   "rendered": "Commission Meeting – September 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1170,
+  "title": {
+   "rendered": "Commission Meeting – July 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1184,
+  "title": {
+   "rendered": "Commission Meeting – June 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1215,
+  "title": {
+   "rendered": "Commission Meeting – May 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1109,
+  "title": {
+   "rendered": "Commission Meeting – April 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1199,
+  "title": {
+   "rendered": "Commission Meeting – March 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1138,
+  "title": {
+   "rendered": "Commission Meeting – February 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1153,
+  "title": {
+   "rendered": "Commission Meeting – January 2019"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1228,
+  "title": {
+   "rendered": "Commission Meeting – November 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1001,
+  "title": {
+   "rendered": "Commission Meeting – October 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1259,
+  "title": {
+   "rendered": "Commission Meeting – September 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1169,
+  "title": {
+   "rendered": "Commission Meeting – July 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1183,
+  "title": {
+   "rendered": "Commission Meeting – June 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1214,
+  "title": {
+   "rendered": "Commission Meeting – May 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1108,
+  "title": {
+   "rendered": "Commission Meeting – April 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1198,
+  "title": {
+   "rendered": "Commission Meeting – March 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1137,
+  "title": {
+   "rendered": "Commission Meeting – February 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1152,
+  "title": {
+   "rendered": "Commission Meeting – January 2018"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1123,
+  "title": {
+   "rendered": "Commission Meeting – December 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1227,
+  "title": {
+   "rendered": "Commission Meeting – November 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1243,
+  "title": {
+   "rendered": "Commission Meeting – October 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1258,
+  "title": {
+   "rendered": "Commission Meeting – September 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1168,
+  "title": {
+   "rendered": "Commission Meeting – July 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1182,
+  "title": {
+   "rendered": "Commission Meeting – June 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1213,
+  "title": {
+   "rendered": "Commission Meeting – May 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1107,
+  "title": {
+   "rendered": "Commission Meeting – April 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1197,
+  "title": {
+   "rendered": "Commission Meeting – March 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1136,
+  "title": {
+   "rendered": "Commission Meeting – February 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1151,
+  "title": {
+   "rendered": "Commission Meeting – January 2017"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1122,
+  "title": {
+   "rendered": "Commission Meeting – December 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1242,
+  "title": {
+   "rendered": "Commission Meeting – October 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1257,
+  "title": {
+   "rendered": "Commission Meeting – September 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1167,
+  "title": {
+   "rendered": "Commission Meeting – July 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1181,
+  "title": {
+   "rendered": "Commission Meeting – June 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1212,
+  "title": {
+   "rendered": "Commission Meeting – May 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1106,
+  "title": {
+   "rendered": "Commission Meeting – April 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1196,
+  "title": {
+   "rendered": "Commission Meeting – March 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1268,
+  "title": {
+   "rendered": "Commission Meeting – February 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1269,
+  "title": {
+   "rendered": "Commission Meeting – January 2016"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1267,
+  "title": {
+   "rendered": "Commission Meeting – December 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1241,
+  "title": {
+   "rendered": "Commission Meeting – October 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1256,
+  "title": {
+   "rendered": "Commission Meeting – September 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1166,
+  "title": {
+   "rendered": "Commission Meeting – July 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1180,
+  "title": {
+   "rendered": "Commission Meeting – June 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1211,
+  "title": {
+   "rendered": "Commission Meeting – May 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1105,
+  "title": {
+   "rendered": "Commission Meeting – April 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1195,
+  "title": {
+   "rendered": "Commission Meeting – March 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1449,
+  "title": {
+   "rendered": "Commission Meeting – March 2015 (Special Meeting)"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1135,
+  "title": {
+   "rendered": "Commission Meeting – February 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1150,
+  "title": {
+   "rendered": "Commission Meeting – January 2015"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1121,
+  "title": {
+   "rendered": "Commission Meeting – December 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1226,
+  "title": {
+   "rendered": "Commission Meeting – November 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1240,
+  "title": {
+   "rendered": "Commission Meeting – October 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1255,
+  "title": {
+   "rendered": "Commission Meeting – September 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1165,
+  "title": {
+   "rendered": "Commission Meeting – July 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1179,
+  "title": {
+   "rendered": "Commission Meeting – June 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1210,
+  "title": {
+   "rendered": "Commission Meeting – May 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1104,
+  "title": {
+   "rendered": "Commission Meeting – April 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1194,
+  "title": {
+   "rendered": "Commission Meeting – March 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1134,
+  "title": {
+   "rendered": "Commission Meeting – February 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1149,
+  "title": {
+   "rendered": "Commission Meeting – January 2014"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1120,
+  "title": {
+   "rendered": "Commission Meeting – December 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1225,
+  "title": {
+   "rendered": "Commission Meeting – November 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1239,
+  "title": {
+   "rendered": "Commission Meeting – October 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1254,
+  "title": {
+   "rendered": "Commission Meeting – September 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1164,
+  "title": {
+   "rendered": "Commission Meeting – July 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1178,
+  "title": {
+   "rendered": "Commission Meeting – June 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1209,
+  "title": {
+   "rendered": "Commission Meeting – May 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1103,
+  "title": {
+   "rendered": "Commission Meeting – April 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1193,
+  "title": {
+   "rendered": "Commission Meeting – March 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1133,
+  "title": {
+   "rendered": "Commission Meeting – February 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1148,
+  "title": {
+   "rendered": "Commission Meeting – January 2013"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1119,
+  "title": {
+   "rendered": "Commission Meeting – December 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1224,
+  "title": {
+   "rendered": "Commission Meeting – November 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1238,
+  "title": {
+   "rendered": "Commission Meeting – October 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1253,
+  "title": {
+   "rendered": "Commission Meeting – September 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1163,
+  "title": {
+   "rendered": "Commission Meeting – July 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1177,
+  "title": {
+   "rendered": "Commission Meeting – June 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1448,
+  "title": {
+   "rendered": "Commission Meeting – June 2012 (Special Meeting)"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1208,
+  "title": {
+   "rendered": "Commission Meeting – May 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1102,
+  "title": {
+   "rendered": "Commission Meeting – April 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1192,
+  "title": {
+   "rendered": "Commission Meeting – March 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1132,
+  "title": {
+   "rendered": "Commission Meeting – February 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1147,
+  "title": {
+   "rendered": "Commission Meeting – January 2012"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1118,
+  "title": {
+   "rendered": "Commission Meeting – December 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1223,
+  "title": {
+   "rendered": "Commission Meeting – November 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1237,
+  "title": {
+   "rendered": "Commission Meeting – October 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1252,
+  "title": {
+   "rendered": "Commission Meeting – September 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1162,
+  "title": {
+   "rendered": "Commission Meeting – July 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1207,
+  "title": {
+   "rendered": "Commission Meeting – May 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1101,
+  "title": {
+   "rendered": "Commission Meeting – April 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 24899,
+  "title": {
+   "rendered": "Commission Meeting – March 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1131,
+  "title": {
+   "rendered": "Commission Meeting – February 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1146,
+  "title": {
+   "rendered": "Commission Meeting – January 2011"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1117,
+  "title": {
+   "rendered": "Commission Meeting – December 2010"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1222,
+  "title": {
+   "rendered": "Commission Meeting – November 2010"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1236,
+  "title": {
+   "rendered": "Commission Meeting – October 2010"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1251,
+  "title": {
+   "rendered": "Commission Meeting – September 2010"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1161,
+  "title": {
+   "rendered": "Commission Meeting – July 2010"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1176,
+  "title": {
+   "rendered": "Commission Meeting – June 2010"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1191,
+  "title": {
+   "rendered": "Commission Meeting – March 2010"
+  },
+  "meeting_type": [
+   25
+  ]
+ },
+ {
+  "id": 1454,
+  "title": {
+   "rendered": "Special Meeting – November 2023"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1455,
+  "title": {
+   "rendered": "SPBL Community Meeting – August 2023"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1459,
+  "title": {
+   "rendered": "Special Meeting VCTC Goal Setting Session"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1452,
+  "title": {
+   "rendered": "Special Meeting – December 2021"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1462,
+  "title": {
+   "rendered": "TIES – November 2021"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1458,
+  "title": {
+   "rendered": "Special Meeting – September 2021"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1022,
+  "title": {
+   "rendered": "Admin/Finance – August 2021 (Special Meeting)"
+  },
+  "meeting_type": [
+   30,
+   33
+  ]
+ },
+ {
+  "id": 1451,
+  "title": {
+   "rendered": "Special Meeting – August 2021"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1463,
+  "title": {
+   "rendered": "TIES Steering Committee Meeting 3 – July 2021"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1461,
+  "title": {
+   "rendered": "TIES Meeting – March 2021"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1453,
+  "title": {
+   "rendered": "Special Meeting – January 2020"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1429,
+  "title": {
+   "rendered": "Public Hearing Notice VCTC Federal Transit Administration Title VI Program Update"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1002,
+  "title": {
+   "rendered": "ADA Ad Hoc Committee"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1450,
+  "title": {
+   "rendered": "Special Meeting – April 2016"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1746,
+  "title": {
+   "rendered": "Unmet Transit Needs Public Hearing – 2016"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1456,
+  "title": {
+   "rendered": "Special Meeting – September 2015 (2)"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1457,
+  "title": {
+   "rendered": "Special Meeting – September 2015"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1739,
+  "title": {
+   "rendered": "Unmet Transit Needs Hearing Board – May 2015 (Findings)"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1740,
+  "title": {
+   "rendered": "Unmet Transit Needs Hearing Board – May 2015"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1745,
+  "title": {
+   "rendered": "Unmet Transit Needs – February 2014"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1428,
+  "title": {
+   "rendered": "Inter City ADA Ad Hoc Committee Meeting"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1744,
+  "title": {
+   "rendered": "Unmet Transit Needs – 2013 (Findings)"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1747,
+  "title": {
+   "rendered": "Unmet Transit Needs – 2013"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1742,
+  "title": {
+   "rendered": "Unmet Needs Meeting – April 2012"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1430,
+  "title": {
+   "rendered": "Public Hearing on Unmet Transit Needs – February 2012"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1743,
+  "title": {
+   "rendered": "Unmet Needs Meeting – January 2012"
+  },
+  "meeting_type": [
+   33
+  ]
+ },
+ {
+  "id": 1741,
+  "title": {
+   "rendered": "Unmet Needs Meeting – April 2011"
+  },
+  "meeting_type": [
+   33
+  ]
+ }
+]
