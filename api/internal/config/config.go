@@ -13,6 +13,7 @@ type Config struct {
 	LogLevel    slog.Level
 	AppEnv      string
 	LLM         LLM
+	Fetch       Fetch
 
 	FeatureFlags FeatureFlags
 }
@@ -34,6 +35,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.LLM = llm
+	if cfg.Fetch, err = loadFetch(); err != nil {
+		return Config{}, err
+	}
 	if cfg.FeatureFlags, err = loadFeatureFlags(); err != nil {
 		return Config{}, err
 	}
