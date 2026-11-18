@@ -18,26 +18,35 @@ const (
 
 func Build(t testing.TB) string {
 	t.Helper()
+	return BuildPackage(t, ".")
+}
+
+func BuildPackage(t testing.TB, pkg string) string {
+	t.Helper()
 	bin := filepath.Join(t.TempDir(), "bin")
 	args := []string{"build", "-o", bin}
 	pkgs, dir := os.Getenv(CoverPkgEnv), os.Getenv(CoverDirEnv)
 	if pkgs != "" && dir != "" {
 		args = append(args, "-cover", "-covermode=atomic", "-coverpkg="+pkgs)
 	}
-	out, err := exec.Command("go", append(args, ".")...).CombinedOutput() //nolint:gosec
+	out, err := exec.Command("go", append(args, pkg)...).CombinedOutput() //nolint:gosec
 	if err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
 	return bin
 }
 
+func CoverEnv() []string {
+	if dir := os.Getenv(CoverDirEnv); dir != "" {
+		return []string{"GOCOVERDIR=" + dir}
+	}
+	return nil
+}
+
 func Command(t testing.TB, bin string, env []string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.CommandContext(t.Context(), bin, args...) //nolint:gosec
-	cmd.Env = append(os.Environ(), env...)
-	if dir := os.Getenv(CoverDirEnv); dir != "" {
-		cmd.Env = append(cmd.Env, "GOCOVERDIR="+dir)
-	}
+	cmd.Env = append(append(os.Environ(), env...), CoverEnv()...)
 	cmd.WaitDelay = 5 * time.Second
 	return cmd
 }

@@ -78,6 +78,10 @@ build: ## Build api and web
 	cd api && go build ./...
 	cd web && pnpm build
 
+.PHONY: run-worker
+run-worker: ## Build the api binaries into api/bin and run the worker, with the PDF extractor next to it
+	cd api && go build -o bin/ ./cmd/... && bin/worker
+
 .PHONY: test
 test: ## Unit tests (api with -race, web)
 	cd api && go test -race ./...
