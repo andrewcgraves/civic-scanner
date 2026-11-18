@@ -6,6 +6,12 @@ const posthog = vi.hoisted(() => ({
   reloadFeatureFlags: vi.fn<() => Promise<void>>(),
 }));
 
+const nextServer = vi.hoisted(() => ({
+  connection: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("next/server", () => ({ connection: nextServer.connection }));
+
 vi.mock("posthog-node", () => ({
   PostHog: class {
     constructor(key: string, options: unknown) {
@@ -68,10 +74,23 @@ describe("isFlagEnabled with in-memory flags", () => {
     expect(await isFlagEnabled("new-search")).toBe(true);
     expect(await isFlagEnabled("anything-at-all")).toBe(true);
   });
+
+  it("leaves the page free to render statically", async () => {
+    nextServer.connection.mockClear();
+    const { isFlagEnabled } = await loadServerFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
+    });
+
+    await isFlagEnabled("new-search");
+
+    expect(nextServer.connection).not.toHaveBeenCalled();
+  });
 });
 
 describe("isFlagEnabled with PostHog", () => {
   beforeEach(() => {
+    nextServer.connection.mockClear();
     posthog.created.mockReset();
     posthog.getFeatureFlagResult.mockReset();
     posthog.reloadFeatureFlags.mockReset().mockResolvedValue(undefined);
@@ -101,6 +120,23 @@ describe("isFlagEnabled with PostHog", () => {
       expect.any(String),
       expect.objectContaining({ sendFeatureFlagEvents: false }),
     );
+  });
+
+  it("renders the page per request, before asking PostHog", async () => {
+    posthog.getFeatureFlagResult.mockResolvedValue({
+      key: "new-search",
+      enabled: true,
+    });
+    const { isFlagEnabled } = await loadServerFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: "phc_test",
+    });
+
+    await isFlagEnabled("new-search");
+
+    expect(nextServer.connection).toHaveBeenCalledOnce();
+    const [connected] = nextServer.connection.mock.invocationCallOrder;
+    const [asked] = posthog.getFeatureFlagResult.mock.invocationCallOrder;
+    expect(connected).toBeLessThan(asked ?? 0);
   });
 
   it("uses the PostHog US host and ignores the in-memory list", async () => {
