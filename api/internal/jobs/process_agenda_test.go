@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,15 @@ func agendaJob() *river.Job[ProcessAgendaArgs] {
 	return &river.Job[ProcessAgendaArgs]{
 		JobRow: &rivertype.JobRow{ID: 3},
 		Args:   ProcessAgendaArgs{MeetingID: uuid.New(), AgendaURL: "https://agency.test/agenda.pdf"},
+	}
+}
+
+func agendaWorker(fetcher fetch.Fetcher) *ProcessAgendaWorker {
+	return &ProcessAgendaWorker{
+		logger:    discard,
+		enabled:   flag(true),
+		fetcher:   fetcher,
+		extractor: &extract.Extractor{PDF: extract.InProcess{}},
 	}
 }
 
@@ -66,7 +76,7 @@ func TestProcessAgendaWithoutFetcherIsCancelled(t *testing.T) {
 
 func TestProcessAgendaFetchesTheAgendaURL(t *testing.T) {
 	fake := fetchtest.Failing(&fetch.Error{StatusCode: 404, Err: errors.New("gone")})
-	w := &ProcessAgendaWorker{logger: discard, enabled: flag(true), fetcher: fake}
+	w := agendaWorker(fake)
 	job := agendaJob()
 	_ = w.Work(t.Context(), job)
 	calls := fake.Calls()
@@ -88,7 +98,7 @@ func TestProcessAgendaRetriesOnlyRetryableFetchErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := &ProcessAgendaWorker{logger: discard, enabled: flag(true), fetcher: fetchtest.Failing(tc.err)}
+			w := agendaWorker(fetchtest.Failing(tc.err))
 			err := w.Work(t.Context(), agendaJob())
 			if isCancel(err) != tc.cancel {
 				t.Errorf("Work = %v, cancel = %v", err, tc.cancel)
@@ -107,17 +117,85 @@ func TestProcessAgendaCancelsWhenNoTextCanBeExtracted(t *testing.T) {
 	}{
 		"word document": {fetch.Response{Status: 200, ContentType: "application/msword", Body: []byte("\xd0\xcf\x11\xe0")}, extract.ErrUnsupported},
 		"broken pdf":    {fetch.Response{Status: 200, ContentType: "application/pdf", Body: []byte("%PDF-1.4\ntruncated")}, extract.ErrMalformed},
-		"empty page":    {fetch.Response{Status: 200, ContentType: "text/html", Body: []byte("<html><body> </body></html>")}, extract.ErrNoText},
+		"empty page":    {fetch.Response{Status: 200, ContentType: "text/plain", Body: []byte(" \n ")}, extract.ErrNoText},
+		"short page":    {fetch.Response{Status: 200, ContentType: "text/plain", Body: []byte("Agenda to follow.")}, extract.ErrNoText},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			fake := &fetchtest.Fake{Respond: func(fetch.Request) (fetch.Response, error) { return tc.resp, nil }}
-			w := &ProcessAgendaWorker{logger: discard, enabled: flag(true), fetcher: fake}
-			err := w.Work(t.Context(), agendaJob())
+			err := agendaWorker(fake).Work(t.Context(), agendaJob())
 			if !isCancel(err) || !errors.Is(err, tc.want) {
 				t.Errorf("Work = %v, want a cancelled %v", err, tc.want)
 			}
 		})
+	}
+}
+
+func responding(contentType, body string) *fetchtest.Fake {
+	return &fetchtest.Fake{Respond: func(req fetch.Request) (fetch.Response, error) {
+		return fetch.Response{Status: 200, ContentType: contentType, Body: []byte(body), FinalURL: req.URL}, nil
+	}}
+}
+
+const interstitialPage = "<html><head><title>Pardon Our Interruption</title></head><body><h1>Pardon Our Interruption</h1></body></html>"
+
+func TestProcessAgendaRetriesABlockedPageWithoutAFallback(t *testing.T) {
+	cases := map[string]*ProcessAgendaWorker{
+		"no fallback":             agendaWorker(responding("text/html", interstitialPage)),
+		"fallback not configured": agendaWorker(responding("text/html", interstitialPage)),
+		"fallback is blocked too": agendaWorker(responding("text/html", interstitialPage)),
+	}
+	cases["fallback not configured"].fallback = fetchtest.Failing(&fetch.Error{Err: fetch.ErrNotConfigured})
+	cases["fallback is blocked too"].fallback = responding("text/markdown", "# Pardon Our Interruption")
+	for name, w := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := w.Work(t.Context(), agendaJob())
+			if isCancel(err) || !errors.Is(err, extract.ErrBlocked) {
+				t.Errorf("Work = %v, want a retryable ErrBlocked", err)
+			}
+		})
+	}
+}
+
+func TestProcessAgendaTreatsHTMLForAPDFURLAsBlocked(t *testing.T) {
+	page := "<html><body><p>" + strings.Repeat("Our new website has moved this page. ", 10) + "</p></body></html>"
+	fallback := fetchtest.Failing(&fetch.Error{StatusCode: 404, Err: errors.New("not found")})
+	w := agendaWorker(responding("text/html", page))
+	w.fallback = fallback
+	err := w.Work(t.Context(), agendaJob())
+	var fetchErr *fetch.Error
+	if !isCancel(err) || !errors.As(err, &fetchErr) || fetchErr.StatusCode != 404 {
+		t.Errorf("Work = %v, want the fallback's permanent 404", err)
+	}
+	if calls := fallback.Calls(); len(calls) != 1 {
+		t.Errorf("fallback calls = %d, want 1", len(calls))
+	}
+}
+
+func TestProcessAgendaRetriesWhenExtractionIsInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	w := agendaWorker(&fetchtest.Fake{Respond: func(fetch.Request) (fetch.Response, error) {
+		cancel()
+		return fetch.Response{Status: 200, ContentType: "application/pdf", Body: []byte("%PDF-1.4\n")}, nil
+	}})
+	w.extractor = &extract.Extractor{PDF: extract.Subprocess{Binary: "/usr/bin/true"}}
+	if err := w.Work(ctx, agendaJob()); isCancel(err) || !errors.Is(err, context.Canceled) {
+		t.Errorf("Work = %v, want a retryable context.Canceled", err)
+	}
+}
+
+func TestExpectsPDF(t *testing.T) {
+	cases := map[string]bool{
+		"https://agency.test/files/Agenda.PDF":                  true,
+		"https://agency.test/files/agenda.pdf?version=2":        true,
+		"https://metro.legistar.test/View.ashx?M=A&ID=1&GUID=x": false,
+		"https://agency.test/agenda.pdf.html":                   false,
+		"://bad":                                                false,
+	}
+	for u, want := range cases {
+		if got := expectsPDF(u); got != want {
+			t.Errorf("expectsPDF(%q) = %v, want %v", u, got, want)
+		}
 	}
 }
 
@@ -148,6 +226,9 @@ func TestConfigDefaultsEnqueueAgendasOnTheConfiguredQueue(t *testing.T) {
 	cfg := Config{Queue: "ingest"}.withDefaults()
 	if got, ok := cfg.FollowUp.(EnqueueProcessAgenda); !ok || got.Queue != "ingest" {
 		t.Errorf("FollowUp = %#v, want EnqueueProcessAgenda on ingest", cfg.FollowUp)
+	}
+	if _, ok := cfg.Extractor.(*extract.Extractor); !ok {
+		t.Errorf("Extractor = %#v", cfg.Extractor)
 	}
 	if _, ok := cfg.AgendaFollowUp.(NoAgendaFollowUp); !ok {
 		t.Errorf("AgendaFollowUp = %#v", cfg.AgendaFollowUp)

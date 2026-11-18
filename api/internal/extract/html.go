@@ -1,13 +1,11 @@
 package extract
 
 import (
-	"bytes"
 	"fmt"
 	"strings"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
-	"golang.org/x/net/html/charset"
 )
 
 var skippedElements = map[atom.Atom]bool{
@@ -34,11 +32,7 @@ var blockElements = map[atom.Atom]bool{
 }
 
 func htmlText(contentType string, body []byte) (string, error) {
-	reader, err := charset.NewReader(bytes.NewReader(body), contentType)
-	if err != nil {
-		return "", fmt.Errorf("%w: html charset: %w", ErrMalformed, err)
-	}
-	doc, err := html.Parse(reader)
+	doc, err := html.Parse(strings.NewReader(decode(contentType, body)))
 	if err != nil {
 		return "", fmt.Errorf("%w: html: %w", ErrMalformed, err)
 	}

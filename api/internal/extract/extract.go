@@ -2,6 +2,7 @@ package extract
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"mime"
@@ -9,39 +10,88 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/net/html/charset"
 )
 
 var (
-	ErrUnsupported = errors.New("extract: unsupported document type")
-	ErrMalformed   = errors.New("extract: malformed document")
-	ErrNoText      = errors.New("extract: document has no text")
+	ErrUnsupported   = errors.New("extract: unsupported document type")
+	ErrMalformed     = errors.New("extract: malformed document")
+	ErrNoText        = errors.New("extract: document has too little text")
+	ErrBlocked       = errors.New("extract: got a bot check or error page instead of the document")
+	ErrLimitExceeded = errors.New("extract: document exceeds extraction limits")
+	ErrUnavailable   = errors.New("extract: pdf extractor unavailable")
 )
 
-const pdfHeaderWindow = 1024
+const (
+	pdfHeaderWindow = 1024
+	DefaultMinChars = 200
+)
 
-func Text(contentType string, body []byte) (string, error) {
-	var (
-		raw string
-		err error
-	)
-	switch kind := detect(contentType, body); kind {
+type PDFReader interface {
+	ReadPDF(ctx context.Context, body []byte) (string, error)
+}
+
+type Extractor struct {
+	PDF      PDFReader
+	MinChars int
+}
+
+type Request struct {
+	ContentType string
+	Body        []byte
+	ExpectPDF   bool
+}
+
+func (e *Extractor) Text(ctx context.Context, req Request) (string, error) {
+	var raw string
+	switch detect(req.ContentType, req.Body) {
 	case kindPDF:
-		raw, err = pdfText(body)
+		if e.PDF == nil {
+			return "", ErrUnavailable
+		}
+		var err error
+		if raw, err = e.PDF.ReadPDF(ctx, req.Body); err != nil {
+			return "", err
+		}
 	case kindHTML:
-		raw, err = htmlText(contentType, body)
+		if req.ExpectPDF {
+			return "", fmt.Errorf("%w: expected a PDF, got an HTML page", ErrBlocked)
+		}
+		if marker, ok := interstitial(req.Body); ok {
+			return "", fmt.Errorf("%w: page contains %q", ErrBlocked, marker)
+		}
+		var err error
+		if raw, err = htmlText(req.ContentType, req.Body); err != nil {
+			return "", err
+		}
 	case kindPlain:
-		raw = string(body)
+		if marker, ok := interstitial(req.Body); ok {
+			return "", fmt.Errorf("%w: text contains %q", ErrBlocked, marker)
+		}
+		raw = decode(req.ContentType, req.Body)
 	default:
-		return "", fmt.Errorf("%w: %q", ErrUnsupported, contentType)
-	}
-	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %q", ErrUnsupported, req.ContentType)
 	}
 	text := Normalize(raw)
-	if text == "" {
-		return "", ErrNoText
+	minChars := e.MinChars
+	if minChars <= 0 {
+		minChars = DefaultMinChars
+	}
+	if n := visibleChars(text); n < minChars {
+		return "", fmt.Errorf("%w: %d characters, want at least %d", ErrNoText, n, minChars)
 	}
 	return text, nil
+}
+
+func visibleChars(s string) int {
+	n := 0
+	for _, r := range s {
+		if !unicode.IsSpace(r) {
+			n++
+		}
+	}
+	return n
 }
 
 type kind int
@@ -72,6 +122,15 @@ func detect(contentType string, body []byte) kind {
 	return kindUnknown
 }
 
+func decode(contentType string, body []byte) string {
+	enc, _, _ := charset.DetermineEncoding(body, contentType)
+	decoded, err := enc.NewDecoder().Bytes(body)
+	if err != nil {
+		return string(body)
+	}
+	return string(decoded)
+}
+
 func Normalize(s string) string {
 	s = strings.ToValidUTF8(s, "")
 	var (
@@ -99,7 +158,7 @@ func Normalize(s string) string {
 			flush()
 		case unicode.IsSpace(r):
 			pendingSpace = true
-		case unicode.IsControl(r) || r == '\ufeff' || r == '\u00ad' || r == '\u200b':
+		case unicode.IsControl(r) || r == utf8.RuneError || r == '\ufeff' || r == '\u00ad' || r == '\u200b':
 		default:
 			if pendingSpace && line.Len() > 0 {
 				line.WriteByte(' ')

@@ -9,6 +9,8 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/andrewcgraves/civic-scanner/api/internal/config"
+	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
@@ -20,6 +22,8 @@ const FlagCheckAgencies = "ingest-check-agencies"
 type Config struct {
 	Registry       *sources.Registry
 	Fetcher        fetch.Fetcher
+	Fallback       fetch.Fetcher
+	Extractor      TextExtractor
 	Clock          sources.Clock
 	CheckHourUTC   int
 	Enabled        func(ctx context.Context, flag string) bool
@@ -42,6 +46,9 @@ func (c Config) withDefaults() Config {
 	if c.FollowUp == nil {
 		c.FollowUp = EnqueueProcessAgenda{Queue: c.Queue}
 	}
+	if c.Extractor == nil {
+		c.Extractor = extract.New(config.Extract{})
+	}
 	if c.AgendaFollowUp == nil {
 		c.AgendaFollowUp = NoAgendaFollowUp{}
 	}
@@ -63,12 +70,14 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		followUp: cfg.FollowUp,
 	})
 	river.AddWorker(workers, &ProcessAgendaWorker{
-		logger:   logger,
-		pool:     pool,
-		store:    st,
-		fetcher:  cfg.Fetcher,
-		enabled:  cfg.Enabled,
-		followUp: cfg.AgendaFollowUp,
+		logger:    logger,
+		pool:      pool,
+		store:     st,
+		fetcher:   cfg.Fetcher,
+		fallback:  cfg.Fallback,
+		extractor: cfg.Extractor,
+		enabled:   cfg.Enabled,
+		followUp:  cfg.AgendaFollowUp,
 	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,

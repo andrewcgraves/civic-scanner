@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,13 +20,37 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
+	"github.com/andrewcgraves/civic-scanner/api/internal/extract/extracttest"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
+	"github.com/andrewcgraves/civic-scanner/api/internal/testbin"
 	"github.com/andrewcgraves/civic-scanner/api/internal/testdb"
 )
+
+var (
+	agendaV1 = []string{
+		"REGULAR BOARD MEETING",
+		"Thursday, December 4, 2026, 10:00 AM",
+		"1. Call to Order",
+		"2. Roll Call",
+		"3. Public comment on items not on the agenda; each speaker is limited to two minutes",
+		"4. Approve the Consent Calendar, items 5 through 12",
+		"13. Receive the quarterly ridership and budget report",
+	}
+	agendaV2 = append(append([]string(nil), agendaV1...), "14. Adopt the 2027 board meeting calendar")
+)
+
+func htmlAgenda(lines []string) string {
+	return "<html><body><h1>" + lines[0] + "</h1><p>" + strings.Join(lines[1:], "</p><p>") + "</p></body></html>"
+}
+
+func plainAgenda(lines []string) string {
+	return "  " + strings.Join(lines, "\r\n\r\n\t") + "\n\n"
+}
 
 type agendaSource struct {
 	mu          sync.Mutex
@@ -126,7 +153,33 @@ func versionsOf(t *testing.T, pool *pgxpool.Pool, meetingID uuid.UUID) []store.A
 	return versions
 }
 
-func TestCheckEnqueuesProcessAgendaAndStoresTheFirstVersion(t *testing.T) {
+func eventTypesOf(t *testing.T, pool *pgxpool.Pool, meetingID uuid.UUID) []store.EventType {
+	t.Helper()
+	events, err := store.New(pool).ListMeetingEvents(t.Context(), meetingID)
+	if err != nil {
+		t.Fatalf("list meeting events: %v", err)
+	}
+	types := make([]store.EventType, 0, len(events))
+	for _, e := range events {
+		types = append(types, e.Type)
+	}
+	return types
+}
+
+func sameTypes(got []store.EventType, want ...store.EventType) bool {
+	return slices.Equal(got, want)
+}
+
+func subprocessExtractor(t *testing.T) *extract.Extractor {
+	t.Helper()
+	return &extract.Extractor{PDF: extract.Subprocess{
+		Binary:  testbin.BuildPackage(t, "../../cmd/extract"),
+		Timeout: 20 * time.Second,
+		Env:     testbin.CoverEnv(),
+	}}
+}
+
+func TestCheckEnqueuesProcessAgendaAndStoresTheFirstVersionFromAPDF(t *testing.T) {
 	pool := testdb.Pool(t)
 	slug := "jobs-test-agenda-" + randomSuffix(t)
 	agencyID := seedAgency(t, pool, slug, "live")
@@ -136,7 +189,8 @@ func TestCheckEnqueuesProcessAgendaAndStoresTheFirstVersion(t *testing.T) {
 	agendaFollowUp := &recordingAgendaFollowUp{}
 	h := start(t, pool, jobs.Config{
 		Registry:       registry(map[string]sources.Adapter{slug: sourcestest.Returning(withAgenda, withoutAgenda)}),
-		Fetcher:        serving("text/html", "<html><body><h1>Regular Board Meeting</h1><p>Item 1.  Call to Order</p></body></html>"),
+		Fetcher:        serving("application/octet-stream", string(extracttest.Lines(agendaV1...))),
+		Extractor:      subprocessExtractor(t),
 		AgendaFollowUp: agendaFollowUp,
 	})
 
@@ -162,30 +216,36 @@ func TestCheckEnqueuesProcessAgendaAndStoresTheFirstVersion(t *testing.T) {
 		t.Fatalf("versions = %d, want 1", len(versions))
 	}
 	v := versions[0]
-	wantText := "Regular Board Meeting\nItem 1. Call to Order"
+	wantText := strings.Join(agendaV1, "\n")
 	if v.Version != 1 || v.Text != wantText || v.SourceURL != withAgenda.AgendaURL || v.ContentHash != store.HashContent(wantText) {
 		t.Errorf("version = %+v", v)
 	}
 	if got := agendaFollowUp.got(); len(got) != 1 || got[0].ID != v.ID || got[0].Version != 1 {
 		t.Errorf("agenda follow-up calls = %+v, want version 1", got)
 	}
+	if got := eventTypesOf(t, pool, want.MeetingID); !sameTypes(got, store.EventAgendaPublished) {
+		t.Errorf("events = %v, want one agenda_published", got)
+	}
 	if n := len(versionsOf(t, pool, meetings["without-agenda"].ID)); n != 0 {
 		t.Errorf("meeting without agenda has %d versions", n)
 	}
 }
 
-func TestProcessAgendaStoresAVersionOnlyWhenTheTextChanges(t *testing.T) {
+func TestProcessAgendaStoresAVersionAndAnEventOnlyWhenTheTextChanges(t *testing.T) {
 	pool := testdb.Pool(t)
 	agencyID := seedAgency(t, pool, "jobs-test-agenda-versions-"+randomSuffix(t), "live")
 	meeting := seedMeeting(t, pool, agencyID, "evt-versions")
-	source := serving("text/html", "<html><body><h1>Board Meeting</h1><p>Item 1. Call to Order</p></body></html>")
+	source := serving("text/html", htmlAgenda(agendaV1))
 	agendaFollowUp := &recordingAgendaFollowUp{}
 	h := start(t, pool, jobs.Config{Fetcher: source, AgendaFollowUp: agendaFollowUp})
-	agendaURL := "https://agency.test/evt-versions/agenda.pdf"
+	agendaURL := "https://agency.test/evt-versions/agenda"
 
 	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, agendaURL, day(3)), "completed")
+	if got := eventTypesOf(t, pool, meeting.ID); !sameTypes(got, store.EventAgendaPublished) {
+		t.Fatalf("events after the first agenda = %v, want one agenda_published", got)
+	}
 
-	source.set("text/plain", "  Board   Meeting\r\n\r\nItem 1.\tCall to Order\n")
+	source.set("text/plain", plainAgenda(agendaV1))
 	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, agendaURL, day(2)), "completed")
 	if versions := versionsOf(t, pool, meeting.ID); len(versions) != 1 {
 		t.Fatalf("versions after identical text = %d, want 1", len(versions))
@@ -193,16 +253,21 @@ func TestProcessAgendaStoresAVersionOnlyWhenTheTextChanges(t *testing.T) {
 	if got := agendaFollowUp.got(); len(got) != 1 {
 		t.Errorf("agenda follow-up calls after identical text = %d, want 1", len(got))
 	}
+	if got := eventTypesOf(t, pool, meeting.ID); !sameTypes(got, store.EventAgendaPublished) {
+		t.Errorf("events after an unchanged re-run = %v, want only the first agenda_published", got)
+	}
 
-	source.set("text/html", "<html><body><h1>Board Meeting</h1><p>Item 1. Call to Order</p><p>Item 2. Budget</p></body></html>")
+	source.set("text/html", htmlAgenda(agendaV2))
 	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, agendaURL, day(1)), "completed")
 	versions := versionsOf(t, pool, meeting.ID)
-	if len(versions) != 2 || versions[0].Version != 2 || versions[0].Text != "Board Meeting\nItem 1. Call to Order\nItem 2. Budget" {
+	if len(versions) != 2 || versions[0].Version != 2 || versions[0].Text != strings.Join(agendaV2, "\n") {
 		t.Fatalf("versions after changed text = %+v", versions)
 	}
-	got := agendaFollowUp.got()
-	if len(got) != 2 || got[1].Version != 2 {
+	if got := agendaFollowUp.got(); len(got) != 2 || got[1].Version != 2 {
 		t.Errorf("agenda follow-up calls = %+v, want versions 1 and 2", got)
+	}
+	if got := eventTypesOf(t, pool, meeting.ID); !sameTypes(got, store.EventAgendaPublished, store.EventAgendaChanged) {
+		t.Errorf("events after a change = %v, want agenda_published then agenda_changed", got)
 	}
 }
 
@@ -211,7 +276,7 @@ func TestProcessAgendaCancelsPermanentFailuresAndRetriesTransientOnes(t *testing
 	agencyID := seedAgency(t, pool, "jobs-test-agenda-errors-"+randomSuffix(t), "live")
 	gone := seedMeeting(t, pool, agencyID, "evt-gone")
 	flaky := seedMeeting(t, pool, agencyID, "evt-flaky")
-	source := serving("text/plain", "Agenda")
+	source := serving("text/plain", plainAgenda(agendaV1))
 	h := start(t, pool, jobs.Config{Fetcher: source})
 
 	source.fail(&fetch.Error{StatusCode: 404, Err: errors.New("not found")})
@@ -237,17 +302,51 @@ func TestProcessAgendaCancelsPermanentFailuresAndRetriesTransientOnes(t *testing
 	source.set("application/zip", "PK\x03\x04")
 	testdb.WaitForJobState(t, pool, h.processAgenda(gone.ID, "https://agency.test/agenda.zip", day(0)), "cancelled")
 
+	source.set("text/plain", "Agenda to follow.")
+	testdb.WaitForJobState(t, pool, h.processAgenda(gone.ID, "https://agency.test/short.txt", day(0)), "cancelled")
+	if n := len(versionsOf(t, pool, gone.ID)); n != 0 {
+		t.Errorf("an implausibly short agenda stored %d versions", n)
+	}
+
 	testdb.WaitForJobState(t, pool, h.processAgenda(uuid.New(), "https://agency.test/missing.pdf", day(0)), "cancelled")
 }
 
-func TestAgendaFollowUpErrorRollsBackTheVersion(t *testing.T) {
+func TestProcessAgendaNeverStoresABotCheckPage(t *testing.T) {
+	pool := testdb.Pool(t)
+	agencyID := seedAgency(t, pool, "jobs-test-agenda-blocked-"+randomSuffix(t), "live")
+	rescued := seedMeeting(t, pool, agencyID, "evt-rescued")
+	stuck := seedMeeting(t, pool, agencyID, "evt-stuck")
+	interstitial, err := os.ReadFile("../extract/testdata/imperva_interstitial.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback := serving("text/markdown", "# "+strings.Join(agendaV1, "\n\n"))
+	h := start(t, pool, jobs.Config{Fetcher: serving("text/html", string(interstitial)), Fallback: fallback})
+
+	testdb.WaitForJobState(t, pool, h.processAgenda(rescued.ID, "https://agency.test/rescued/agenda.pdf", day(0)), "completed")
+	versions := versionsOf(t, pool, rescued.ID)
+	if len(versions) != 1 || !strings.Contains(versions[0].Text, "13. Receive the quarterly ridership") {
+		t.Errorf("versions through the fallback = %+v", versions)
+	}
+
+	fallback.set("text/markdown", "# Pardon Our Interruption\n\nAs you were browsing something about your browser made us think you were a bot.")
+	job := h.waitForError(h.processAgenda(stuck.ID, "https://agency.test/stuck/agenda.pdf", day(0)))
+	if job.State == rivertype.JobStateCancelled || job.State == rivertype.JobStateDiscarded {
+		t.Errorf("state = %s for a blocked agenda, want a retry", job.State)
+	}
+	if n := len(versionsOf(t, pool, stuck.ID)); n != 0 {
+		t.Errorf("a bot check page was stored as %d versions", n)
+	}
+	if got := eventTypesOf(t, pool, stuck.ID); len(got) != 0 {
+		t.Errorf("a bot check page recorded events %v", got)
+	}
+}
+
+func TestAgendaFollowUpErrorRollsBackTheVersionAndItsEvent(t *testing.T) {
 	pool := testdb.Pool(t)
 	agencyID := seedAgency(t, pool, "jobs-test-agenda-rollback-"+randomSuffix(t), "live")
 	meeting := seedMeeting(t, pool, agencyID, "evt-rollback")
-	h := start(t, pool, jobs.Config{
-		Fetcher:        serving("text/plain", "Agenda"),
-		AgendaFollowUp: &recordingAgendaFollowUp{err: errors.New("outbox unavailable")},
-	})
+	h := start(t, pool, jobs.Config{AgendaFollowUp: &recordingAgendaFollowUp{err: errors.New("summary enqueue failed")}})
 
 	job := h.waitForError(h.processAgenda(meeting.ID, "https://agency.test/agenda.pdf", day(0)))
 	if job.State == rivertype.JobStateCancelled || job.State == rivertype.JobStateDiscarded {
@@ -255,6 +354,9 @@ func TestAgendaFollowUpErrorRollsBackTheVersion(t *testing.T) {
 	}
 	if n := len(versionsOf(t, pool, meeting.ID)); n != 0 {
 		t.Errorf("versions committed despite the follow-up error: %d", n)
+	}
+	if got := eventTypesOf(t, pool, meeting.ID); len(got) != 0 {
+		t.Errorf("events committed despite the follow-up error: %v", got)
 	}
 }
 
@@ -291,5 +393,46 @@ func TestProcessAgendaIsEnqueuedOnlyWhenTheCheckCommits(t *testing.T) {
 	h.waitForError(h.check(slug, day(0)))
 	if queued := h.processAgendaJobs(); len(queued) != 0 {
 		t.Errorf("process agenda jobs after a rolled-back check = %d, want 0", len(queued))
+	}
+}
+
+type enqueueOnClosedTx struct {
+	pool *pgxpool.Pool
+	mu   sync.Mutex
+	errs []error
+}
+
+func (f *enqueueOnClosedTx) MeetingUpserted(ctx context.Context, _ pgx.Tx, m jobs.UpsertedMeeting) error {
+	closed, err := f.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	if err := closed.Rollback(ctx); err != nil {
+		return err
+	}
+	err = jobs.EnqueueProcessAgenda{}.MeetingUpserted(ctx, closed, m)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.errs = append(f.errs, err)
+	return err
+}
+
+func TestEnqueueProcessAgendaReportsAnInsertError(t *testing.T) {
+	pool := testdb.Pool(t)
+	slug := "jobs-test-agenda-insert-error-" + randomSuffix(t)
+	seedAgency(t, pool, slug, "live")
+	m := boardMeeting("a", fixedNow.AddDate(0, 0, 1), sources.StatusScheduled)
+	m.AgendaURL = "https://agency.test/a/agenda.pdf"
+	followUp := &enqueueOnClosedTx{pool: pool}
+	h := start(t, pool, jobs.Config{
+		Registry: registry(map[string]sources.Adapter{slug: sourcestest.Returning(m)}),
+		FollowUp: followUp,
+	})
+
+	h.waitForError(h.check(slug, day(0)))
+	followUp.mu.Lock()
+	defer followUp.mu.Unlock()
+	if len(followUp.errs) == 0 || followUp.errs[0] == nil || !strings.Contains(followUp.errs[0].Error(), "enqueue process agenda") {
+		t.Errorf("errors = %v, want an enqueue process agenda error", followUp.errs)
 	}
 }

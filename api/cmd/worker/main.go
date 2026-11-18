@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
+	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
@@ -47,16 +48,29 @@ func run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
-	fetcher := fetch.New(cfg.Fetch)
+	firecrawl := fetch.NewFirecrawl(cfg.Fetch)
+	fetcher := fetch.NewFallback(fetch.NewPlain(cfg.Fetch), firecrawl)
+	pdfExtractor := extract.NewSubprocess(cfg.Extract)
 	registry := sources.NewRegistry(sources.Deps{Fetcher: fetcher, Clock: sources.SystemClock{}}, adapters)
-	client, err := jobs.NewClient(pool, logger, jobs.Config{Registry: registry, Fetcher: fetcher, CheckHourUTC: cfg.Ingest.CheckHourUTC})
+	client, err := jobs.NewClient(pool, logger, jobs.Config{
+		Registry:     registry,
+		Fetcher:      fetcher,
+		Fallback:     firecrawl,
+		Extractor:    &extract.Extractor{PDF: pdfExtractor},
+		CheckHourUTC: cfg.Ingest.CheckHourUTC,
+	})
 	if err != nil {
 		return err
 	}
 	if err := client.Start(context.WithoutCancel(ctx)); err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC)
+	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC,
+		"pdf_extractor", pdfExtractor.Binary)
+	if _, err := os.Stat(pdfExtractor.Binary); err != nil {
+		logger.WarnContext(ctx, "pdf extractor not found: PDF agendas will be cancelled; build it next to the worker or set EXTRACT_PDF_BINARY",
+			"pdf_extractor", pdfExtractor.Binary, "error", err)
+	}
 
 	<-ctx.Done()
 	logger.InfoContext(ctx, "worker shutting down")

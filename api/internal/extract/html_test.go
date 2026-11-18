@@ -1,6 +1,10 @@
 package extract
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestHTMLTextKeepsVisibleTextInBlocks(t *testing.T) {
 	page := `<!DOCTYPE html>
@@ -15,7 +19,7 @@ func TestHTMLTextKeepsVisibleTextInBlocks(t *testing.T) {
 <table><tr><th>Item</th><th>Title</th></tr><tr><td>5.</td><td>Approve Consent Calendar</td></tr></table>
 <noscript>Enable JavaScript</noscript>
 </body></html>`
-	got, err := Text("text/html; charset=utf-8", []byte(page))
+	got, err := extractor().Text(t.Context(), Request{ContentType: "text/html; charset=utf-8", Body: []byte(page)})
 	if err != nil {
 		t.Fatalf("Text: %v", err)
 	}
@@ -26,12 +30,21 @@ func TestHTMLTextKeepsVisibleTextInBlocks(t *testing.T) {
 }
 
 func TestHTMLTextDecodesTheDeclaredCharset(t *testing.T) {
-	page := []byte("<html><body><p>Caf\xe9 Agenda</p></body></html>")
-	got, err := Text("text/html; charset=iso-8859-1", page)
-	if err != nil {
-		t.Fatalf("Text: %v", err)
+	cases := map[string][]byte{
+		"text/html; charset=iso-8859-1": []byte("<html><body><p>Caf\xe9 Agenda</p></body></html>"),
+		"text/html":                     []byte(`<html><head><meta charset="windows-1252"></head><body><p>Caf` + "\xe9" + ` Agenda</p></body></html>`),
 	}
-	if got != "Café Agenda" {
-		t.Errorf("Text = %q", got)
+	for ct, page := range cases {
+		got, err := extractor().Text(t.Context(), Request{ContentType: ct, Body: page})
+		if err != nil || got != "Café Agenda" {
+			t.Errorf("Text(%q) = %q, %v", ct, got, err)
+		}
+	}
+}
+
+func TestHTMLTooDeeplyNestedIsMalformed(t *testing.T) {
+	page := strings.Repeat("<div>", 600) + "Agenda" + strings.Repeat("</div>", 600)
+	if _, err := extractor().Text(t.Context(), Request{ContentType: "text/html", Body: []byte(page)}); !errors.Is(err, ErrMalformed) {
+		t.Errorf("err = %v, want ErrMalformed", err)
 	}
 }

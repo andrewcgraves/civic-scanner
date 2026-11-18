@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -65,15 +67,21 @@ func (NoAgendaFollowUp) AgendaVersionAdded(context.Context, pgx.Tx, store.Agenda
 	return nil
 }
 
+type TextExtractor interface {
+	Text(ctx context.Context, req extract.Request) (string, error)
+}
+
 type ProcessAgendaWorker struct {
 	river.WorkerDefaults[ProcessAgendaArgs]
 
-	logger   *slog.Logger
-	pool     *pgxpool.Pool
-	store    *store.Store
-	fetcher  fetch.Fetcher
-	enabled  func(context.Context, string) bool
-	followUp AgendaFollowUp
+	logger    *slog.Logger
+	pool      *pgxpool.Pool
+	store     *store.Store
+	fetcher   fetch.Fetcher
+	fallback  fetch.Fetcher
+	extractor TextExtractor
+	enabled   func(context.Context, string) bool
+	followUp  AgendaFollowUp
 }
 
 func (w *ProcessAgendaWorker) Timeout(*river.Job[ProcessAgendaArgs]) time.Duration {
@@ -91,13 +99,17 @@ func (w *ProcessAgendaWorker) Work(ctx context.Context, job *river.Job[ProcessAg
 		return river.JobCancel(ErrNoFetcher)
 	}
 
-	resp, err := w.fetcher.Fetch(ctx, fetch.Request{URL: args.AgendaURL})
-	if err != nil {
-		return agendaFetchError(args.AgendaURL, err)
+	text, resp, err := w.read(ctx, logger, w.fetcher, args.AgendaURL)
+	if errors.Is(err, extract.ErrBlocked) && w.fallback != nil {
+		logger.WarnContext(ctx, "agenda blocked, trying the fallback fetcher", "error", err)
+		var fallbackErr error
+		text, resp, fallbackErr = w.read(ctx, logger, w.fallback, args.AgendaURL)
+		if !errors.Is(fallbackErr, fetch.ErrNotConfigured) {
+			err = fallbackErr
+		}
 	}
-	text, err := extract.Text(resp.ContentType, resp.Body)
 	if err != nil {
-		return river.JobCancel(fmt.Errorf("agenda %s: %w", args.AgendaURL, err))
+		return agendaError(args.AgendaURL, err)
 	}
 
 	version, created, err := w.addVersion(ctx, args, text)
@@ -110,6 +122,24 @@ func (w *ProcessAgendaWorker) Work(ctx context.Context, job *river.Job[ProcessAg
 	logger.InfoContext(ctx, "agenda processed", "version", version.Version, "created", created,
 		"content_type", resp.ContentType, "bytes", len(resp.Body), "characters", len(text))
 	return nil
+}
+
+func (w *ProcessAgendaWorker) read(ctx context.Context, logger *slog.Logger, fetcher fetch.Fetcher, agendaURL string) (string, fetch.Response, error) {
+	resp, err := fetcher.Fetch(ctx, fetch.Request{URL: agendaURL})
+	if err != nil {
+		return "", resp, fmt.Errorf("fetch agenda: %w", err)
+	}
+	text, err := w.extractor.Text(ctx, extract.Request{ContentType: resp.ContentType, Body: resp.Body, ExpectPDF: expectsPDF(agendaURL)})
+	if err != nil {
+		logger.InfoContext(ctx, "agenda text not extracted", "content_type", resp.ContentType, "bytes", len(resp.Body), "error", err)
+		return "", resp, fmt.Errorf("extract agenda: %w", err)
+	}
+	return text, resp, nil
+}
+
+func expectsPDF(agendaURL string) bool {
+	u, err := url.Parse(agendaURL)
+	return err == nil && strings.HasSuffix(strings.ToLower(u.Path), ".pdf")
 }
 
 func (w *ProcessAgendaWorker) addVersion(ctx context.Context, args ProcessAgendaArgs, text string) (store.AgendaVersion, bool, error) {
@@ -136,9 +166,9 @@ func (w *ProcessAgendaWorker) addVersion(ctx context.Context, args ProcessAgenda
 	return version, created, err
 }
 
-func agendaFetchError(agendaURL string, err error) error {
-	err = fmt.Errorf("fetch agenda %s: %w", agendaURL, err)
-	if sources.Retryable(err) {
+func agendaError(agendaURL string, err error) error {
+	err = fmt.Errorf("agenda %s: %w", agendaURL, err)
+	if sources.Retryable(err) || errors.Is(err, extract.ErrBlocked) {
 		return err
 	}
 	return river.JobCancel(err)
