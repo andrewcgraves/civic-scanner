@@ -69,7 +69,7 @@ func TestEachNewAgendaVersionIsSummarizedOnThatVersion(t *testing.T) {
 		n.Add(1)
 		return llm.Response{Text: "The board meets on December 4.", FinishReason: "stop", Model: "fake/model"}, nil
 	}}
-	h := start(t, pool, jobs.Config{Fetcher: source, LLM: fake, SummaryTier: llm.TierStrong})
+	h := start(t, pool, jobs.Config{Fetcher: source, LLM: fake, SummaryTier: llm.TierStrong, Enabled: allFlagsBut(jobs.FlagAgendaChanges)})
 	agendaURL := "https://agency.test/summary/agenda.txt"
 
 	testdb.WaitForJobState(t, pool, h.processAgenda(m.ID, agendaURL, day(1)), "completed")
@@ -333,7 +333,7 @@ func TestAFlipBackToEarlierTextReusesItsSummary(t *testing.T) {
 		}
 		return llm.Response{Text: "Summary of the first text.", FinishReason: "stop"}, nil
 	}}
-	h := start(t, pool, jobs.Config{Fetcher: source, LLM: fake})
+	h := start(t, pool, jobs.Config{Fetcher: source, LLM: fake, Enabled: allFlagsBut(jobs.FlagAgendaChanges)})
 	agendaURL := "https://agency.test/flip/agenda.txt"
 
 	testdb.WaitForJobState(t, pool, h.processAgenda(m.ID, agendaURL, day(2)), "completed")
