@@ -69,7 +69,7 @@ export default defineRailway(() => {
       DATABASE_URL: db.env.DATABASE_URL,
       APP_ENV: "production",
       LOG_LEVEL: "info",
-      FEATURE_FLAGS: "ingest-check-agencies",
+      FEATURE_FLAGS: "ingest-check-agencies,ingest-summarize-agendas",
       AI_GATEWAY_API_KEY: preserve(),
       FIRECRAWL_API_KEY: preserve(),
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
