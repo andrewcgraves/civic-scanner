@@ -24,6 +24,9 @@ const (
 	changeSweepInterval = time.Hour
 	changeSweepLimit    = 50
 	changeSweepGrace    = 10 * time.Minute
+	changeStaleAfter    = 3 * time.Hour
+	changeOrderWait     = time.Hour
+	changeOrderSnooze   = 5 * time.Minute
 )
 
 type DescribeAgendaChangeArgs struct {
@@ -56,7 +59,9 @@ func enqueueDescribeAgendaChange(ctx context.Context, tx pgx.Tx, queue string, v
 type changeStore interface {
 	GetAgendaVersion(ctx context.Context, versionID uuid.UUID) (store.AgendaVersion, error)
 	PreviousAgendaVersion(ctx context.Context, v store.AgendaVersion) (store.AgendaVersion, error)
-	RecordAgendaChange(ctx context.Context, versionID uuid.UUID, note string) (store.AgendaVersion, bool, error)
+	EarlierPendingAgendaVersions(ctx context.Context, v store.AgendaVersion) ([]store.AgendaVersion, error)
+	AgendaJobFailedBefore(ctx context.Context, kind string, versionID uuid.UUID) (bool, error)
+	RecordAgendaChange(ctx context.Context, versionID uuid.UUID, note string, source store.NoteSource) (store.AgendaVersion, bool, error)
 }
 
 type DescribeAgendaChangeWorker struct {
@@ -64,6 +69,7 @@ type DescribeAgendaChangeWorker struct {
 
 	logger     *slog.Logger
 	store      changeStore
+	clock      sources.Clock
 	llm        llm.Client
 	tier       llm.Tier
 	llmTimeout time.Duration
@@ -91,59 +97,105 @@ func (w *DescribeAgendaChangeWorker) Work(ctx context.Context, job *river.Job[De
 		return nil
 	}
 
-	previous, err := w.store.PreviousAgendaVersion(ctx, v)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return err
-	}
-	diff := agendadiff.Compare(previous.Text, v.Text)
-	note, source, err := w.note(ctx, logger, job, diff)
+	earlier, err := w.store.EarlierPendingAgendaVersions(ctx, v)
 	if err != nil {
 		return err
+	}
+	if len(earlier) > 0 {
+		waited := w.clock.Now().Sub(earlier[0].CreatedAt)
+		if waited < changeOrderWait {
+			logger.InfoContext(ctx, "agenda change waits for an earlier version", "earlier_version", earlier[0].Version, "waited", waited)
+			return river.JobSnooze(changeOrderSnooze)
+		}
+		for _, e := range earlier {
+			logger.WarnContext(ctx, "recording a stuck earlier agenda change with the word diff", "earlier_version", e.Version, "waited", w.clock.Now().Sub(e.CreatedAt))
+			if err := w.recordWithDiff(ctx, logger, e); err != nil {
+				return err
+			}
+		}
 	}
 
-	_, recorded, err := w.store.RecordAgendaChange(ctx, v.ID, note)
-	if errors.Is(err, store.ErrNotFound) {
-		return river.JobCancel(err)
-	}
+	diff, err := w.diff(ctx, v)
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "agenda change recorded", "source", source, "recorded", recorded,
-		"changes", len(diff.Changes), "coarse", diff.Coarse, "note_bytes", len(note))
+	note, source, reason, err := w.note(ctx, logger, job, v, diff)
+	if err != nil {
+		return err
+	}
+	return w.record(ctx, logger, v, diff, note, source, reason)
+}
+
+func (w *DescribeAgendaChangeWorker) diff(ctx context.Context, v store.AgendaVersion) (agendadiff.Diff, error) {
+	previous, err := w.store.PreviousAgendaVersion(ctx, v)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return agendadiff.Diff{}, err
+	}
+	return agendadiff.Compare(ctx, previous.Text, v.Text)
+}
+
+func (w *DescribeAgendaChangeWorker) recordWithDiff(ctx context.Context, logger *slog.Logger, v store.AgendaVersion) error {
+	diff, err := w.diff(ctx, v)
+	if err != nil {
+		return err
+	}
+	return w.record(ctx, logger.With("version", v.Version), v, diff, summarize.FallbackChangeNote(diff), store.NoteFromDiff, "stuck_earlier_version")
+}
+
+func (w *DescribeAgendaChangeWorker) record(ctx context.Context, logger *slog.Logger, v store.AgendaVersion, diff agendadiff.Diff, note string, source store.NoteSource, reason string) error {
+	_, recorded, err := w.store.RecordAgendaChange(ctx, v.ID, note, source)
+	switch {
+	case errors.Is(err, store.ErrEarlierChangePending):
+		logger.InfoContext(ctx, "agenda change waits for an earlier version")
+		return river.JobSnooze(changeOrderSnooze)
+	case errors.Is(err, store.ErrNotFound):
+		return river.JobCancel(err)
+	case err != nil:
+		return err
+	}
+	logger.InfoContext(ctx, "agenda change recorded", "note_source", source, "reason", reason, "recorded", recorded,
+		"changes", len(diff.Changes), "coarse", diff.Coarse, "too_large", diff.TooLarge, "note_bytes", len(note))
 	return nil
 }
 
-func (w *DescribeAgendaChangeWorker) note(ctx context.Context, logger *slog.Logger, job *river.Job[DescribeAgendaChangeArgs], diff agendadiff.Diff) (string, string, error) {
+func (w *DescribeAgendaChangeWorker) note(ctx context.Context, logger *slog.Logger, job *river.Job[DescribeAgendaChangeArgs], v store.AgendaVersion, diff agendadiff.Diff) (string, store.NoteSource, string, error) {
 	fallback := summarize.FallbackChangeNote(diff)
 	switch {
 	case diff.Equivalent():
-		return fallback, "no_differences", nil
+		return fallback, store.NoteFromDiff, "no_differences", nil
+	case diff.TooLarge:
+		return fallback, store.NoteFromDiff, "too_large", nil
 	case !w.enabled(ctx, FlagAgendaChanges):
-		return fallback, "fallback_flag_off", nil
+		return fallback, store.NoteFromDiff, "flag_off", nil
 	case w.llm == nil:
-		return fallback, "fallback_no_llm", nil
+		return fallback, store.NoteFromDiff, "no_llm", nil
+	case job.Attempt > 1:
+		return fallback, store.NoteFromDiff, "retry", nil
+	}
+	failed, err := w.store.AgendaJobFailedBefore(ctx, DescribeAgendaChangeArgs{}.Kind(), v.ID)
+	if err != nil {
+		return "", "", "", err
+	}
+	if failed {
+		return fallback, store.NoteFromDiff, "earlier_job_failed", nil
 	}
 
 	result, err := summarize.AgendaChange(ctx, w.llm, w.tier, diff)
 	attrs := []any{
 		"tier", w.tier, "model", result.Response.Model, "finish_reason", result.Response.FinishReason,
 		"input_tokens", result.Response.Usage.InputTokens, "output_tokens", result.Response.Usage.OutputTokens,
-		"input_bytes", result.Input.Bytes, "input_truncated", result.Input.Truncated, "attempt", job.Attempt,
+		"input_bytes", result.Input.Bytes, "input_truncated", result.Input.Truncated,
 	}
-	if err == nil {
-		logger.InfoContext(ctx, "agenda change described", attrs...)
-		return result.Note, "model", nil
+	if err != nil {
+		logger.WarnContext(ctx, "agenda change not described by the model, using the word diff", append(attrs, "error", err)...)
+		return fallback, store.NoteFromDiff, "model_failed", nil
 	}
-	if llm.IsRetryable(err) && job.Attempt < job.MaxAttempts {
-		logger.WarnContext(ctx, "agenda change not described, will retry", append(attrs, "error", err)...)
-		return "", "", fmt.Errorf("describe agenda change: %w", err)
-	}
-	logger.WarnContext(ctx, "agenda change not described by the model, using the word diff", append(attrs, "error", err)...)
-	return fallback, "fallback_model_failed", nil
+	logger.InfoContext(ctx, "agenda change described", attrs...)
+	return result.Note, store.NoteFromModel, "model", nil
 }
 
 type changeSweepStore interface {
-	ListPendingAgendaChanges(ctx context.Context, createdBefore time.Time, limit int) ([]uuid.UUID, error)
+	ListPendingAgendaChanges(ctx context.Context, createdBefore time.Time, limit int) ([]store.PendingAgendaChange, error)
 }
 
 type EnqueueAgendaChangesArgs struct {
@@ -170,9 +222,19 @@ type EnqueueAgendaChangesWorker struct {
 
 func (w *EnqueueAgendaChangesWorker) Work(ctx context.Context, job *river.Job[EnqueueAgendaChangesArgs]) error {
 	logger := w.logger.With("job_id", job.ID, "slot", job.Args.Slot)
-	ids, err := w.store.ListPendingAgendaChanges(ctx, w.clock.Now().Add(-changeSweepGrace), changeSweepLimit)
+	now := w.clock.Now()
+	pending, err := w.store.ListPendingAgendaChanges(ctx, now.Add(-changeSweepGrace), changeSweepLimit)
 	if err != nil {
 		return err
+	}
+	for _, p := range pending {
+		if age := now.Sub(p.CreatedAt); age > changeStaleAfter {
+			logger.WarnContext(ctx, "agenda change still pending its event", "agenda_version_id", p.ID, "pending_for", age)
+		}
+	}
+	ids := make([]uuid.UUID, 0, len(pending))
+	for _, p := range pending {
+		ids = append(ids, p.ID)
 	}
 	if len(ids) == 0 {
 		logger.InfoContext(ctx, "agenda changes swept: none pending")

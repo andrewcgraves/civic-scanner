@@ -106,7 +106,7 @@ func renderChanges(diff agendadiff.Diff, limit int) (string, bool) {
 }
 
 func AgendaChange(ctx context.Context, client llm.Client, tier llm.Tier, diff agendadiff.Diff) (ChangeResult, error) {
-	if diff.Equivalent() {
+	if len(diff.Changes) == 0 {
 		return ChangeResult{}, ErrNoChanges
 	}
 	req, input, err := ChangeRequest(tier, diff)
@@ -132,7 +132,7 @@ func AgendaChange(ctx context.Context, client llm.Client, tier llm.Tier, diff ag
 
 func FallbackChangeNote(diff agendadiff.Diff) string {
 	switch {
-	case diff.Equivalent():
+	case diff.Equivalent(), diff.TooLarge, len(diff.Changes) == 0:
 		return RevisedNote
 	case diff.Coarse:
 		return RewrittenNote

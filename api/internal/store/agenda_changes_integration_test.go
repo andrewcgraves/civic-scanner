@@ -3,6 +3,7 @@
 package store_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -36,7 +37,7 @@ func eventTypes(t *testing.T, s *store.Store, meetingID uuid.UUID) []store.Event
 	return types
 }
 
-func TestAnEquivalentTextAddsNothing(t *testing.T) {
+func TestAnEquivalentTextAddsNoVersion(t *testing.T) {
 	ctx := t.Context()
 	pool := testdb.Pool(t)
 	s := store.New(pool)
@@ -60,6 +61,7 @@ func TestAnEquivalentTextAddsNothing(t *testing.T) {
 		t.Errorf("Equivalent saw %q, want the latest text", seen)
 	}
 
+	in = agendaInput(meetingID, "1. Call to Order\n2. Roll Call")
 	in.Equivalent = func(string) bool { return false }
 	if _, created, err := s.AddAgendaVersion(ctx, in); err != nil || !created {
 		t.Errorf("non-equivalent add = (created %v, %v), want created", created, err)
@@ -95,7 +97,7 @@ func TestADeferredChangeIsPendingWithoutAnEventUntilRecorded(t *testing.T) {
 		t.Errorf("previous of version 1 err = %v, want ErrNotFound", err)
 	}
 
-	recorded, ok, err := s.RecordAgendaChange(ctx, second.ID, "Item 2 was replaced.")
+	recorded, ok, err := s.RecordAgendaChange(ctx, second.ID, "Item 2 was replaced.", store.NoteFromModel)
 	if err != nil || !ok || recorded.ChangeEventPending || recorded.ChangeNote == nil || *recorded.ChangeNote != "Item 2 was replaced." {
 		t.Fatalf("record = (%+v, %v, %v)", recorded, ok, err)
 	}
@@ -107,21 +109,26 @@ func TestADeferredChangeIsPendingWithoutAnEventUntilRecorded(t *testing.T) {
 	if err := json.Unmarshal(events[1].Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["agenda_version_id"] != second.ID.String() || payload["version"] != float64(2) || payload["change_note"] != "Item 2 was replaced." {
+	if payload["agenda_version_id"] != second.ID.String() || payload["version"] != float64(2) || payload["change_note"] != "Item 2 was replaced." ||
+		payload["note_source"] != "model" || payload["found_at"] == nil {
 		t.Errorf("payload = %s", events[1].Payload)
+	}
+	var found agendaFound
+	if err := json.Unmarshal(events[1].Payload, &found); err != nil || !found.FoundAt.Equal(second.CreatedAt) || !events[1].OccurredAt.Equal(second.CreatedAt) {
+		t.Errorf("found_at = %v, occurred_at = %v, want both the version's created_at %v", found.FoundAt, events[1].OccurredAt, second.CreatedAt)
 	}
 	if strings.Contains(string(mustEvents(t, s, meetingID)[0].Payload), "change_note") {
 		t.Errorf("agenda_published payload carries a change note: %s", mustEvents(t, s, meetingID)[0].Payload)
 	}
 
-	again, ok, err := s.RecordAgendaChange(ctx, second.ID, "another note")
+	again, ok, err := s.RecordAgendaChange(ctx, second.ID, "another note", store.NoteFromDiff)
 	if err != nil || ok || again.ChangeNote == nil || *again.ChangeNote != "Item 2 was replaced." {
 		t.Errorf("second record = (%v, %v, %v), want nothing written", again.ChangeNote, ok, err)
 	}
 	if n := len(mustEvents(t, s, meetingID)); n != 2 {
 		t.Errorf("events after a second record = %d, want 2", n)
 	}
-	if _, _, err := s.RecordAgendaChange(ctx, uuid.New(), "note"); !errors.Is(err, store.ErrNotFound) {
+	if _, _, err := s.RecordAgendaChange(ctx, uuid.New(), "note", store.NoteFromDiff); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("record of a missing version err = %v, want ErrNotFound", err)
 	}
 }
@@ -150,7 +157,7 @@ func TestRecordingAChangeKeepsANoteAlreadySet(t *testing.T) {
 	if _, err := s.SetAgendaChangeNote(ctx, second.ID, "Written by hand."); err != nil {
 		t.Fatal(err)
 	}
-	recorded, ok, err := s.RecordAgendaChange(ctx, second.ID, "From the model.")
+	recorded, ok, err := s.RecordAgendaChange(ctx, second.ID, "From the model.", store.NoteFromModel)
 	if err != nil || !ok || *recorded.ChangeNote != "Written by hand." {
 		t.Errorf("record = (%v, %v, %v), want the existing note kept", recorded.ChangeNote, ok, err)
 	}
@@ -177,7 +184,7 @@ func TestConcurrentRecordsWriteOneEvent(t *testing.T) {
 	)
 	for range runs {
 		wg.Go(func() {
-			_, ok, err := s.RecordAgendaChange(ctx, second.ID, "note")
+			_, ok, err := s.RecordAgendaChange(ctx, second.ID, "note", store.NoteFromDiff)
 			if err != nil {
 				t.Error(err)
 			}
@@ -218,14 +225,27 @@ func TestListPendingAgendaChangesSkipsRecentAndRecordedVersions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ids, err := s.ListPendingAgendaChanges(ctx, cutoff, 1000)
+	ids, err := pendingIDs(ctx, s, cutoff)
 	if err != nil || !slices.Contains(ids, old.ID) || slices.Contains(ids, recent.ID) {
 		t.Errorf("pending = (%v, %v), want version 2 and not the recent version 3", ids, err)
 	}
-	if _, _, err := s.RecordAgendaChange(ctx, old.ID, "note"); err != nil {
+	if _, _, err := s.RecordAgendaChange(ctx, old.ID, "note", store.NoteFromDiff); err != nil {
 		t.Fatal(err)
 	}
-	if ids, err := s.ListPendingAgendaChanges(ctx, cutoff, 1000); err != nil || slices.Contains(ids, old.ID) {
+	if ids, err := pendingIDs(ctx, s, cutoff); err != nil || slices.Contains(ids, old.ID) {
 		t.Errorf("pending after recording = (%v, %v)", ids, err)
 	}
+}
+
+type agendaFound struct {
+	FoundAt time.Time `json:"found_at"`
+}
+
+func pendingIDs(ctx context.Context, s *store.Store, before time.Time) ([]uuid.UUID, error) {
+	pending, err := s.ListPendingAgendaChanges(ctx, before, 1000)
+	var ids []uuid.UUID
+	for _, p := range pending {
+		ids = append(ids, p.ID)
+	}
+	return ids, err
 }

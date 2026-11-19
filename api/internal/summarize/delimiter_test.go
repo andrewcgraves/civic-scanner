@@ -7,13 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrewcgraves/civic-scanner/api/internal/agendadiff"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm/llmtest"
 )
 
 func TestAChangeRequestWithoutADelimiterIsAnError(t *testing.T) {
-	diff := agendadiff.Compare("1. Call to Order", "1. Call to Order\n2. Roll Call")
+	diff := diffOf(t, "1. Call to Order", "1. Call to Order\n2. Roll Call")
 	if _, _, err := changeRequest(llm.TierRoutine, diff, bytes.NewReader(nil)); err == nil {
 		t.Error("err = nil, want the read error")
 	}

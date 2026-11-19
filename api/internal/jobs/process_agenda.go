@@ -124,7 +124,7 @@ func (w *ProcessAgendaWorker) Work(ctx context.Context, job *river.Job[ProcessAg
 		return err
 	}
 	logger.InfoContext(ctx, "agenda processed", "version", version.Version, "created", created,
-		"formatting_only", !created && version.ContentHash != hash, "change_event_pending", created && version.ChangeEventPending,
+		"formatting_only", version.RefreshedInPlace, "change_event_pending", created && version.ChangeEventPending,
 		"content_type", resp.ContentType, "bytes", len(resp.Body), "characters", len(text))
 	return nil
 }
@@ -159,7 +159,7 @@ func (w *ProcessAgendaWorker) addVersion(ctx context.Context, args ProcessAgenda
 		ContentHash: hash,
 	}
 	if detectChanges {
-		in.Equivalent = func(latest string) bool { return agendadiff.Equivalent(latest, text) }
+		in.Equivalent = func(latest string) bool { return agendadiff.Equivalent(ctx, latest, text) }
 		in.DeferChangeEvent = true
 	}
 	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {

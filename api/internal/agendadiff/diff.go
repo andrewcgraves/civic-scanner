@@ -1,6 +1,9 @@
 package agendadiff
 
-import "strings"
+import (
+	"context"
+	"strings"
+)
 
 const (
 	MaxDiffTokens  = 50_000
@@ -17,20 +20,27 @@ type Change struct {
 }
 
 type Diff struct {
-	Changes []Change
-	Coarse  bool
+	Changes  []Change
+	Coarse   bool
+	TooLarge bool
 }
 
 func (d Diff) Equivalent() bool {
-	return len(d.Changes) == 0
+	return !d.TooLarge && len(d.Changes) == 0
 }
 
 type span struct {
 	a0, a1, b0, b1 int
 }
 
-func Compare(old, updated string) Diff {
-	a, b := canonical(old, updated)
+func Compare(ctx context.Context, old, updated string) (Diff, error) {
+	if tooLarge(old, updated) {
+		return Diff{TooLarge: true}, nil
+	}
+	a, b, err := canonical(ctx, old, updated)
+	if err != nil {
+		return Diff{}, err
+	}
 	ka, kb := keysOf(a), keysOf(b)
 
 	prefix := 0
@@ -43,7 +53,7 @@ func Compare(old, updated string) Diff {
 	}
 	middle := span{a0: prefix, a1: len(ka) - suffix, b0: prefix, b1: len(kb) - suffix}
 	if middle.a0 == middle.a1 && middle.b0 == middle.b1 {
-		return Diff{}
+		return Diff{}, nil
 	}
 
 	var (
@@ -52,7 +62,9 @@ func Compare(old, updated string) Diff {
 	)
 	if (middle.a1-middle.a0)+(middle.b1-middle.b0) > MaxDiffTokens {
 		spans, coarse = []span{middle}, true
-	} else if found, ok := myers(ka[middle.a0:middle.a1], kb[middle.b0:middle.b1], MaxEditTokens); ok {
+	} else if found, ok, err := myers(ctx, ka[middle.a0:middle.a1], kb[middle.b0:middle.b1], MaxEditTokens); err != nil {
+		return Diff{}, err
+	} else if ok {
 		for _, s := range merge(found) {
 			spans = append(spans, span{a0: s.a0 + prefix, a1: s.a1 + prefix, b0: s.b0 + prefix, b1: s.b1 + prefix})
 		}
@@ -69,7 +81,7 @@ func Compare(old, updated string) Diff {
 			After:   b.render(s.b1, min(len(b.tokens), s.b1+ContextTokens), b.lastWord(s.b0, s.b1), -1),
 		})
 	}
-	return Diff{Changes: changes, Coarse: coarse}
+	return Diff{Changes: changes, Coarse: coarse}, nil
 }
 
 func keysOf(d document) []string {
@@ -123,13 +135,18 @@ func merge(spans []span) []span {
 	return merged
 }
 
-func myers(a, b []string, maxEdits int) ([]span, bool) {
+func myers(ctx context.Context, a, b []string, maxEdits int) ([]span, bool, error) {
 	n, m := len(a), len(b)
 	limit := min(n+m, maxEdits)
 	offset := limit + 1
 	v := make([]int, 2*limit+3)
 	var trace [][]int
 	for d := 0; d <= limit; d++ {
+		if d%64 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, false, err
+			}
+		}
 		trace = append(trace, append([]int(nil), v[offset-d-1:offset+d+2]...))
 		for k := -d; k <= d; k += 2 {
 			var x int
@@ -145,11 +162,11 @@ func myers(a, b []string, maxEdits int) ([]span, bool) {
 			}
 			v[offset+k] = x
 			if x >= n && y >= m {
-				return backtrack(trace, n, m, d), true
+				return backtrack(trace, n, m, d), true, nil
 			}
 		}
 	}
-	return nil, false
+	return nil, false, nil
 }
 
 func backtrack(trace [][]int, x, y, d int) []span {

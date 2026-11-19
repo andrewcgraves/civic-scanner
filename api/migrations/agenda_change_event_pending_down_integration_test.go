@@ -30,14 +30,16 @@ func TestAgendaChangeEventPendingMigrationRollsBackAndReapplies(t *testing.T) {
 		t.Fatal("change_event_pending missing after Up")
 	}
 
-	if _, err := provider.DownTo(ctx, 7); err != nil {
-		t.Fatalf("DownTo(7): %v", err)
+	if _, err := provider.DownTo(ctx, 9); err != nil {
+		t.Fatalf("DownTo(9): %v", err)
 	}
 	if columnExists(t, pool, schema, "agenda_versions", "change_event_pending") {
 		t.Error("change_event_pending still exists after rolling back 00011")
 	}
-	if !tableExists(t, pool, schema, "agenda_versions") {
-		t.Errorf("agenda_versions missing after rolling back only 00011 in %s", schema)
+	for _, table := range []string{"agenda_versions", "users"} {
+		if !tableExists(t, pool, schema, table) {
+			t.Errorf("%s missing after rolling back only 00011 in %s", table, schema)
+		}
 	}
 
 	if _, err := provider.Up(ctx); err != nil {

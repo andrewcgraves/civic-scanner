@@ -110,6 +110,7 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 	river.AddWorker(workers, &DescribeAgendaChangeWorker{
 		logger:     logger,
 		store:      st,
+		clock:      cfg.Clock,
 		llm:        cfg.LLM,
 		tier:       cfg.SummaryTier,
 		llmTimeout: cfg.LLMTimeout,

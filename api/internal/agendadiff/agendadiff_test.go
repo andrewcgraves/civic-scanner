@@ -149,14 +149,14 @@ Consent Calendar (Items 1 through 4)
 o 1. Approval of Minutes
 Approve the minutes of the December 8, 2026 Board of Directors meeting.
 - 1 -
-Board of Directors Meeting Agenda (Revised Layout)
+OCTA Board of Directors Agenda – January 12, 2027
 o 2. Agreement for Bus Maintenance Services
 Recommendation: Authorize the Chief Executive Officer to execute Agreement No. C-6-2214
 with Transdev Services, Inc., in the amount of $1,250,000, for bus maintenance services.
 o 3. Fiscal Year 2026-27 First Quarter Budget Status Report
 Recommendation: Receive and file as an information item.
 - 2 -
-Board of Directors Meeting Agenda (Revised Layout)
+OCTA Board of Directors Agenda – January 12, 2027
 o 4. State Legislative Status Report
 Recommendation: Adopt a support position on SB 71 (Wiener), regarding transit-oriented development near high-capacity rail stations.
 Regular Calendar
@@ -164,7 +164,7 @@ Regular Calendar
 Staff will present an update on testing and the anticipated start of revenue service in
 spring 2027. See the staff report for details.
 3
-Board of Directors Meeting Agenda (Revised Layout)
+OCTA Board of Directors Agenda – January 12, 2027
 6. Public Hearing on Proposed Fare Changes
 Recommendation: Hold a public hearing on the proposed increase of the base fare from
 $2.00 to $2.25, effective March 1, 2027.
@@ -176,6 +176,15 @@ The next regular meeting will be held at 9:30 a.m. on Monday, January 26, 2027.
 
 func normalized(s string) string {
 	return extract.Normalize(s)
+}
+
+func compare(t *testing.T, old, updated string) agendadiff.Diff {
+	t.Helper()
+	d, err := agendadiff.Compare(t.Context(), old, updated)
+	if err != nil {
+		t.Fatalf("Compare: %v", err)
+	}
+	return d
 }
 
 func replaceOnce(t *testing.T, s, old, updated string) string {
@@ -215,10 +224,10 @@ func TestNoiseIsEquivalent(t *testing.T) {
 			if old == updated {
 				t.Fatal("fixture texts are identical; the case tests nothing")
 			}
-			if !agendadiff.Equivalent(old, updated) {
-				t.Errorf("Equivalent = false, want true; changes: %+v", agendadiff.Compare(old, updated).Changes)
+			if !agendadiff.Equivalent(t.Context(), old, updated) {
+				t.Errorf("Equivalent = false, want true; changes: %+v", compare(t, old, updated).Changes)
 			}
-			if d := agendadiff.Compare(old, updated); !d.Equivalent() || d.Coarse {
+			if d := compare(t, old, updated); !d.Equivalent() || d.Coarse {
 				t.Errorf("Compare = %+v, want no changes", d)
 			}
 		})
@@ -252,10 +261,10 @@ func TestRealChangesAreNotEquivalent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			old, updated := normalized(tc.old), normalized(tc.new)
-			if agendadiff.Equivalent(old, updated) {
+			if agendadiff.Equivalent(t.Context(), old, updated) {
 				t.Fatal("Equivalent = true, want false")
 			}
-			d := agendadiff.Compare(old, updated)
+			d := compare(t, old, updated)
 			if d.Equivalent() || d.Coarse {
 				t.Fatalf("Compare = %+v, want precise changes", d)
 			}
@@ -288,7 +297,7 @@ func TestATinyChangeInALargeAgendaIsOneChangeWithContext(t *testing.T) {
 	large := largeAgenda(2000)
 	tiny := replaceOnce(t, large, "extending the term to June 1, 2028.\n1009.", "extending the term to June 12, 2028.\n1009.")
 
-	d := agendadiff.Compare(large, tiny)
+	d := compare(t, large, tiny)
 	if len(d.Changes) != 1 || d.Coarse {
 		t.Fatalf("changes = %+v, want one precise change", d.Changes)
 	}
@@ -305,7 +314,7 @@ func TestDistantChangesStaySeparate(t *testing.T) {
 	old := normalized(directPDF)
 	updated := replaceOnce(t, replaceOnce(t, old, "$1,250,000", "$1,300,000"), "January 26, 2027", "February 9, 2027")
 
-	d := agendadiff.Compare(old, updated)
+	d := compare(t, old, updated)
 	if len(d.Changes) != 2 {
 		t.Fatalf("changes = %+v, want two", d.Changes)
 	}
@@ -320,7 +329,7 @@ func TestAWholesaleRewriteIsCoarse(t *testing.T) {
 		fmt.Fprintf(&a, "alpha%d\n", i)
 		fmt.Fprintf(&b, "beta%d\n", i)
 	}
-	d := agendadiff.Compare(a.String(), b.String())
+	d := compare(t, a.String(), b.String())
 	if !d.Coarse || len(d.Changes) != 1 || !strings.HasPrefix(d.Changes[0].Removed, "alpha0 alpha1") || !strings.HasPrefix(d.Changes[0].Added, "beta0 beta1") {
 		t.Errorf("diff = coarse %v, %d changes", d.Coarse, len(d.Changes))
 	}
@@ -333,28 +342,28 @@ func TestATooLongMiddleIsCoarseWithoutDiffing(t *testing.T) {
 		fmt.Fprintf(&old, "item%d gamma\n", i)
 		fmt.Fprintf(&updated, "item%d delta\n", i)
 	}
-	d := agendadiff.Compare(old.String(), updated.String())
+	d := compare(t, old.String(), updated.String())
 	if !d.Coarse || len(d.Changes) != 1 {
 		t.Errorf("diff = coarse %v, %d changes, want one coarse change", d.Coarse, len(d.Changes))
 	}
 }
 
 func TestEmptyAndOneSidedTexts(t *testing.T) {
-	if !agendadiff.Equivalent("", "Page 1 of 2\n- 2 -") {
+	if !agendadiff.Equivalent(t.Context(), "", "Page 1 of 2\n- 2 -") {
 		t.Error("page numbers alone should be equivalent to nothing")
 	}
-	d := agendadiff.Compare("", "1. Call to Order")
+	d := compare(t, "", "1. Call to Order")
 	if len(d.Changes) != 1 || d.Changes[0].Added != "1. Call to Order" || d.Changes[0].Removed != "" {
 		t.Errorf("changes = %+v", d.Changes)
 	}
-	d = agendadiff.Compare("1. Call to Order", "")
+	d = compare(t, "1. Call to Order", "")
 	if len(d.Changes) != 1 || d.Changes[0].Removed != "1. Call to Order" || d.Changes[0].Added != "" {
 		t.Errorf("changes = %+v", d.Changes)
 	}
-	if agendadiff.Equivalent("Approve $12.50", "Approve $1250") {
+	if agendadiff.Equivalent(t.Context(), "Approve $12.50", "Approve $1250") {
 		t.Error("a decimal point is not formatting")
 	}
-	if !agendadiff.Equivalent("Approve $1,250", "Approve $1250") {
+	if !agendadiff.Equivalent(t.Context(), "Approve $1,250", "Approve $1250") {
 		t.Error("a thousands separator is formatting")
 	}
 }
@@ -362,13 +371,13 @@ func TestEmptyAndOneSidedTexts(t *testing.T) {
 func TestRepeatedLinesAreBoilerplateButChangedOnesAreNot(t *testing.T) {
 	old := "Agenda\nRecommendation: Approve.\n1. Item one\nRecommendation: Approve.\n2. Item two"
 	updated := "Agenda\nRecommendation: Approve.\n1. Item one\nRecommendation: Deny.\n2. Item two"
-	if agendadiff.Equivalent(old, updated) {
+	if agendadiff.Equivalent(t.Context(), old, updated) {
 		t.Error("a changed recommendation must not be dropped as boilerplate")
 	}
 }
 
 func TestNearbyEditsMergeIntoOneChange(t *testing.T) {
-	d := agendadiff.Compare("Approve the contract for $100 with Acme on May 1", "Approve the contract for $200 with Acme on June 1")
+	d := compare(t, "Approve the contract for $100 with Acme on May 1", "Approve the contract for $200 with Acme on June 1")
 	if len(d.Changes) != 1 {
 		t.Fatalf("changes = %+v, want one", d.Changes)
 	}
@@ -379,7 +388,7 @@ func TestNearbyEditsMergeIntoOneChange(t *testing.T) {
 }
 
 func TestContextNeverRepeatsAChangedWord(t *testing.T) {
-	d := agendadiff.Compare("Item A-1 approve", "Item A-2 approve")
+	d := compare(t, "Item A-1 approve", "Item A-2 approve")
 	if len(d.Changes) != 1 {
 		t.Fatalf("changes = %+v", d.Changes)
 	}

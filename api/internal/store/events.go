@@ -37,9 +37,10 @@ func (t EventType) Valid() bool {
 }
 
 type MeetingEventInput struct {
-	Type      EventType
-	MeetingID uuid.UUID
-	Payload   any
+	Type       EventType
+	MeetingID  uuid.UUID
+	Payload    any
+	OccurredAt time.Time
 }
 
 type MeetingEvent struct {
@@ -52,9 +53,11 @@ type MeetingEvent struct {
 }
 
 type AgendaEventPayload struct {
-	AgendaVersionID uuid.UUID `json:"agenda_version_id"`
-	Version         int       `json:"version"`
-	ChangeNote      *string   `json:"change_note,omitempty"`
+	AgendaVersionID uuid.UUID  `json:"agenda_version_id"`
+	Version         int        `json:"version"`
+	FoundAt         *time.Time `json:"found_at,omitempty"`
+	ChangeNote      *string    `json:"change_note,omitempty"`
+	NoteSource      NoteSource `json:"note_source,omitempty"`
 }
 
 const meetingEventColumns = `id, sequence, type, meeting_id, payload, occurred_at`
@@ -100,11 +103,15 @@ func recordMeetingEvent(ctx context.Context, q querier, in MeetingEventInput) (M
 	if err != nil {
 		return MeetingEvent{}, err
 	}
+	var occurredAt *time.Time
+	if !in.OccurredAt.IsZero() {
+		occurredAt = &in.OccurredAt
+	}
 	e, err := scanMeetingEvent(q.QueryRow(ctx, `
-INSERT INTO meeting_events (type, meeting_id, payload)
-VALUES ($1, $2, $3)
+INSERT INTO meeting_events (type, meeting_id, payload, occurred_at)
+VALUES ($1, $2, $3, COALESCE($4, clock_timestamp()))
 RETURNING `+meetingEventColumns,
-		string(in.Type), in.MeetingID, payload))
+		string(in.Type), in.MeetingID, payload, occurredAt))
 	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok && pgErr.Code == foreignKeyViolation {
 		return MeetingEvent{}, fmt.Errorf("meeting %s: %w", in.MeetingID, ErrNotFound)
 	}
@@ -115,14 +122,23 @@ RETURNING `+meetingEventColumns,
 }
 
 func agendaEventInput(v AgendaVersion) MeetingEventInput {
-	eventType := EventAgendaChanged
 	if v.Version == 1 {
-		eventType = EventAgendaPublished
+		return MeetingEventInput{
+			Type:      EventAgendaPublished,
+			MeetingID: v.MeetingID,
+			Payload:   AgendaEventPayload{AgendaVersionID: v.ID, Version: v.Version},
+		}
 	}
+	return agendaChangeEventInput(v, "")
+}
+
+func agendaChangeEventInput(v AgendaVersion, source NoteSource) MeetingEventInput {
+	foundAt := v.CreatedAt
 	return MeetingEventInput{
-		Type:      eventType,
-		MeetingID: v.MeetingID,
-		Payload:   AgendaEventPayload{AgendaVersionID: v.ID, Version: v.Version, ChangeNote: v.ChangeNote},
+		Type:       EventAgendaChanged,
+		MeetingID:  v.MeetingID,
+		Payload:    AgendaEventPayload{AgendaVersionID: v.ID, Version: v.Version, FoundAt: &foundAt, ChangeNote: v.ChangeNote, NoteSource: source},
+		OccurredAt: v.CreatedAt,
 	}
 }
 

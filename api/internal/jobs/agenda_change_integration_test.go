@@ -16,6 +16,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/agendadiff"
+	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm/llmtest"
@@ -74,7 +75,7 @@ func isChangeRequest(req llm.Request) bool {
 	return strings.Contains(req.User, "\n<changes-")
 }
 
-func TestAFormattingOnlyChangeStoresNothingAndRecordsNoEvent(t *testing.T) {
+func TestAFormattingOnlyChangeRefreshesTheLatestVersionQuietly(t *testing.T) {
 	pool := testdb.Pool(t)
 	agencyID := seedAgency(t, pool, "jobs-test-change-noise-"+randomSuffix(t), "live")
 	meeting := seedMeeting(t, pool, agencyID, "change-noise")
@@ -83,15 +84,35 @@ func TestAFormattingOnlyChangeStoresNothingAndRecordsNoEvent(t *testing.T) {
 	fake := llmtest.Returning("never")
 	h := start(t, pool, jobs.Config{Fetcher: source, AgendaFollowUp: followUp, LLM: fake})
 	agendaURL := "https://agency.test/change-noise/agenda.pdf"
+	movedURL := "https://agency.test/documents/moved/agenda.pdf"
 
-	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, agendaURL, day(2)), "completed")
+	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, agendaURL, day(4)), "completed")
+	first := versionsOf(t, pool, meeting.ID)[0]
 	source.set("text/markdown", markdownAgenda(agendaV1))
-	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, agendaURL, day(1)), "completed")
+	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, movedURL, day(3)), "completed")
 
 	versions := versionsOf(t, pool, meeting.ID)
-	if len(versions) != 1 || versions[0].Text != strings.Join(agendaV1, "\n") {
-		t.Fatalf("versions = %+v, want only the first", versions)
+	markdownText := extract.Normalize(markdownAgenda(agendaV1))
+	if len(versions) != 1 {
+		t.Fatalf("versions = %d, want only the first", len(versions))
 	}
+	v := versions[0]
+	if v.ID != first.ID || v.Version != 1 || !v.CreatedAt.Equal(first.CreatedAt) || v.Text != markdownText ||
+		v.ContentHash != store.HashContent(markdownText) || v.SourceURL != movedURL {
+		t.Errorf("refreshed version = %+v", v)
+	}
+
+	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, movedURL, day(2)), "completed")
+	if again := versionsOf(t, pool, meeting.ID)[0]; !again.UpdatedAt.Equal(v.UpdatedAt) {
+		t.Error("an identical fetch after the refresh wrote to the version")
+	}
+	source.set("application/octet-stream", plainAgenda(agendaV1))
+	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, agendaURL, day(1)), "completed")
+	back := versionsOf(t, pool, meeting.ID)
+	if len(back) != 1 || back[0].ContentHash != first.ContentHash || back[0].SourceURL != agendaURL {
+		t.Errorf("flip back = %+v, want version 1 refreshed again", back)
+	}
+
 	if got := eventTypesOf(t, pool, meeting.ID); !sameTypes(got, store.EventAgendaPublished) {
 		t.Errorf("events = %v, want only agenda_published", got)
 	}
@@ -141,7 +162,8 @@ func TestARealChangeRecordsItsEventWithTheNoteOnceDescribed(t *testing.T) {
 	if err := json.Unmarshal(events[1].Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.AgendaVersionID != v2.ID || payload.Version != 2 || payload.ChangeNote == nil || *payload.ChangeNote != note {
+	if payload.AgendaVersionID != v2.ID || payload.Version != 2 || payload.ChangeNote == nil || *payload.ChangeNote != note ||
+		payload.NoteSource != store.NoteFromModel || payload.FoundAt == nil || !payload.FoundAt.Equal(v2.CreatedAt) || !events[1].OccurredAt.Equal(v2.CreatedAt) {
 		t.Errorf("payload = %s", events[1].Payload)
 	}
 	var request llm.Request
@@ -178,7 +200,11 @@ func TestWithoutAModelTheNoteComesFromTheWordDiff(t *testing.T) {
 	h.describeAndWait(1)
 
 	v2 := versionsOf(t, pool, meeting.ID)[0]
-	want := summarize.FallbackChangeNote(agendadiff.Compare(strings.Join(agendaV1, "\n"), strings.Join(agendaV2, "\n")))
+	diff, err := agendadiff.Compare(t.Context(), strings.Join(agendaV1, "\n"), strings.Join(agendaV2, "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := summarize.FallbackChangeNote(diff)
 	if v2.ChangeNote == nil || *v2.ChangeNote != want || !strings.Contains(want, "Added: “14. Adopt the 2027 board meeting calendar”") {
 		t.Errorf("change note = %v, want %q", v2.ChangeNote, want)
 	}
