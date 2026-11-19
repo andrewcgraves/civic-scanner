@@ -1,4 +1,4 @@
-import { bucket, defineRailway, github, postgres, project, service, volume } from "railway/iac";
+import { bucket, defineRailway, github, postgres, preserve, project, service, volume } from "railway/iac";
 
 export default defineRailway(() => {
   const db = postgres("Postgres", { region: "sfo" });
@@ -52,6 +52,7 @@ export default defineRailway(() => {
       checkSuites: true,
     }),
     build: {
+      builder: "DOCKERFILE",
       buildEnvironment: "V3",
       dockerfilePath: "Dockerfile.worker",
       watchPatterns: ["/api/**"],
@@ -68,6 +69,9 @@ export default defineRailway(() => {
       DATABASE_URL: db.env.DATABASE_URL,
       APP_ENV: "production",
       LOG_LEVEL: "info",
+      FEATURE_FLAGS: "ingest-check-agencies",
+      AI_GATEWAY_API_KEY: preserve(),
+      FIRECRAWL_API_KEY: preserve(),
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
       STORAGE_REGION: "${{audio.REGION}}",
       STORAGE_BUCKET: "${{audio.BUCKET}}",
