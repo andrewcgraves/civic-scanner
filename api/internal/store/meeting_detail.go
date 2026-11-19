@@ -37,7 +37,8 @@ ORDER BY version DESC
 LIMIT 1`
 
 const recordingDetailsSQL = `
-SELECT r.id, r.meeting_id, r.source_url, r.audio_key, r.audio_expires_at, r.audio_deleted_at, r.created_at, r.updated_at,
+SELECT r.id, r.meeting_id, r.source_url, r.audio_key, r.audio_expires_at, r.audio_deleted_at,
+       r.download_attempts, r.download_failure, r.download_failed_at, r.download_retry_after, r.created_at, r.updated_at,
        t.id, t.segments, t.summary, t.created_at, t.updated_at
 FROM recordings r
 LEFT JOIN transcripts t ON t.recording_id = r.id

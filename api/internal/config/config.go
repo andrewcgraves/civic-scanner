@@ -20,6 +20,7 @@ type Config struct {
 	Transcription Transcription
 	Ingest        Ingest
 	Extract       Extract
+	Audio         Audio
 	WorkOS        WorkOS
 	Summary       Summary
 	Web           Web
@@ -58,6 +59,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Extract, err = loadExtract(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Audio, err = loadAudio(); err != nil {
 		return Config{}, err
 	}
 	if cfg.WorkOS, err = loadWorkOS(); err != nil {

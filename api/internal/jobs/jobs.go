@@ -16,6 +16,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
+	"github.com/andrewcgraves/civic-scanner/api/internal/storage"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
@@ -31,6 +32,12 @@ type Config struct {
 	Enabled        func(ctx context.Context, flag string) bool
 	FollowUp       FollowUp
 	AgendaFollowUp AgendaFollowUp
+	Storage        storage.Store
+	Audio          AudioDownloader
+	AudioTimeout   time.Duration
+	AudioFollowUp  AudioFollowUp
+	AudioQueue     string
+	AudioTempDir   string
 	LLM            llm.Client
 	SummaryTier    llm.Tier
 	LLMTimeout     time.Duration
@@ -38,7 +45,7 @@ type Config struct {
 	NoPeriodicJobs bool
 }
 
-func (c Config) withDefaults(logger *slog.Logger) Config {
+func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
 	if c.Clock == nil {
 		c.Clock = sources.SystemClock{}
 	}
@@ -48,8 +55,23 @@ func (c Config) withDefaults(logger *slog.Logger) Config {
 	if c.Queue == "" {
 		c.Queue = river.QueueDefault
 	}
+	if c.AudioQueue == "" {
+		c.AudioQueue = AudioQueue
+	}
 	if c.FollowUp == nil {
-		c.FollowUp = EnqueueProcessAgenda{Queue: c.Queue}
+		c.FollowUp = FollowUps{
+			EnqueueProcessAgenda{Queue: c.Queue},
+			EnqueueDownloadAudio{Queue: c.AudioQueue, Store: st, Clock: c.Clock, Enabled: c.Enabled},
+		}
+	}
+	if c.AudioTimeout <= 0 {
+		c.AudioTimeout = defaultAudioTimeout
+	}
+	if c.Storage == nil {
+		c.Storage = unconfiguredStorage()
+	}
+	if c.AudioFollowUp == nil {
+		c.AudioFollowUp = NoAudioFollowUp{}
 	}
 	if c.Extractor == nil {
 		c.Extractor = extract.New(config.Extract{})
@@ -67,8 +89,8 @@ func (c Config) withDefaults(logger *slog.Logger) Config {
 }
 
 func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Client[pgx.Tx], error) {
-	cfg = cfg.withDefaults(logger)
 	st := store.New(pool)
+	cfg = cfg.withDefaults(logger, st)
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &CheckAgencyWorker{
@@ -90,6 +112,18 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		enabled:   cfg.Enabled,
 		followUp:  cfg.AgendaFollowUp,
 		queue:     cfg.Queue,
+	})
+	river.AddWorker(workers, &DownloadAudioWorker{
+		logger:     logger,
+		pool:       pool,
+		store:      st,
+		storage:    cfg.Storage,
+		downloader: cfg.Audio,
+		clock:      cfg.Clock,
+		enabled:    cfg.Enabled,
+		followUp:   cfg.AudioFollowUp,
+		timeout:    cfg.AudioTimeout,
+		tempDir:    cfg.AudioTempDir,
 	})
 	river.AddWorker(workers, &SummarizeAgendaWorker{
 		logger:     logger,
@@ -151,8 +185,16 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		Logger:                      logger,
 		CancelledJobRetentionPeriod: summaryFailureBackoff,
 		DiscardedJobRetentionPeriod: summaryFailureBackoff,
-		Queues:                      map[string]river.QueueConfig{cfg.Queue: {MaxWorkers: 10}},
-		Workers:                     workers,
-		PeriodicJobs:                periodic,
+		Queues: map[string]river.QueueConfig{
+			cfg.Queue:      {MaxWorkers: 10},
+			cfg.AudioQueue: {MaxWorkers: audioQueueWorkers},
+		},
+		Workers:      workers,
+		PeriodicJobs: periodic,
 	})
+}
+
+func unconfiguredStorage() storage.Store {
+	store, _ := storage.New(config.Storage{})
+	return store
 }

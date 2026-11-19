@@ -58,7 +58,7 @@ func (e *Extractor) Text(ctx context.Context, req Request) (string, error) {
 		if req.ExpectPDF {
 			return "", fmt.Errorf("%w: expected a PDF, got an HTML page", ErrBlocked)
 		}
-		if marker, ok := interstitial(req.Body); ok {
+		if marker, ok := Interstitial(req.Body); ok {
 			return "", fmt.Errorf("%w: page contains %q", ErrBlocked, marker)
 		}
 		var err error
@@ -66,7 +66,7 @@ func (e *Extractor) Text(ctx context.Context, req Request) (string, error) {
 			return "", err
 		}
 	case kindPlain:
-		if marker, ok := interstitial(req.Body); ok {
+		if marker, ok := Interstitial(req.Body); ok {
 			return "", fmt.Errorf("%w: text contains %q", ErrBlocked, marker)
 		}
 		raw = decode(req.ContentType, req.Body)

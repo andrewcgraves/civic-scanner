@@ -179,6 +179,8 @@ jobs:
         with:
           go-version-file: api/go.mod
           cache-dependency-path: api/go.sum
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Unit and integration tests with coverage
         run: ../.github/scripts/go-coverage.sh "Go unit + integration" coverage.out integration
       - name: Upload coverage

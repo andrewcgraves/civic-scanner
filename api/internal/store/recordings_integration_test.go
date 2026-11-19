@@ -306,6 +306,85 @@ func TestRecordingAudioOnMissingRecordingIsNotFound(t *testing.T) {
 	if _, err := s.MarkRecordingAudioDeleted(ctx, uuid.New(), "k"); !errors.Is(err, store.ErrNotFound) {
 		t.Errorf("MarkRecordingAudioDeleted err = %v, want ErrNotFound", err)
 	}
+	if _, err := s.AddRecordingAudio(ctx, uuid.New(), audio); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("AddRecordingAudio err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRecordDownloadFailureCountsAttemptsAndAudioClearsIt(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	r := seedRecording(t, pool, "store-test-recording-download-failure")
+	if r.Download != (store.DownloadState{}) {
+		t.Errorf("new recording download state = %+v", r.Download)
+	}
+
+	retry := time.Date(2026, 11, 25, 13, 0, 0, 0, time.UTC)
+	first, err := s.RecordDownloadFailure(ctx, r.ID, store.DownloadFailure{Kind: "refused", RetryAfter: &retry})
+	if err != nil {
+		t.Fatalf("RecordDownloadFailure: %v", err)
+	}
+	if first.Download.Attempts != 1 || first.Download.Failure != "refused" || first.Download.FailedAt == nil ||
+		first.Download.RetryAfter == nil || !first.Download.RetryAfter.Equal(retry) {
+		t.Errorf("after first failure = %+v", first.Download)
+	}
+	second, err := s.RecordDownloadFailure(ctx, r.ID, store.DownloadFailure{Kind: "no_media"})
+	if err != nil || second.Download.Attempts != 2 || second.Download.Failure != "no_media" || second.Download.RetryAfter != nil {
+		t.Errorf("after second failure = %+v, %v", second.Download, err)
+	}
+
+	added, err := s.AddRecordingAudio(ctx, r.ID, store.RecordingAudio{Key: "recordings/x.mp3", ExpiresAt: retry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added.Download.Failure != "" || added.Download.FailedAt != nil || added.Download.RetryAfter != nil || added.Download.Attempts != 2 {
+		t.Errorf("after audio = %+v, want the failure cleared and the count kept", added.Download)
+	}
+
+	if _, err := s.RecordDownloadFailure(ctx, r.ID, store.DownloadFailure{Kind: "gone"}); !errors.Is(err, store.ErrInvalidFailure) {
+		t.Errorf("unknown kind err = %v, want ErrInvalidFailure", err)
+	}
+	if _, err := s.RecordDownloadFailure(ctx, uuid.New(), store.DownloadFailure{Kind: "refused"}); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("missing recording err = %v, want ErrNotFound", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET download_failure = 'gone' WHERE id = $1`, r.ID); err == nil {
+		t.Error("the check constraint accepted an unknown failure kind")
+	}
+}
+
+func TestAddRecordingAudioOnlyWhenThereIsNoneAndNoneWasDeleted(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	r := seedRecording(t, pool, "store-test-recording-add-audio")
+	audio := store.RecordingAudio{Key: "recordings/" + r.ID.String() + ".mp3", ExpiresAt: time.Date(2027, 5, 1, 0, 0, 0, 0, time.UTC)}
+
+	added, err := s.AddRecordingAudio(ctx, r.ID, audio)
+	if err != nil || added.Audio == nil || added.Audio.Key != audio.Key || !added.Audio.ExpiresAt.Equal(audio.ExpiresAt) {
+		t.Fatalf("AddRecordingAudio = (%+v, %v)", added, err)
+	}
+	later := store.RecordingAudio{Key: "recordings/other.mp3", ExpiresAt: audio.ExpiresAt.AddDate(1, 0, 0)}
+	if _, err := s.AddRecordingAudio(ctx, r.ID, later); !errors.Is(err, store.ErrAudioChanged) {
+		t.Errorf("second add err = %v, want ErrAudioChanged", err)
+	}
+	if got, _ := s.GetRecording(ctx, r.ID); got.Audio == nil || got.Audio.Key != audio.Key {
+		t.Errorf("after second add = %+v, want the first audio kept", got.Audio)
+	}
+
+	if _, err := s.MarkRecordingAudioDeleted(ctx, r.ID, audio.Key); err != nil {
+		t.Fatal(err)
+	}
+	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		_, err := s.AddRecordingAudioTx(ctx, tx, r.ID, audio)
+		return err
+	})
+	if !errors.Is(err, store.ErrAudioChanged) {
+		t.Errorf("add after retention deleted the audio: err = %v, want ErrAudioChanged", err)
+	}
+	if got, _ := s.GetRecording(ctx, r.ID); got.Audio != nil || got.AudioDeletedAt == nil {
+		t.Errorf("after add on deleted audio = %+v, want it to stay deleted", got)
+	}
 }
 
 func TestListRecordingsWithExpiredAudio(t *testing.T) {
@@ -383,6 +462,8 @@ func TestRecordingReadsAndWritesFailOnClosedPool(t *testing.T) {
 	_, failures["expired"] = s.ListRecordingsWithExpiredAudio(ctx, time.Now(), 10)
 	_, failures["set audio"] = s.SetRecordingAudio(ctx, uuid.New(), audio)
 	_, failures["mark deleted"] = s.MarkRecordingAudioDeleted(ctx, uuid.New(), "k")
+	_, failures["add audio"] = s.AddRecordingAudio(ctx, uuid.New(), audio)
+	_, failures["record failure"] = s.RecordDownloadFailure(ctx, uuid.New(), store.DownloadFailure{Kind: "refused"})
 	for name, err := range failures {
 		if err == nil || errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrAudioChanged) {
 			t.Errorf("%s: err = %v, want a connection error", name, err)
