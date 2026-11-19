@@ -53,9 +53,9 @@ export default defineRailway(() => {
     }),
     build: {
       buildEnvironment: "V3",
+      dockerfilePath: "Dockerfile.worker",
       watchPatterns: ["/api/**"],
     },
-    start: "/app/worker",
     preDeploy: "/app/migrate up",
     deploy: {
       preDeployTimeoutSeconds: 300,
@@ -68,6 +68,11 @@ export default defineRailway(() => {
       DATABASE_URL: db.env.DATABASE_URL,
       APP_ENV: "production",
       LOG_LEVEL: "info",
+      STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
+      STORAGE_REGION: "${{audio.REGION}}",
+      STORAGE_BUCKET: "${{audio.BUCKET}}",
+      STORAGE_ACCESS_KEY_ID: "${{audio.ACCESS_KEY_ID}}",
+      STORAGE_SECRET_ACCESS_KEY: "${{audio.SECRET_ACCESS_KEY}}",
     },
   });
 

@@ -186,3 +186,49 @@ func TestUsersMigrationRollsBackAndReapplies(t *testing.T) {
 		t.Error("users missing after reapplying")
 	}
 }
+
+func columnExists(t *testing.T, pool *pgxpool.Pool, schema, table, column string) bool {
+	t.Helper()
+	var exists bool
+	if err := pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM information_schema.columns
+WHERE table_schema = $1 AND table_name = $2 AND column_name = $3)`, schema, table, column).Scan(&exists); err != nil {
+		t.Fatal(err)
+	}
+	return exists
+}
+
+func TestRecordingDownloadStateMigrationRollsBackAndReapplies(t *testing.T) {
+	ctx := t.Context()
+	provider, pool, schema := isolatedProvider(t)
+	columns := []string{"download_attempts", "download_failure", "download_failed_at", "download_retry_after"}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	for _, column := range columns {
+		if !columnExists(t, pool, schema, "recordings", column) {
+			t.Fatalf("%s missing after Up", column)
+		}
+	}
+
+	if _, err := provider.DownTo(ctx, 9); err != nil {
+		t.Fatalf("DownTo(9): %v", err)
+	}
+	for _, column := range columns {
+		if columnExists(t, pool, schema, "recordings", column) {
+			t.Errorf("%s still exists after rolling back 00010", column)
+		}
+	}
+	if !tableExists(t, pool, schema, "users") {
+		t.Error("users missing after rolling back only 00010")
+	}
+
+	if _, err := provider.Up(ctx); err != nil {
+		t.Fatalf("Up after Down: %v", err)
+	}
+	for _, column := range columns {
+		if !columnExists(t, pool, schema, "recordings", column) {
+			t.Errorf("%s missing after reapplying", column)
+		}
+	}
+}

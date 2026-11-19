@@ -22,7 +22,7 @@ var interstitialMarkers = []string{
 	"web page blocked",
 }
 
-func interstitial(body []byte) (string, bool) {
+func Interstitial(body []byte) (string, bool) {
 	head := bytes.ToLower(body[:min(len(body), interstitialWindow)])
 	for _, marker := range interstitialMarkers {
 		if bytes.Contains(head, []byte(marker)) {

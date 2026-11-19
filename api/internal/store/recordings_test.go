@@ -21,6 +21,12 @@ func TestSetRecordingAudioRejectsInvalidAudioBeforeTouchingTheDatabase(t *testin
 		if _, err := New(nil).SetRecordingAudioTx(t.Context(), nil, uuid.New(), audio); !errors.Is(err, ErrInvalidAudio) {
 			t.Errorf("%s: SetRecordingAudioTx err = %v, want ErrInvalidAudio", name, err)
 		}
+		if _, err := New(nil).AddRecordingAudio(t.Context(), uuid.New(), audio); !errors.Is(err, ErrInvalidAudio) {
+			t.Errorf("%s: AddRecordingAudio err = %v, want ErrInvalidAudio", name, err)
+		}
+		if _, err := New(nil).AddRecordingAudioTx(t.Context(), nil, uuid.New(), audio); !errors.Is(err, ErrInvalidAudio) {
+			t.Errorf("%s: AddRecordingAudioTx err = %v, want ErrInvalidAudio", name, err)
+		}
 	}
 }
 
