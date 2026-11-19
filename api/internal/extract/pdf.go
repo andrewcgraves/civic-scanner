@@ -53,10 +53,11 @@ type Report struct {
 	TruncatedPages      int    `json:"truncated_pages"`
 	FirstError          string `json:"first_error,omitempty"`
 	DecodedContentBytes int64  `json:"decoded_content_bytes"`
+	TrailingBytesCut    int    `json:"trailing_bytes_cut"`
 }
 
 func (r Report) Partial() bool {
-	return r.UnreadablePages > 0 || r.TruncatedPages > 0
+	return r.UnreadablePages > 0 || r.TruncatedPages > 0 || r.TrailingBytesCut > 0
 }
 
 type Document struct {
@@ -101,7 +102,7 @@ func ReadPDF(ctx context.Context, body []byte, limits Limits) (result Document, 
 		b        strings.Builder
 		empty    int
 		firstErr error
-		report   = Report{Pages: len(pages)}
+		report   = Report{Pages: len(pages), TrailingBytesCut: doc.trailingBytesCut}
 		document = newDocumentReader(limits.MaxGlyphsPerPage)
 	)
 	note := func(page int, err error) {

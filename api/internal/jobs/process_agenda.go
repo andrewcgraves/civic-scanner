@@ -149,14 +149,15 @@ func logPDFReport(ctx context.Context, logger *slog.Logger, report *extract.Repo
 	}
 	level, msg := slog.LevelInfo, "agenda pdf read"
 	if report.Partial() {
-		level, msg = slog.LevelWarn, "agenda pdf read with unreadable or truncated pages"
+		level, msg = slog.LevelWarn, "agenda pdf read in part"
 	}
 	logger.Log(ctx, level, msg,
 		"pages", report.Pages,
 		"unreadable_pages", report.UnreadablePages,
 		"truncated_pages", report.TruncatedPages,
 		"first_error", report.FirstError,
-		"decoded_content_bytes", report.DecodedContentBytes)
+		"decoded_content_bytes", report.DecodedContentBytes,
+		"trailing_bytes_cut", report.TrailingBytesCut)
 }
 
 func expectsPDF(agendaURL string) bool {

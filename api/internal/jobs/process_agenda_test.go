@@ -264,9 +264,10 @@ func TestLogPDFReportWarnsAboutPartialReads(t *testing.T) {
 		want   string
 	}{
 		{"not a pdf", nil, ""},
-		{"clean", &extract.Report{Pages: 3, DecodedContentBytes: 10}, `level=INFO msg="agenda pdf read" pages=3 unreadable_pages=0 truncated_pages=0 first_error="" decoded_content_bytes=10`},
-		{"unreadable", &extract.Report{Pages: 3, UnreadablePages: 1, FirstError: "page 2: x"}, `level=WARN msg="agenda pdf read with unreadable or truncated pages" pages=3 unreadable_pages=1 truncated_pages=0 first_error="page 2: x"`},
-		{"truncated", &extract.Report{Pages: 3, TruncatedPages: 2}, `level=WARN msg="agenda pdf read with unreadable or truncated pages" pages=3 unreadable_pages=0 truncated_pages=2`},
+		{"clean", &extract.Report{Pages: 3, DecodedContentBytes: 10}, `level=INFO msg="agenda pdf read" pages=3 unreadable_pages=0 truncated_pages=0 first_error="" decoded_content_bytes=10 trailing_bytes_cut=0`},
+		{"unreadable", &extract.Report{Pages: 3, UnreadablePages: 1, FirstError: "page 2: x"}, `level=WARN msg="agenda pdf read in part" pages=3 unreadable_pages=1 truncated_pages=0 first_error="page 2: x"`},
+		{"truncated", &extract.Report{Pages: 3, TruncatedPages: 2}, `level=WARN msg="agenda pdf read in part" pages=3 unreadable_pages=0 truncated_pages=2`},
+		{"trailer cut", &extract.Report{Pages: 3, TrailingBytesCut: 40}, `level=WARN msg="agenda pdf read in part" pages=3 unreadable_pages=0 truncated_pages=0 first_error="" decoded_content_bytes=0 trailing_bytes_cut=40`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

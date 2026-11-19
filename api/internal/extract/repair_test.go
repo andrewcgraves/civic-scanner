@@ -248,10 +248,19 @@ func TestTheUnreadableThresholdIsMoreThanTenPercent(t *testing.T) {
 		unreadable, pages int
 		want              bool
 	}{
-		{0, 0, false}, {0, 1, false}, {1, 1, true},
-		{1, 9, true}, {1, 10, false}, {2, 10, true},
-		{2, 19, true}, {2, 20, false}, {3, 20, true},
-		{10, 100, false}, {11, 100, true}, {44, 443, false}, {45, 443, true},
+		{0, 0, false},
+		{0, 1, false},
+		{1, 1, true},
+		{1, 9, true},
+		{1, 10, false},
+		{2, 10, true},
+		{2, 19, true},
+		{2, 20, false},
+		{3, 20, true},
+		{10, 100, false},
+		{11, 100, true},
+		{44, 443, false},
+		{45, 443, true},
 	}
 	for _, tc := range cases {
 		if got := tooManyUnreadable(tc.unreadable, tc.pages); got != tc.want {
@@ -329,21 +338,35 @@ func TestThePartSeparatorDoesNotCountTowardThePageLimit(t *testing.T) {
 }
 
 func TestPDFTextCutsEverythingAfterTheLastEOF(t *testing.T) {
-	cases := map[string]string{
-		"99 spaces":     strings.Repeat(" ", 99),
-		"200 spaces":    strings.Repeat(" ", 200),
-		"2000 newlines": strings.Repeat("\n", 2000),
-		"2000 NULs":     strings.Repeat("\x00", 2000),
-		"60000 NULs":    strings.Repeat("\x00", 60000),
-		"html and crlf": "\r\n<html><body>appended</body></html>\r\n",
-		"second %%EOF":  "\n%%EOF\n",
-		"no padding":    "",
+	cases := map[string]struct {
+		tail     string
+		reported bool
+	}{
+		"99 spaces":           {strings.Repeat(" ", 99), false},
+		"200 spaces":          {strings.Repeat(" ", 200), false},
+		"2000 newlines":       {strings.Repeat("\n", 2000), false},
+		"2000 NULs":           {strings.Repeat("\x00", 2000), false},
+		"60000 NULs":          {strings.Repeat("\x00", 60000), false},
+		"mixed padding":       {"\r\n\t\f \x00\x00", false},
+		"no padding":          {"", false},
+		"second %%EOF":        {"\n%%EOF\n", false},
+		"html and crlf":       {"\r\n<html><body>appended</body></html>\r\n", true},
+		"truncated update":    {"4 0 obj\n<< /Type /Page /Contents 9 0 R >>\nendobj\nxref\n0 1\n", true},
+		"one byte after NULs": {strings.Repeat("\x00", 500) + "x", true},
 	}
-	for name, tail := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, err := inProcessText(t, append(extracttest.PDF(true, agendaPage), tail...))
-			if err != nil || got != "Agenda" {
-				t.Errorf("PDFText = %q, %v", got, err)
+			doc := append(extracttest.PDF(true, agendaPage), tc.tail...)
+			got, err := ReadPDF(t.Context(), doc, Limits{})
+			if err != nil || Normalize(got.Text) != "Agenda" {
+				t.Fatalf("ReadPDF = %q, %v", got.Text, err)
+			}
+			want := 0
+			if tc.reported {
+				want = len("\n") + len(tc.tail)
+			}
+			if got.Report.TrailingBytesCut != want || got.Report.Partial() != tc.reported {
+				t.Errorf("Report = %+v, want %d trailing bytes cut", got.Report, want)
 			}
 		})
 	}

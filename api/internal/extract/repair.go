@@ -14,8 +14,9 @@ const (
 )
 
 type patchedDocument struct {
-	body    []byte
-	patches map[int64]byte
+	body             []byte
+	patches          map[int64]byte
+	trailingBytesCut int
 }
 
 func (d patchedDocument) Size() int64 {
@@ -39,8 +40,8 @@ func repair(body []byte) (patchedDocument, error) {
 	if !validHeader(body) {
 		return patchedDocument{}, fmt.Errorf("%w: pdf: not a PDF file: invalid header", ErrMalformed)
 	}
-	body = trimAfterEOF(body)
-	doc := patchedDocument{body: body, patches: map[int64]byte{}}
+	body, cut := trimAfterEOF(body)
+	doc := patchedDocument{body: body, patches: map[int64]byte{}, trailingBytesCut: cut}
 	for i := range len(canonicalHeader) {
 		doc.patches[int64(i)] = canonicalHeader[i]
 	}
@@ -66,13 +67,17 @@ func validHeader(body []byte) bool {
 		(isPDFWhitespace(end) || end == '%')
 }
 
-func trimAfterEOF(body []byte) []byte {
+func trimAfterEOF(body []byte) ([]byte, int) {
 	tail := max(0, len(body)-endOfFileWindow)
 	i := bytes.LastIndex(body[tail:], []byte(endOfFile))
 	if i < 0 {
-		return body
+		return body, 0
 	}
-	return body[:tail+i+len(endOfFile)]
+	end := tail + i + len(endOfFile)
+	if len(bytes.TrimLeft(body[end:], "\x00\t\n\f\r ")) == 0 {
+		return body[:end], 0
+	}
+	return body[:end], len(body) - end
 }
 
 func isBlank(c byte) bool {
