@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
@@ -266,5 +267,40 @@ func TestTranscriptReadsAndWritesFailOnClosedPool(t *testing.T) {
 		if err == nil || errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTranscriptChanged) {
 			t.Errorf("%s: err = %v, want a connection error", name, err)
 		}
+	}
+}
+
+func TestAddTranscriptTxKeepsTheFirstTranscript(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	r := seedRecording(t, pool, "store-test-transcript-add")
+	add := func(in store.TranscriptInput) (store.Transcript, bool, error) {
+		var (
+			got     store.Transcript
+			created bool
+		)
+		err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+			var err error
+			got, created, err = s.AddTranscriptTx(ctx, tx, in)
+			return err
+		})
+		return got, created, err
+	}
+
+	first, created, err := add(transcriptInput(r.ID, "first"))
+	if err != nil || !created || first.Text != "first" {
+		t.Fatalf("first add = %+v, %v, %v", first, created, err)
+	}
+	second, created, err := add(transcriptInput(r.ID, "second"))
+	if err != nil || created || second.ID != first.ID || second.Text != "first" {
+		t.Errorf("second add = %+v, %v, %v; want the first kept", second, created, err)
+	}
+	if _, _, err := add(transcriptInput(uuid.New(), "x")); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("missing recording = %v", err)
+	}
+	bad := store.TranscriptInput{RecordingID: r.ID, Segments: []store.TranscriptSegment{{Start: time.Second}}}
+	if _, _, err := add(bad); !errors.Is(err, store.ErrInvalidSegment) {
+		t.Errorf("invalid segment = %v", err)
 	}
 }

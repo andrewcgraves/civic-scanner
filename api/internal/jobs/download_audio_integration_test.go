@@ -456,14 +456,18 @@ func TestRescuerLeavesARunningDownloadAloneWhileRescuingOtherJobs(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []int64{download.Job.ID, check.Job.ID} {
+	transcription, err := h.client.Insert(t.Context(), jobs.TranscribeAudioArgs{RecordingID: rec.ID}, &river.InsertOpts{Queue: h.audioQueue, ScheduledAt: future})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{download.Job.ID, check.Job.ID, transcription.Job.ID} {
 		if _, err := pool.Exec(t.Context(),
 			`UPDATE river_job SET state = 'running', attempt = 1, attempted_at = now() - interval '65 minutes' WHERE id = $1`, id); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.WithoutCancel(t.Context()), `DELETE FROM river_job WHERE id = ANY($1)`, []int64{download.Job.ID, check.Job.ID})
+		_, _ = pool.Exec(context.WithoutCancel(t.Context()), `DELETE FROM river_job WHERE id = ANY($1)`, []int64{download.Job.ID, check.Job.ID, transcription.Job.ID})
 	})
 
 	deadline := time.Now().Add(90 * time.Second)
@@ -489,6 +493,13 @@ func TestRescuerLeavesARunningDownloadAloneWhileRescuingOtherJobs(t *testing.T) 
 	}
 	if downloadState != "running" {
 		t.Errorf("download_audio running for 65 minutes, inside its 75-minute timeout, was rescued: state %s", downloadState)
+	}
+	var transcriptionState string
+	if err := pool.QueryRow(t.Context(), `SELECT state FROM river_job WHERE id = $1`, transcription.Job.ID).Scan(&transcriptionState); err != nil {
+		t.Fatal(err)
+	}
+	if transcriptionState != "running" {
+		t.Errorf("transcribe_audio running for 65 minutes, inside its 2-hour timeout, was rescued: state %s", transcriptionState)
 	}
 }
 
