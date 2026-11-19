@@ -18,6 +18,7 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
+    server: { deps: { inline: ["@workos-inc/authkit-nextjs"] } },
     coverage: {
       provider: "v8",
       include: ["src/**/*.{ts,tsx}"],
