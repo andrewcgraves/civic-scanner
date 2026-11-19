@@ -43,8 +43,8 @@ func (l Limits) withDefaults() Limits {
 }
 
 const (
-	maxUnreadableShare = 0.5
-	maxReportedError   = 512
+	maxUnreadablePercent = 10
+	maxReportedError     = 512
 )
 
 type Report struct {
@@ -73,7 +73,7 @@ func (p InProcess) ReadPDF(ctx context.Context, body []byte) (Document, error) {
 }
 
 func tooManyUnreadable(unreadable, pages int) bool {
-	return float64(unreadable) > maxUnreadableShare*float64(pages)
+	return unreadable*100 > pages*maxUnreadablePercent
 }
 
 func ReadPDF(ctx context.Context, body []byte, limits Limits) (result Document, err error) {

@@ -57,13 +57,12 @@ func TestSubprocessExtractsAPDF(t *testing.T) {
 }
 
 func TestSubprocessCarriesThePartialReadReport(t *testing.T) {
-	doc := extracttest.PDF(true, "1 begin", agendaPage, agendaPage)
-	got, err := subprocess(t).ReadPDF(t.Context(), doc)
+	got, err := subprocess(t).ReadPDF(t.Context(), pagesWithUnreadable(10, 0))
 	if err != nil {
 		t.Fatalf("ReadPDF: %v", err)
 	}
 	r := got.Report
-	if r.Pages != 3 || r.UnreadablePages != 1 || r.TruncatedPages != 0 || !strings.HasPrefix(r.FirstError, "page 1: ") || !r.Partial() {
+	if r.Pages != 10 || r.UnreadablePages != 1 || r.TruncatedPages != 0 || !strings.HasPrefix(r.FirstError, "page 1: ") || !r.Partial() {
 		t.Errorf("Report = %+v", r)
 	}
 }

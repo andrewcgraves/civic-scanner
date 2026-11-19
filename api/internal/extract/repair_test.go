@@ -172,15 +172,36 @@ func TestSimpleFontEncodingReadsBfcharAndBfrange(t *testing.T) {
 	}
 }
 
-func TestUnreadablePagesAreSkippedUnlessMostAre(t *testing.T) {
-	doc := extracttest.PDF(true, "1 begin", agendaPage, "BT /F1 12 Tf 72 720 Td (Minutes) Tj ET")
-	got, err := inProcessText(t, doc)
-	if err != nil || got != "Agenda\nMinutes" {
-		t.Errorf("one unreadable page of three: PDFText = %q, %v", got, err)
+func pagesWithUnreadable(total int, unreadable ...int) []byte {
+	pages := make([]string, total)
+	for i := range pages {
+		pages[i] = agendaPage
 	}
-	doc = extracttest.PDF(true, "1 begin", "2 begin", agendaPage)
-	if _, err := inProcessText(t, doc); !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "2 of 3 pages could not be read") {
-		t.Errorf("two unreadable pages of three: err = %v", err)
+	for _, i := range unreadable {
+		pages[i] = "1 begin"
+	}
+	return extracttest.PDF(true, pages...)
+}
+
+func TestUnreadablePagesAreSkippedUpToTheShare(t *testing.T) {
+	got, err := inProcessText(t, pagesWithUnreadable(10, 0))
+	if err != nil || got != strings.TrimSuffix(strings.Repeat("Agenda\n", 9), "\n") {
+		t.Errorf("one unreadable page of ten: PDFText = %q, %v", got, err)
+	}
+	cases := map[string]struct {
+		doc  []byte
+		want string
+	}{
+		"one of one":  {pagesWithUnreadable(1, 0), "1 of 1 pages could not be read"},
+		"one of nine": {pagesWithUnreadable(9, 4), "1 of 9 pages could not be read, first page 5: "},
+		"two of ten":  {pagesWithUnreadable(10, 3, 7), "2 of 10 pages could not be read, first page 4: "},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := inProcessText(t, tc.doc); !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -208,12 +229,12 @@ func TestPDFTextKeepsTheDecodedPartOfATruncatedStream(t *testing.T) {
 }
 
 func TestReadPDFReportsUnreadablePagesAndTheFirstError(t *testing.T) {
-	got, err := ReadPDF(t.Context(), extracttest.PDF(true, agendaPage, "1 begin", "2 begin", agendaPage), Limits{})
+	got, err := ReadPDF(t.Context(), pagesWithUnreadable(20, 1, 2), Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := got.Report
-	if r.Pages != 4 || r.UnreadablePages != 2 || r.TruncatedPages != 0 || !strings.HasPrefix(r.FirstError, "page 2: cannot begin") {
+	if r.Pages != 20 || r.UnreadablePages != 2 || r.TruncatedPages != 0 || !strings.HasPrefix(r.FirstError, "page 2: cannot begin") {
 		t.Errorf("Report = %+v", r)
 	}
 	clean, err := ReadPDF(t.Context(), extracttest.PDF(true, agendaPage), Limits{})
@@ -222,11 +243,16 @@ func TestReadPDFReportsUnreadablePagesAndTheFirstError(t *testing.T) {
 	}
 }
 
-func TestTheUnreadableThresholdIsMoreThanTheShare(t *testing.T) {
+func TestTheUnreadableThresholdIsMoreThanTenPercent(t *testing.T) {
 	cases := []struct {
 		unreadable, pages int
 		want              bool
-	}{{0, 1, false}, {1, 2, false}, {1, 1, true}, {2, 3, true}, {50, 100, false}, {51, 100, true}}
+	}{
+		{0, 0, false}, {0, 1, false}, {1, 1, true},
+		{1, 9, true}, {1, 10, false}, {2, 10, true},
+		{2, 19, true}, {2, 20, false}, {3, 20, true},
+		{10, 100, false}, {11, 100, true}, {44, 443, false}, {45, 443, true},
+	}
 	for _, tc := range cases {
 		if got := tooManyUnreadable(tc.unreadable, tc.pages); got != tc.want {
 			t.Errorf("tooManyUnreadable(%d, %d) = %v", tc.unreadable, tc.pages, got)
