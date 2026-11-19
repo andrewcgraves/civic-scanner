@@ -36,8 +36,8 @@ const (
 	transcribeAudioFileName      = "audio.mp3"
 	MaxSegmentBytes              = 4000
 	MaxSpeakerBytes              = 64
-	MaxTranscriptBytes           = 4 << 20
-	MaxTranscriptSegments        = 50000
+	MaxTranscriptBytes           = 1 << 20
+	MaxTranscriptSegments        = 10000
 )
 
 const (
