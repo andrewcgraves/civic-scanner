@@ -1,9 +1,9 @@
 package extract
 
 import (
-	"bytes"
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -52,33 +52,46 @@ func (p InProcess) ReadPDF(ctx context.Context, body []byte) (string, error) {
 
 func PDFText(ctx context.Context, body []byte, limits Limits) (text string, err error) {
 	limits = limits.withDefaults()
-	if i := bytes.Index(body[:min(len(body), pdfHeaderWindow)], []byte("%PDF-")); i > 0 {
-		body = body[i:]
+	doc, err := repair(body)
+	if err != nil {
+		return "", err
 	}
 	defer func() {
 		if r := recover(); r != nil {
 			text, err = "", fmt.Errorf("%w: pdf: %v", ErrMalformed, r)
 		}
 	}()
-	reader, err := pdf.NewReader(bytes.NewReader(body), int64(len(body)))
+	reader, err := pdf.NewReader(doc, doc.Size())
 	if err != nil {
 		return "", fmt.Errorf("%w: pdf: %w", ErrMalformed, err)
 	}
-	maxPages := min(limits.MaxPages, max(1, len(body)/minBytesPerPage))
+	maxPages := min(limits.MaxPages, max(1, int(doc.Size())/minBytesPerPage))
 	pages, err := pageTree(reader, maxPages)
 	if err != nil {
 		return "", err
 	}
 
-	var b strings.Builder
-	empty := 0
+	var (
+		b          strings.Builder
+		empty      int
+		unreadable int
+		firstErr   error
+	)
 	for i, page := range pages {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		glyphs := page.Content().Text
-		if len(glyphs) > limits.MaxGlyphsPerPage {
-			return "", fmt.Errorf("%w: page %d has %d glyphs, limit %d", ErrLimitExceeded, i+1, len(glyphs), limits.MaxGlyphsPerPage)
+		glyphs, err := pageText(page, limits.MaxGlyphsPerPage)
+		switch {
+		case errors.Is(err, ErrLimitExceeded):
+			return "", fmt.Errorf("page %d: %w", i+1, err)
+		case err != nil:
+			unreadable++
+			empty++
+			if firstErr == nil {
+				firstErr = fmt.Errorf("page %d: %w", i+1, err)
+			}
+			continue
 		}
 		lines := pageLines(glyphs)
 		if visibleChars(strings.Join(lines, "")) == 0 {
@@ -91,6 +104,9 @@ func PDFText(ctx context.Context, body []byte, limits Limits) (text string, err 
 		if int64(b.Len()) > limits.MaxTextBytes {
 			return "", fmt.Errorf("%w: text exceeds %d bytes", ErrLimitExceeded, limits.MaxTextBytes)
 		}
+	}
+	if unreadable*2 > len(pages) {
+		return "", fmt.Errorf("%w: %d of %d pages could not be read, first %w", ErrMalformed, unreadable, len(pages), firstErr)
 	}
 	if len(pages) == 0 || empty*2 > len(pages) {
 		return "", fmt.Errorf("%w: %d of %d pages have no text layer (scanned pages and text inside form XObjects are not read)", ErrNoText, empty, len(pages))

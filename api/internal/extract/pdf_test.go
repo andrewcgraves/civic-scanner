@@ -100,8 +100,8 @@ func TestPDFWithMostlyEmptyPagesIsNoText(t *testing.T) {
 func TestMalformedPDFIsMalformed(t *testing.T) {
 	cases := map[string][]byte{
 		"truncated":       extracttest.PDF(false, "BT /F1 12 Tf 72 720 Td (Agenda) Tj ET")[:200],
-		"bad content":     extracttest.PDF(false, "BT /F1 Tf (Agenda) Tj ET"),
-		"pdf 2.0":         []byte("%PDF-2.0\nnot really\n%%EOF\n"),
+		"unreadable page": extracttest.PDF(false, "1 begin BT /F1 12 Tf 72 720 Td (Agenda) Tj ET"),
+		"no xref":         []byte("%PDF-2.0\nnot really\n%%EOF\n"),
 		"self reference":  extracttest.SelfReferencingPages(),
 		"no pages object": extracttest.Assemble("<< /Type /Catalog >>"),
 	}
