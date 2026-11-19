@@ -7,12 +7,14 @@ const mocks = vi.hoisted(() => ({
   callApiAsUser: vi.fn(),
   isSignInEnabled: vi.fn(),
   cookieNames: new Set<string>(),
+  requestHeaders: new Headers(),
 }));
 
 vi.mock("@workos-inc/authkit-nextjs", () => ({ withAuth: mocks.withAuth }));
 vi.mock("next/headers", () => ({
   cookies: () =>
     Promise.resolve({ has: (name: string) => mocks.cookieNames.has(name) }),
+  headers: () => Promise.resolve(mocks.requestHeaders),
 }));
 vi.mock("@/lib/auth/api", () => ({ callApiAsUser: mocks.callApiAsUser }));
 vi.mock("@/lib/auth/server", async (importOriginal) => ({
@@ -33,6 +35,7 @@ describe("GET /auth/session", () => {
     mocks.isSignInEnabled.mockResolvedValue(true);
     mocks.cookieNames.clear();
     mocks.cookieNames.add("wos-session");
+    mocks.requestHeaders = new Headers();
     mocks.withAuth.mockResolvedValue({
       user: { id: "user_1", email: "workos@example.com" },
       accessToken: ACCESS_TOKEN,
@@ -70,6 +73,16 @@ describe("GET /auth/session", () => {
     mocks.withAuth.mockResolvedValue({ user: null });
 
     expect((await session()).body).toEqual({ signedIn: false });
+    expect(mocks.callApiAsUser).not.toHaveBeenCalled();
+  });
+
+  it("stays signed in when the proxy kept a session it could not verify", async () => {
+    mocks.withAuth.mockResolvedValue({ user: null });
+    mocks.requestHeaders = new Headers({
+      "x-civic-session-state": "unverified",
+    });
+
+    expect((await session()).body).toEqual({ signedIn: true, email: null });
     expect(mocks.callApiAsUser).not.toHaveBeenCalled();
   });
 

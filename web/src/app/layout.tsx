@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { AccountMenu } from "@/components/account-menu";
 import { Analytics } from "@/lib/analytics/analytics";
-import { getAuthConfig } from "@/lib/auth/config";
+import { hasPublicRedirectUri } from "@/lib/auth/config";
 import { FlagsProvider } from "@/lib/flags/client";
 import { getFlagsOn } from "@/lib/flags/server";
 import { readPostHogProject } from "@/lib/posthog/config";
@@ -23,13 +23,13 @@ export default async function RootLayout({
   children: ReactNode;
 }) {
   const flagsOn = await getFlagsOn();
-  const signIn = getAuthConfig().kind === "on" && flagsOn.includes("accounts");
+  const signIn = hasPublicRedirectUri() && flagsOn.includes("accounts");
 
   return (
     <html lang="en">
       <body className="mx-auto max-w-3xl p-6 antialiased">
         {signIn ? (
-          <header className="mb-6 flex justify-end">
+          <header className="mb-6 flex h-6 items-center justify-end">
             <AccountMenu />
           </header>
         ) : null}

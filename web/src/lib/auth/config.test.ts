@@ -149,6 +149,31 @@ describe("readAuthConfig", () => {
   });
 });
 
+describe("hasPublicRedirectUri", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    [{}, false],
+    [
+      { NEXT_PUBLIC_WORKOS_REDIRECT_URI: "http://civic.example/auth/callback" },
+      false,
+    ],
+    [
+      {
+        NEXT_PUBLIC_WORKOS_REDIRECT_URI: VALID.NEXT_PUBLIC_WORKOS_REDIRECT_URI,
+      },
+      true,
+    ],
+    [VALID, true],
+  ])("for %j is %s, whatever the secrets", async (env, expected) => {
+    const { hasPublicRedirectUri } = await loadConfig(env);
+
+    expect(hasPublicRedirectUri()).toBe(expected);
+  });
+});
+
 describe("getAuthConfig", () => {
   const LOGGED = Symbol.for("civic-scanner.auth-config-logged");
 

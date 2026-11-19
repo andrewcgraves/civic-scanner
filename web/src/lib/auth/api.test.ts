@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
     withAuth: vi.fn(),
     refreshSession: vi.fn(),
     deleteCookie: vi.fn(),
+    requestHeaders: new Headers(),
   };
 });
 
@@ -24,6 +25,7 @@ vi.mock("@workos-inc/authkit-nextjs", () => ({
 
 vi.mock("next/headers", () => ({
   cookies: () => Promise.resolve({ delete: mocks.deleteCookie }),
+  headers: () => Promise.resolve(mocks.requestHeaders),
 }));
 
 const ME = {
@@ -70,6 +72,8 @@ describe("callApiAsUser", () => {
     mocks.withAuth.mockReset();
     mocks.refreshSession.mockReset();
     mocks.deleteCookie.mockReset();
+    mocks.requestHeaders = new Headers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
     mocks.withAuth.mockResolvedValue({
       user: { id: "user_1" },
       accessToken: "token-1",
@@ -79,6 +83,7 @@ describe("callApiAsUser", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   it("calls the API with the session's access token", async () => {
@@ -121,6 +126,37 @@ describe("callApiAsUser", () => {
       "Bearer token-2",
     );
     expect(mocks.deleteCookie).not.toHaveBeenCalled();
+  });
+
+  it("does not replay a refresh token the proxy has just rotated", async () => {
+    mocks.requestHeaders = new Headers({
+      "x-civic-session-state": "refreshed",
+    });
+    const { callApiAsUser, fetchMock } = await load([apiResponse(401)]);
+
+    expect(await callApiAsUser((api) => api.GET("/me"))).toEqual({
+      status: "signed-out",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocks.refreshSession).not.toHaveBeenCalled();
+    expect(mocks.deleteCookie).not.toHaveBeenCalled();
+  });
+
+  it("refreshes when the proxy only marked the session unverified", async () => {
+    mocks.requestHeaders = new Headers({
+      "x-civic-session-state": "unverified",
+    });
+    mocks.refreshSession.mockResolvedValue({ accessToken: "token-2" });
+    const { callApiAsUser } = await load([
+      apiResponse(401),
+      apiResponse(200, ME),
+    ]);
+
+    expect(await callApiAsUser((api) => api.GET("/me"))).toEqual({
+      status: "ok",
+      data: ME,
+    });
+    expect(mocks.refreshSession).toHaveBeenCalledTimes(1);
   });
 
   it("is signed out after a second 401, and forgets the session", async () => {
@@ -242,6 +278,33 @@ describe("callApiAsUser", () => {
       status: "failed",
     });
     expect(mocks.deleteCookie).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toMatch(
+      /token-1|localhost|Bearer/,
+    );
+  });
+
+  it("logs a failed call by its error name only", async () => {
+    const { callApiAsUser } = await load([
+      () => Promise.reject(new TypeError("fetch failed for token-1")),
+    ]);
+
+    await callApiAsUser((api) => api.GET("/me"));
+
+    expect(console.warn).toHaveBeenCalledWith(
+      "API call as the user failed: TypeError",
+    );
+  });
+
+  it("logs a failure that is not an Error", async () => {
+    const { callApiAsUser } = await load([]);
+
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+    await callApiAsUser(() => Promise.reject("boom"));
+
+    expect(console.warn).toHaveBeenCalledWith(
+      "API call as the user failed: unknown error",
+    );
   });
 
   it("never sends the token to another host", async () => {

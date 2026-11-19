@@ -3,10 +3,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   pathname: "/agencies",
+  query: "",
+  suspend: false,
   signOutAction: vi.fn(),
 }));
 
-vi.mock("next/navigation", () => ({ usePathname: () => mocks.pathname }));
+const never = new Promise<never>(() => undefined);
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => mocks.pathname,
+  useSearchParams: () => {
+    if (mocks.suspend) {
+      // eslint-disable-next-line @typescript-eslint/only-throw-error
+      throw never;
+    }
+    return new URLSearchParams(mocks.query);
+  },
+}));
 vi.mock("@/lib/auth/actions", () => ({ signOutAction: mocks.signOutAction }));
 
 import { AccountMenu } from "./account-menu";
@@ -28,6 +41,8 @@ async function renderMenu() {
 describe("AccountMenu", () => {
   beforeEach(() => {
     mocks.pathname = "/agencies";
+    mocks.query = "";
+    mocks.suspend = false;
   });
 
   afterEach(() => {
@@ -66,6 +81,61 @@ describe("AccountMenu", () => {
       "/auth/sign-in?returnTo=%2Fagencies%2Fla%20metro",
     );
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("keeps the query string in returnTo", async () => {
+    mocks.query = "tab=meetings&page=2";
+    stubSession(() => Promise.resolve(Response.json({ signedIn: false })));
+
+    await renderMenu();
+
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/auth/sign-in?returnTo=%2Fagencies%3Ftab%3Dmeetings%26page%3D2",
+    );
+  });
+
+  it("links with the path alone while the search params are not ready", async () => {
+    mocks.suspend = true;
+    stubSession(() => Promise.resolve(Response.json({ signedIn: false })));
+
+    await renderMenu();
+
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/auth/sign-in?returnTo=%2Fagencies",
+    );
+  });
+
+  it("moves focus into the menu when it opens and closes it when focus leaves", async () => {
+    stubSession(() =>
+      Promise.resolve(Response.json({ signedIn: true, email: null })),
+    );
+    await renderMenu();
+    const button = screen.getByRole("button", { name: "Account" });
+
+    fireEvent.click(button);
+    const signOut = screen.getByRole("button", { name: "Sign out" });
+    expect(signOut).toHaveFocus();
+
+    fireEvent.blur(signOut, { relatedTarget: button });
+    expect(button).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.blur(signOut, { relatedTarget: document.body });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("closes when focus leaves the page", async () => {
+    stubSession(() =>
+      Promise.resolve(Response.json({ signedIn: true, email: null })),
+    );
+    await renderMenu();
+    const button = screen.getByRole("button", { name: "Account" });
+    fireEvent.click(button);
+
+    fireEvent.blur(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(button).toHaveAttribute("aria-expanded", "false");
   });
 
   it("shows the email and a closed menu when signed in", async () => {

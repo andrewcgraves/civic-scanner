@@ -1,8 +1,8 @@
 import { withAuth } from "@workos-inc/authkit-nextjs";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import { callApiAsUser } from "@/lib/auth/api";
-import { sessionCookieName } from "@/lib/auth/cookie";
+import { SESSION_STATE_HEADER, sessionCookieName } from "@/lib/auth/cookie";
 import { isSignInEnabled, notFound } from "@/lib/auth/server";
 import type { SessionState } from "@/lib/auth/session-state";
 
@@ -23,7 +23,11 @@ export async function GET(): Promise<Response> {
   }
   const { user } = await withAuth();
   if (user === null) {
-    return sessionResponse({ signedIn: false });
+    const unverified =
+      (await headers()).get(SESSION_STATE_HEADER) === "unverified";
+    return sessionResponse(
+      unverified ? { signedIn: true, email: null } : { signedIn: false },
+    );
   }
 
   const me = await callApiAsUser((api) => api.GET("/me"));

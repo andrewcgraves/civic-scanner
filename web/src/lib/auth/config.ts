@@ -37,6 +37,11 @@ function redirectUriProblem(value: string): string | undefined {
   return undefined;
 }
 
+export function hasPublicRedirectUri(): boolean {
+  const redirectUri = trimmed(process.env.NEXT_PUBLIC_WORKOS_REDIRECT_URI);
+  return redirectUri !== "" && redirectUriProblem(redirectUri) === undefined;
+}
+
 export function readAuthConfig(): AuthConfig {
   const clientId = trimmed(process.env.WORKOS_CLIENT_ID);
   const cookiePassword = process.env.WORKOS_COOKIE_PASSWORD ?? "";

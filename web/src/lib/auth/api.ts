@@ -5,13 +5,13 @@ import {
   refreshSession,
   withAuth,
 } from "@workos-inc/authkit-nextjs";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import createClient, { type Client } from "openapi-fetch";
 
 import { apiBaseUrl } from "@/lib/api/client";
 import type { paths } from "@/lib/api/v1";
 
-import { sessionCookieName } from "./cookie";
+import { SESSION_STATE_HEADER, sessionCookieName } from "./cookie";
 
 export type UserApiClient = Client<paths>;
 
@@ -73,7 +73,10 @@ async function attempt<T>(
   let result: { data?: T; response: Response };
   try {
     result = await call(userApiClient(accessToken));
-  } catch {
+  } catch (error) {
+    console.warn(
+      `API call as the user failed: ${error instanceof Error ? error.name : "unknown error"}`,
+    );
     return { status: "failed" };
   }
   const { status } = result.response;
@@ -89,6 +92,7 @@ async function attempt<T>(
   if (status >= 200 && status < 300 && result.data !== undefined) {
     return { status: "ok", data: result.data };
   }
+  console.warn(`API call as the user failed with status ${status}`);
   return { status: "failed" };
 }
 
@@ -130,6 +134,9 @@ export async function callApiAsUser<T>(
   const first = await attempt(call, accessToken);
   if (first.status !== "unauthorized") {
     return first;
+  }
+  if ((await headers()).get(SESSION_STATE_HEADER) === "refreshed") {
+    return { status: "signed-out" };
   }
 
   const refreshed = await refreshedAccessToken();

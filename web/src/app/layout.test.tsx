@@ -129,16 +129,38 @@ describe("RootLayout", () => {
       expect(doc.querySelector("header")).toBeNull();
     });
 
-    it("has no header when WorkOS is misconfigured", async () => {
-      vi.spyOn(console, "error").mockImplementation(() => undefined);
+    it("has no header when the public redirect URI is not valid", async () => {
       const doc = await renderLayoutWithFlags({
         ...WORKOS,
-        WORKOS_COOKIE_PASSWORD: "short",
+        NEXT_PUBLIC_WORKOS_REDIRECT_URI: "http://civic.example/auth/callback",
         NEXT_PUBLIC_POSTHOG_KEY: undefined,
         NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
       });
 
       expect(doc.querySelector("header")).toBeNull();
+    });
+
+    it("reserves the header without the server secrets, so a build without them still offers sign-in", async () => {
+      const doc = await renderLayoutWithFlags({
+        ...NO_WORKOS,
+        NEXT_PUBLIC_WORKOS_REDIRECT_URI: WORKOS.NEXT_PUBLIC_WORKOS_REDIRECT_URI,
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+        NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
+      });
+
+      expect(doc.querySelector("header b")?.textContent).toBe("account menu");
+    });
+
+    it("reserves one line of height for the header in every state", async () => {
+      const doc = await renderLayoutWithFlags({
+        ...WORKOS,
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+        NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
+      });
+
+      const classes = doc.querySelector("header")?.classList;
+      expect(classes?.contains("h-6")).toBe(true);
+      expect(classes?.contains("items-center")).toBe(true);
     });
 
     it("puts the account menu in the header, with no props", async () => {
