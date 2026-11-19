@@ -19,7 +19,7 @@ func TestHTMLTextKeepsVisibleTextInBlocks(t *testing.T) {
 <table><tr><th>Item</th><th>Title</th></tr><tr><td>5.</td><td>Approve Consent Calendar</td></tr></table>
 <noscript>Enable JavaScript</noscript>
 </body></html>`
-	got, err := extractor().Text(t.Context(), Request{ContentType: "text/html; charset=utf-8", Body: []byte(page)})
+	got, err := textOf(extractor().Text(t.Context(), Request{ContentType: "text/html; charset=utf-8", Body: []byte(page)}))
 	if err != nil {
 		t.Fatalf("Text: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestHTMLTextDecodesTheDeclaredCharset(t *testing.T) {
 		"text/html":                     []byte(`<html><head><meta charset="windows-1252"></head><body><p>Caf` + "\xe9" + ` Agenda</p></body></html>`),
 	}
 	for ct, page := range cases {
-		got, err := extractor().Text(t.Context(), Request{ContentType: ct, Body: page})
+		got, err := textOf(extractor().Text(t.Context(), Request{ContentType: ct, Body: page}))
 		if err != nil || got != "Café Agenda" {
 			t.Errorf("Text(%q) = %q, %v", ct, got, err)
 		}

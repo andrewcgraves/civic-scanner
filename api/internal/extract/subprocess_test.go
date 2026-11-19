@@ -48,8 +48,42 @@ func TestSubprocessExtractsAPDF(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadPDF: %v", err)
 	}
-	if Normalize(got) != "Consent Calendar" {
-		t.Errorf("ReadPDF = %q", got)
+	if Normalize(got.Text) != "Consent Calendar" {
+		t.Errorf("ReadPDF = %q", got.Text)
+	}
+	if want := (Report{Pages: 1, DecodedContentBytes: got.Report.DecodedContentBytes}); got.Report != want || want.DecodedContentBytes == 0 {
+		t.Errorf("Report = %+v", got.Report)
+	}
+}
+
+func TestSubprocessCarriesThePartialReadReport(t *testing.T) {
+	got, err := subprocess(t).ReadPDF(t.Context(), pagesWithUnreadable(10, 0))
+	if err != nil {
+		t.Fatalf("ReadPDF: %v", err)
+	}
+	r := got.Report
+	if r.Pages != 10 || r.UnreadablePages != 1 || r.TruncatedPages != 0 || !strings.HasPrefix(r.FirstError, "page 1: ") || !r.Partial() {
+		t.Errorf("Report = %+v", r)
+	}
+}
+
+func TestSubprocessNeedsAReportOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	cases := map[string]string{
+		"no report":  "#!/bin/sh\ncat >/dev/null\necho Agenda\n",
+		"bad report": "#!/bin/sh\ncat >/dev/null\necho Agenda\necho 'extract report: {' >&2\n",
+	}
+	for name, script := range cases {
+		t.Run(name, func(t *testing.T) {
+			bin := filepath.Join(dir, strings.ReplaceAll(name, " ", "-"))
+			if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { //nolint:gosec
+				t.Fatal(err)
+			}
+			_, err := Subprocess{Binary: bin}.ReadPDF(t.Context(), []byte("%PDF-1.4"))
+			if !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "without a valid report") {
+				t.Errorf("err = %v", err)
+			}
+		})
 	}
 }
 

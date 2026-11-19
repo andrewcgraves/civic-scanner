@@ -2,6 +2,7 @@ package extract
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ const (
 	exitUsage           = 2
 	metricTotal         = "/memory/classes/total:bytes"
 	metricReleased      = "/memory/classes/heap/released:bytes"
+	reportPrefix        = "extract report: "
 )
 
 func RunChild(args []string, stdin io.Reader, stdout, stderr io.Writer, exit func(int)) int {
@@ -45,15 +47,17 @@ func RunChild(args []string, stdin io.Reader, stdout, stderr io.Writer, exit fun
 		_, _ = fmt.Fprintf(stderr, "read pdf: %v\n", err)
 		return exitMalformed
 	}
-	text, err := PDFText(context.Background(), body, Limits{MaxTextBytes: *maxText})
+	doc, err := ReadPDF(context.Background(), body, Limits{MaxTextBytes: *maxText})
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return exitCode(err)
 	}
-	if _, err := io.WriteString(stdout, text); err != nil {
+	if _, err := io.WriteString(stdout, doc.Text); err != nil {
 		_, _ = fmt.Fprintf(stderr, "write text: %v\n", err)
 		return exitLimit
 	}
+	report, _ := json.Marshal(doc.Report)
+	_, _ = fmt.Fprintf(stderr, "%s%s\n", reportPrefix, report)
 	return 0
 }
 

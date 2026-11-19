@@ -69,7 +69,7 @@ func (NoAgendaFollowUp) AgendaVersionAdded(context.Context, pgx.Tx, store.Agenda
 }
 
 type TextExtractor interface {
-	Text(ctx context.Context, req extract.Request) (string, error)
+	Text(ctx context.Context, req extract.Request) (extract.Result, error)
 }
 
 type ProcessAgendaWorker struct {
@@ -134,12 +134,30 @@ func (w *ProcessAgendaWorker) read(ctx context.Context, logger *slog.Logger, fet
 	if err != nil {
 		return "", resp, fmt.Errorf("fetch agenda: %w", err)
 	}
-	text, err := w.extractor.Text(ctx, extract.Request{ContentType: resp.ContentType, Body: resp.Body, ExpectPDF: expectsPDF(agendaURL)})
+	result, err := w.extractor.Text(ctx, extract.Request{ContentType: resp.ContentType, Body: resp.Body, ExpectPDF: expectsPDF(agendaURL)})
 	if err != nil {
 		logger.InfoContext(ctx, "agenda text not extracted", "content_type", resp.ContentType, "bytes", len(resp.Body), "error", err)
 		return "", resp, fmt.Errorf("extract agenda: %w", err)
 	}
-	return text, resp, nil
+	logPDFReport(ctx, logger, result.PDF)
+	return result.Text, resp, nil
+}
+
+func logPDFReport(ctx context.Context, logger *slog.Logger, report *extract.Report) {
+	if report == nil {
+		return
+	}
+	level, msg := slog.LevelInfo, "agenda pdf read"
+	if report.Partial() {
+		level, msg = slog.LevelWarn, "agenda pdf read in part"
+	}
+	logger.Log(ctx, level, msg,
+		"pages", report.Pages,
+		"unreadable_pages", report.UnreadablePages,
+		"truncated_pages", report.TruncatedPages,
+		"first_error", report.FirstError,
+		"decoded_content_bytes", report.DecodedContentBytes,
+		"trailing_bytes_cut", report.TrailingBytesCut)
 }
 
 func expectsPDF(agendaURL string) bool {

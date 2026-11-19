@@ -24,8 +24,8 @@ func flateBombPDF(t testing.TB, decompressed int) []byte {
 
 func inProcessText(t *testing.T, doc []byte) (string, error) {
 	t.Helper()
-	text, err := PDFText(t.Context(), doc, Limits{})
-	return Normalize(text), err
+	got, err := ReadPDF(t.Context(), doc, Limits{})
+	return Normalize(got.Text), err
 }
 
 func TestBuildPDFIsReadable(t *testing.T) {
@@ -100,8 +100,8 @@ func TestPDFWithMostlyEmptyPagesIsNoText(t *testing.T) {
 func TestMalformedPDFIsMalformed(t *testing.T) {
 	cases := map[string][]byte{
 		"truncated":       extracttest.PDF(false, "BT /F1 12 Tf 72 720 Td (Agenda) Tj ET")[:200],
-		"bad content":     extracttest.PDF(false, "BT /F1 Tf (Agenda) Tj ET"),
-		"pdf 2.0":         []byte("%PDF-2.0\nnot really\n%%EOF\n"),
+		"unreadable page": extracttest.PDF(false, "1 begin BT /F1 12 Tf 72 720 Td (Agenda) Tj ET"),
+		"no xref":         []byte("%PDF-2.0\nnot really\n%%EOF\n"),
 		"self reference":  extracttest.SelfReferencingPages(),
 		"no pages object": extracttest.Assemble("<< /Type /Catalog >>"),
 	}
@@ -115,23 +115,23 @@ func TestMalformedPDFIsMalformed(t *testing.T) {
 }
 
 func TestPDFTextBoundsPagesGlyphsAndText(t *testing.T) {
-	if _, err := PDFText(t.Context(), extracttest.HugeCount(), Limits{}); !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "2000000000") {
+	if _, err := ReadPDF(t.Context(), extracttest.HugeCount(), Limits{}); !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "2000000000") {
 		t.Errorf("huge /Count: err = %v", err)
 	}
 	many := extracttest.PDF(false, "BT /F1 12 Tf 72 720 Td (One) Tj ET", "BT /F1 12 Tf 72 720 Td (Two) Tj ET", "BT /F1 12 Tf 72 720 Td (Three) Tj ET")
 	understated := bytes.Replace(many, []byte("/Count 3"), []byte("/Count 1"), 1)
-	if _, err := PDFText(t.Context(), understated, Limits{MaxPages: 2}); !errors.Is(err, ErrLimitExceeded) {
+	if _, err := ReadPDF(t.Context(), understated, Limits{MaxPages: 2}); !errors.Is(err, ErrLimitExceeded) {
 		t.Errorf("page limit: err = %v", err)
 	}
-	if _, err := PDFText(t.Context(), many, Limits{MaxGlyphsPerPage: 2}); !errors.Is(err, ErrLimitExceeded) {
+	if _, err := ReadPDF(t.Context(), many, Limits{MaxGlyphsPerPage: 2}); !errors.Is(err, ErrLimitExceeded) {
 		t.Errorf("glyph limit: err = %v", err)
 	}
-	if _, err := PDFText(t.Context(), many, Limits{MaxTextBytes: 5}); !errors.Is(err, ErrLimitExceeded) {
+	if _, err := ReadPDF(t.Context(), many, Limits{MaxTextBytes: 5}); !errors.Is(err, ErrLimitExceeded) {
 		t.Errorf("text limit: err = %v", err)
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := PDFText(ctx, many, Limits{}); !errors.Is(err, context.Canceled) {
+	if _, err := ReadPDF(ctx, many, Limits{}); !errors.Is(err, context.Canceled) {
 		t.Errorf("canceled: err = %v", err)
 	}
 }
@@ -142,10 +142,10 @@ func TestPageTreeIsBoundedByDepthAndNodes(t *testing.T) {
 		deep = append(deep, fmt.Sprintf("<< /Type /Pages /Kids [%d 0 R] >>", i+1))
 	}
 	deep = append(deep, "<< /Type /Page >>")
-	if _, err := PDFText(t.Context(), extracttest.Assemble(deep...), Limits{}); !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "deeper") {
+	if _, err := ReadPDF(t.Context(), extracttest.Assemble(deep...), Limits{}); !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "deeper") {
 		t.Errorf("deep tree: err = %v", err)
 	}
-	if _, err := PDFText(t.Context(), extracttest.SelfReferencingPages(), Limits{}); !errors.Is(err, ErrMalformed) {
+	if _, err := ReadPDF(t.Context(), extracttest.SelfReferencingPages(), Limits{}); !errors.Is(err, ErrMalformed) {
 		t.Errorf("self reference: err = %v", err)
 	}
 }
