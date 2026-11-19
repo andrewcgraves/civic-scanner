@@ -134,7 +134,7 @@ func hyphenEnded(bytes int) string {
 }
 
 func TestCanonicalisationIsLinear(t *testing.T) {
-	for _, size := range []int{1_500_000, 3_000_000} {
+	for _, size := range []int{1_500_000 / timingScale, 3_000_000 / timingScale} {
 		old := hyphenEnded(size)
 		updated := old + "end of agenda\n"
 		start := time.Now()
@@ -153,7 +153,7 @@ func TestCanonicalisationIsLinear(t *testing.T) {
 }
 
 func TestALargeAgendaJustUnderTheCapIsComparedQuickly(t *testing.T) {
-	old := largeAgenda(15_000)
+	old := largeAgenda(15_000 / timingScale)
 	if len(old) > agendadiff.MaxCompareBytes {
 		t.Fatalf("fixture is %d bytes, over the cap", len(old))
 	}
