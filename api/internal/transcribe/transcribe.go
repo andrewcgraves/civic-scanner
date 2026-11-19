@@ -16,9 +16,17 @@ type Segment struct {
 	Speaker string
 }
 
+type Word struct {
+	Start   time.Duration
+	End     time.Duration
+	Text    string
+	Speaker string
+}
+
 type Transcript struct {
 	Text     string
 	Segments []Segment
+	Words    []Word
 	Duration time.Duration
 }
 

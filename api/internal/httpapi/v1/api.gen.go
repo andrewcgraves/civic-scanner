@@ -179,9 +179,6 @@ type TranscriptSegment struct {
 	// EndMs End, in milliseconds from the start of the recording.
 	EndMs int64 `json:"endMs"`
 
-	// Speaker Opaque speaker label. Segments with the same label have the same speaker, but two labels may still be the same person. Absent when the speaker is unknown.
-	Speaker *string `json:"speaker,omitempty"`
-
 	// StartMs Start, in milliseconds from the start of the recording.
 	StartMs int64  `json:"startMs"`
 	Text    string `json:"text"`

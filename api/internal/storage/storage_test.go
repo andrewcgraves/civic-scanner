@@ -26,6 +26,7 @@ func TestUnconfiguredStoreReturnsNotConfigured(t *testing.T) {
 		"Delete":        func() error { return store.Delete(ctx, "k") },
 		"Stat":          func() error { _, err := store.Stat(ctx, "k"); return err },
 		"ListOlderThan": func() error { _, err := store.ListOlderThan(ctx, time.Now()); return err },
+		"ListPrefix":    func() error { _, err := store.ListPrefix(ctx, "p/"); return err },
 	}
 	for name, call := range calls {
 		err := call()

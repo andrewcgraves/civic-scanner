@@ -582,12 +582,6 @@ components:
           description: End, in milliseconds from the start of the recording.
         text:
           type: string
-        speaker:
-          type: string
-          description: >-
-            Opaque speaker label. Segments with the same label have the same
-            speaker, but two labels may still be the same person. Absent when
-            the speaker is unknown.
     User:
       type: object
       required: [id, email, createdAt]

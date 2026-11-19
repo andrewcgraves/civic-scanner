@@ -168,6 +168,26 @@ func TestIntegrationListOlderThan(t *testing.T) {
 	}
 }
 
+func TestIntegrationListPrefix(t *testing.T) {
+	store := realStore(t)
+	inside := uniqueKey(t, "prefix/one.json")
+	prefix := strings.TrimSuffix(inside, "one.json")
+	outside := uniqueKey(t, "other.json")
+	for _, key := range []string{inside, outside} {
+		if err := store.Put(t.Context(), key, strings.NewReader("x")); err != nil {
+			t.Fatalf("Put %s: %v", key, err)
+		}
+	}
+
+	keys, err := store.ListPrefix(t.Context(), prefix)
+	if err != nil {
+		t.Fatalf("ListPrefix: %v", err)
+	}
+	if !slices.Equal(keys, []string{inside}) {
+		t.Errorf("keys = %v, want only %s", keys, inside)
+	}
+}
+
 func TestIntegrationMissingBucketIsPermanent(t *testing.T) {
 	endpoint := os.Getenv("STORAGE_ENDPOINT")
 	if endpoint == "" {

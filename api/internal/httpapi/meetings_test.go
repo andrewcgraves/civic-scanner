@@ -101,12 +101,15 @@ func TestGetMeetingWithEverything(t *testing.T) {
 	body := getMeetingBody(t, meetingStore(d))
 	want := `{` + laMetroJSON + `,"agenda":{"changeNote":"Item 5 added.","documentUrl":"https://metro.legistar1.com/agenda.pdf","foundAt":"2026-03-20T08:02:03Z","summary":"Fare changes.","version":2},` +
 		`"id":"0b6c1f0e-8a8d-4b1e-9b8f-1f2a3b4c5d6e","recordings":[` +
-		`{"sourceUrl":"https://metro.granicus.com/player/clip/1","transcript":{"segments":[{"endMs":1500,"speaker":"c0/speaker_0","startMs":0,"text":"Call to order."},{"endMs":3000,"startMs":1500,"text":"Roll call."}],"summary":"The board met."}},` +
+		`{"sourceUrl":"https://metro.granicus.com/player/clip/1","transcript":{"segments":[{"endMs":1500,"startMs":0,"text":"Call to order."},{"endMs":3000,"startMs":1500,"text":"Roll call."}],"summary":"The board met."}},` +
 		`{"sourceUrl":"https://metro.granicus.com/player/clip/2","transcript":{"segments":[],"summary":null}},` +
 		`{"sourceUrl":"https://metro.granicus.com/player/clip/3","transcript":null}` +
 		`],"sourceUrl":"https://metro.legistar.com/m/1","startsAt":"2026-03-26T17:00:00Z","status":"held","title":"Board of Directors"}` + "\n"
 	if body != want {
 		t.Errorf("body =\n%s\nwant\n%s", body, want)
+	}
+	if strings.Contains(body, "speaker") {
+		t.Errorf("body exposes a stored speaker label: %s", body)
 	}
 }
 

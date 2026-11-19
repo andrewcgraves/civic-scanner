@@ -98,6 +98,17 @@ func (s *s3Store) ListOlderThan(ctx context.Context, cutoff time.Time) ([]string
 	return keys, nil
 }
 
+func (s *s3Store) ListPrefix(ctx context.Context, prefix string) ([]string, error) {
+	var keys []string
+	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{Prefix: prefix, Recursive: true}) {
+		if obj.Err != nil {
+			return nil, classify(obj.Err, "")
+		}
+		keys = append(keys, obj.Key)
+	}
+	return keys, nil
+}
+
 type reader struct {
 	obj *minio.Object
 	key string
@@ -126,5 +137,9 @@ func (unconfigured) Delete(context.Context, string) error { return ErrNotConfigu
 func (unconfigured) Stat(context.Context, string) (Info, error) { return Info{}, ErrNotConfigured }
 
 func (unconfigured) ListOlderThan(context.Context, time.Time) ([]string, error) {
+	return nil, ErrNotConfigured
+}
+
+func (unconfigured) ListPrefix(context.Context, string) ([]string, error) {
 	return nil, ErrNotConfigured
 }

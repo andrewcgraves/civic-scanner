@@ -239,8 +239,8 @@ func TestConfigDefaultsEnqueueAgendasOnTheConfiguredQueue(t *testing.T) {
 	if cfg.AudioTimeout != time.Hour {
 		t.Errorf("AudioTimeout = %v", cfg.AudioTimeout)
 	}
-	if _, ok := cfg.AudioFollowUp.(NoAudioFollowUp); !ok {
-		t.Errorf("AudioFollowUp = %#v", cfg.AudioFollowUp)
+	if got, ok := cfg.AudioFollowUp.(EnqueueTranscribeAudio); !ok || got.Queue != AudioQueue || got.Enabled == nil || got.Logger != discard {
+		t.Errorf("AudioFollowUp = %#v, want EnqueueTranscribeAudio on the audio queue", cfg.AudioFollowUp)
 	}
 	if _, ok := cfg.Extractor.(*extract.Extractor); !ok {
 		t.Errorf("Extractor = %#v", cfg.Extractor)

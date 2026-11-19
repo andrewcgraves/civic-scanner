@@ -99,3 +99,16 @@ func labelSpeakers(segments []Segment, words []elevenLabsWord) {
 		}
 	}
 }
+
+func gatewayWords(words []elevenLabsWord) []Word {
+	var out []Word
+	for _, w := range words {
+		text := strings.TrimSpace(w.Text)
+		if w.Type == "spacing" || text == "" {
+			continue
+		}
+		start, end := seconds(w.Start), seconds(w.End)
+		out = append(out, Word{Start: start, End: max(end, start), Text: text, Speaker: w.SpeakerID})
+	}
+	return out
+}

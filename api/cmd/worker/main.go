@@ -18,6 +18,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/storage"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
+	"github.com/andrewcgraves/civic-scanner/api/internal/transcribe"
 )
 
 const shutdownTimeout = 25 * time.Second
@@ -65,6 +66,10 @@ func run(ctx context.Context) error {
 	if cfg.LLM.APIKey != "" {
 		summarizer = llm.New(cfg.LLM)
 	}
+	var transcriber transcribe.Client
+	if cfg.Transcription.APIKey != "" {
+		transcriber = transcribe.New(cfg.Transcription, transcribe.WithSplitter(media.NewSplitter(audio.Tool)))
+	}
 	client, err := jobs.NewClient(pool, logger, jobs.Config{
 		Registry:     registry,
 		Fetcher:      fetcher,
@@ -77,6 +82,16 @@ func run(ctx context.Context) error {
 		LLM:          summarizer,
 		SummaryTier:  llm.Tier(cfg.Summary.AgendaTier),
 		LLMTimeout:   cfg.LLM.Timeout,
+		Transcription: jobs.Transcription{
+			Client:          transcriber,
+			Model:           cfg.Transcription.Provider + "/" + cfg.Transcription.Model,
+			ProviderOptions: cfg.Transcription.ProviderOptions,
+			Timeout:         cfg.Transcribe.Timeout,
+			MaxDuration:     cfg.Transcribe.MaxDuration,
+			MaxAudioBytes:   cfg.Transcribe.MaxAudioBytes,
+			Concurrency:     cfg.Transcribe.Concurrency,
+			ChunkRetries:    cfg.Transcribe.ChunkRetries,
+		},
 	})
 	if err != nil {
 		return err
@@ -87,7 +102,7 @@ func run(ctx context.Context) error {
 	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC,
 		"pdf_extractor", pdfExtractor.Binary, "agenda_summary_tier", cfg.Summary.AgendaTier, "llm_configured", summarizer != nil,
 		"audio_limit", audio.Tool.Limit, "ffmpeg", audio.Tool.FFmpeg, "yt_dlp", audio.Tool.YTDLP,
-		"storage_configured", cfg.Storage.Configured())
+		"storage_configured", cfg.Storage.Configured(), "transcription_configured", transcriber != nil)
 	if _, err := os.Stat(pdfExtractor.Binary); err != nil {
 		logger.WarnContext(ctx, "pdf extractor not found: PDF agendas will be cancelled; build it next to the worker or set EXTRACT_PDF_BINARY",
 			"pdf_extractor", pdfExtractor.Binary, "error", err)

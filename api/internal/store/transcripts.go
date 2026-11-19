@@ -164,6 +164,73 @@ RETURNING (xmax = 0)`,
 	return t, created, nil
 }
 
+func (s *Store) AddTranscriptTx(ctx context.Context, tx pgx.Tx, in TranscriptInput) (Transcript, bool, error) {
+	segments, err := encodeSegments(in.Segments)
+	if err != nil {
+		return Transcript{}, false, fmt.Errorf("add transcript: %w", err)
+	}
+	var recordingID uuid.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM recordings WHERE id = $1 FOR KEY SHARE`, in.RecordingID).Scan(&recordingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transcript{}, false, fmt.Errorf("add transcript: recording %s: %w", in.RecordingID, ErrNotFound)
+	}
+	if err != nil {
+		return Transcript{}, false, fmt.Errorf("add transcript: lock recording: %w", err)
+	}
+	t, err := scanTranscript(tx.QueryRow(ctx, `
+INSERT INTO transcripts (recording_id, full_text, segments)
+VALUES ($1, $2, $3::jsonb)
+ON CONFLICT (recording_id) DO NOTHING
+RETURNING `+transcriptColumns, in.RecordingID, in.Text, segments))
+	if err == nil {
+		return t, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Transcript{}, false, fmt.Errorf("add transcript: %w", err)
+	}
+	t, err = getTranscript(ctx, tx, in.RecordingID)
+	if err != nil {
+		return Transcript{}, false, fmt.Errorf("add transcript: %w", err)
+	}
+	return t, false, nil
+}
+
+type UntranscribedParams struct {
+	FailedKind   string
+	FailedWithin time.Duration
+	Limit        int
+}
+
+func (s *Store) ListUntranscribedRecordings(ctx context.Context, p UntranscribedParams) ([]uuid.UUID, error) {
+	if p.Limit <= 0 {
+		return nil, fmt.Errorf("list untranscribed recordings: limit %d: %w", p.Limit, ErrInvalidLimit)
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT r.id
+FROM recordings r
+JOIN meetings m ON m.id = r.meeting_id
+JOIN agencies a ON a.id = m.agency_id AND a.status = 'live'
+WHERE r.audio_key IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.recording_id = r.id)
+  AND NOT EXISTS (
+    SELECT 1 FROM river_job j
+    WHERE j.kind = $1
+      AND j.args->>'recording_id' = r.id::text
+      AND j.state IN ('cancelled', 'discarded')
+      AND j.finalized_at >= now() - $2::interval
+  )
+ORDER BY m.starts_at DESC, r.seq
+LIMIT $3`, p.FailedKind, p.FailedWithin, p.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list untranscribed recordings: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("scan untranscribed recordings: %w", err)
+	}
+	return ids, nil
+}
+
 func (s *Store) GetTranscript(ctx context.Context, recordingID uuid.UUID) (Transcript, error) {
 	return getTranscript(ctx, s.pool, recordingID)
 }
