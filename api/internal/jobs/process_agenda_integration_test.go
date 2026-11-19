@@ -231,13 +231,13 @@ func TestCheckEnqueuesProcessAgendaAndStoresTheFirstVersionFromAPDF(t *testing.T
 	}
 }
 
-func TestProcessAgendaStoresAVersionAndAnEventOnlyWhenTheTextChanges(t *testing.T) {
+func TestWithChangeDetectionOffEveryNewVersionRecordsItsEventAtOnce(t *testing.T) {
 	pool := testdb.Pool(t)
 	agencyID := seedAgency(t, pool, "jobs-test-agenda-versions-"+randomSuffix(t), "live")
 	meeting := seedMeeting(t, pool, agencyID, "evt-versions")
 	source := serving("text/html", htmlAgenda(agendaV1))
 	agendaFollowUp := &recordingAgendaFollowUp{}
-	h := start(t, pool, jobs.Config{Fetcher: source, AgendaFollowUp: agendaFollowUp})
+	h := start(t, pool, jobs.Config{Fetcher: source, AgendaFollowUp: agendaFollowUp, Enabled: allFlagsBut(jobs.FlagAgendaChanges)})
 	agendaURL := "https://agency.test/evt-versions/agenda"
 
 	testdb.WaitForJobState(t, pool, h.processAgenda(meeting.ID, agendaURL, day(3)), "completed")

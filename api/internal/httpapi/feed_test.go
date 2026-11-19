@@ -343,6 +343,23 @@ func TestAgencyFeedConditionalRequests(t *testing.T) {
 	}
 }
 
+func TestABackdatedChangeKeepsItsPlaceAndItsFoundTime(t *testing.T) {
+	feed := goldenFeed()
+	found := feed.Items[len(feed.Items)-1].OccurredAt.Add(-48 * time.Hour)
+	feed.Items[0].OccurredAt = found
+	h := feedRouter(fakeStore{feeds: map[string]store.AgencyFeed{"la-metro": feed}}, flagOn, testWebURL)
+	f := parseFeed(t, serveFeed(t, h, http.MethodGet, "/v1/agencies/la-metro/feed.xml", nil).Body.Bytes())
+	if len(f.Channel.Items) != 3 || f.Channel.Items[0].GUID.Value != feed.Items[0].EventID.String() {
+		t.Fatalf("items = %+v, want the sequence order kept", f.Channel.Items)
+	}
+	if f.Channel.Items[0].PubDate != found.UTC().Format(time.RFC1123Z) {
+		t.Errorf("pubDate = %q, want the found time", f.Channel.Items[0].PubDate)
+	}
+	if f.Channel.LastBuildDate != feed.Items[1].OccurredAt.UTC().Format(time.RFC1123Z) {
+		t.Errorf("lastBuildDate = %q, want the newest pubDate", f.Channel.LastBuildDate)
+	}
+}
+
 func TestAgencyFeedEmpty(t *testing.T) {
 	feed := store.AgencyFeed{Agency: store.Agency{ID: uuid.New(), Slug: "quiet", Name: "Quiet Agency"}}
 	h := feedRouter(fakeStore{feeds: map[string]store.AgencyFeed{"quiet": feed}}, flagOn, testWebURL)

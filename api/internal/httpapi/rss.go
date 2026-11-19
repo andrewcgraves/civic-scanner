@@ -7,6 +7,7 @@ import (
 	"html"
 	"io"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -116,7 +117,7 @@ func (r feedRenderer) write(w io.Writer, feed store.AgencyFeed) error {
 		}
 	}
 	if len(items) > 0 {
-		doc.Channel.LastBuildDate = rfc1123(occurred[0])
+		doc.Channel.LastBuildDate = rfc1123(slices.MaxFunc(occurred, time.Time.Compare))
 	}
 	size, err := encodedSize(doc)
 	if err != nil {
