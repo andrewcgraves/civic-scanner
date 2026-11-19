@@ -135,7 +135,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.api == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: api
@@ -179,8 +179,27 @@ jobs:
         with:
           go-version-file: api/go.mod
           cache-dependency-path: api/go.sum
+      - name: Identify the runner image
+        id: runner-image
+        run: echo "id=${ImageOS}-${ImageVersion}" >> "$GITHUB_OUTPUT"
+      - name: Restore ffmpeg packages
+        id: ffmpeg-packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/ffmpeg-packages
+          key: ffmpeg-packages-${{ runner.arch }}-${{ steps.runner-image.outputs.id }}
+      - name: Download ffmpeg packages
+        if: steps.ffmpeg-packages.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$HOME/ffmpeg-packages/partial"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::Archives="$HOME/ffmpeg-packages" ffmpeg
+          sudo rm -rf "$HOME/ffmpeg-packages/partial" "$HOME/ffmpeg-packages/lock"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/ffmpeg-packages"
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+        run: |
+          sudo dpkg -i "$HOME"/ffmpeg-packages/*.deb
+          ffmpeg -version
       - name: Unit and integration tests with coverage
         run: ../.github/scripts/go-coverage.sh "Go unit + integration" coverage.out integration
       - name: Upload coverage

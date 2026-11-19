@@ -2,6 +2,23 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/server", () => ({ connection: () => Promise.resolve() }));
+vi.mock("@/components/account-menu", () => ({
+  AccountMenu: (props: Record<string, unknown>) => (
+    <b data-props={JSON.stringify(props)}>account menu</b>
+  ),
+}));
+
+const WORKOS = {
+  WORKOS_CLIENT_ID: "client_01TEST",
+  WORKOS_COOKIE_PASSWORD: "cookie-password-cookie-password-0",
+  NEXT_PUBLIC_WORKOS_REDIRECT_URI: "https://civic.example/auth/callback",
+};
+
+const NO_WORKOS = {
+  WORKOS_CLIENT_ID: undefined,
+  WORKOS_COOKIE_PASSWORD: undefined,
+  NEXT_PUBLIC_WORKOS_REDIRECT_URI: undefined,
+};
 
 async function renderLayoutWithFlags(env: Record<string, string | undefined>) {
   for (const [name, value] of Object.entries(env)) {
@@ -27,6 +44,7 @@ describe("RootLayout", () => {
     await OpenFeature.clearProviders();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("wraps the page in an English document", async () => {
@@ -86,6 +104,77 @@ describe("RootLayout", () => {
       const marker = doc.querySelector("i");
       expect(marker?.dataset.key).toBe("phc_test");
       expect(marker?.dataset.host).toBe("https://eu.i.posthog.com");
+    });
+  });
+
+  describe("sign-in", () => {
+    it("renders exactly the page when WorkOS is not configured", async () => {
+      const doc = await renderLayoutWithFlags({
+        ...NO_WORKOS,
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+        NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
+      });
+
+      expect(doc.querySelector("header")).toBeNull();
+      expect(doc.body.innerHTML).toBe("<p>off</p>");
+    });
+
+    it("has no header when the accounts flag is off", async () => {
+      const doc = await renderLayoutWithFlags({
+        ...WORKOS,
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+        NEXT_PUBLIC_FEATURE_FLAGS: undefined,
+      });
+
+      expect(doc.querySelector("header")).toBeNull();
+    });
+
+    it("has no header when the public redirect URI is not valid", async () => {
+      const doc = await renderLayoutWithFlags({
+        ...WORKOS,
+        NEXT_PUBLIC_WORKOS_REDIRECT_URI: "http://civic.example/auth/callback",
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+        NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
+      });
+
+      expect(doc.querySelector("header")).toBeNull();
+    });
+
+    it("reserves the header without the server secrets, so a build without them still offers sign-in", async () => {
+      const doc = await renderLayoutWithFlags({
+        ...NO_WORKOS,
+        NEXT_PUBLIC_WORKOS_REDIRECT_URI: WORKOS.NEXT_PUBLIC_WORKOS_REDIRECT_URI,
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+        NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
+      });
+
+      expect(doc.querySelector("header b")?.textContent).toBe("account menu");
+    });
+
+    it("reserves one line of height for the header in every state", async () => {
+      const doc = await renderLayoutWithFlags({
+        ...WORKOS,
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+        NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
+      });
+
+      const classes = doc.querySelector("header")?.classList;
+      expect(classes?.contains("h-6")).toBe(true);
+      expect(classes?.contains("items-center")).toBe(true);
+    });
+
+    it("puts the account menu in the header, with no props", async () => {
+      const doc = await renderLayoutWithFlags({
+        ...WORKOS,
+        NEXT_PUBLIC_POSTHOG_KEY: undefined,
+        NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
+      });
+
+      const menu = doc.querySelector("header b");
+      expect(menu?.textContent).toBe("account menu");
+      expect(menu?.getAttribute("data-props")).toBe("{}");
+      expect(doc.body.innerHTML).not.toContain(WORKOS.WORKOS_COOKIE_PASSWORD);
+      expect(doc.body.innerHTML).not.toContain(WORKOS.WORKOS_CLIENT_ID);
     });
   });
 
