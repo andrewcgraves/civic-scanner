@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
@@ -61,7 +62,7 @@ func run(ctx context.Context) error {
 
 	srv := &http.Server{
 		Addr:              net.JoinHostPort("", cfg.Port),
-		Handler:           httpapi.NewRouter(httpapi.NewHandler(store.New(pool), logger, version, httpapi.WithAuthenticator(verifier)), logger),
+		Handler:           httpapi.NewRouter(httpapi.NewHandler(store.New(pool), logger, version, httpapi.WithAuthenticator(verifier), httpapi.WithPublicWebURL(cfg.Web.PublicURL)), logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

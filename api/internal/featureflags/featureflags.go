@@ -33,6 +33,10 @@ func WithIdentity(ctx context.Context, id string) context.Context {
 	return openfeature.MergeTransactionContext(ctx, openfeature.NewEvaluationContext(id, nil))
 }
 
+func Anonymous(ctx context.Context) context.Context {
+	return openfeature.WithTransactionContext(ctx, openfeature.EvaluationContext{})
+}
+
 func newProvider(cfg config.FeatureFlags, logger *slog.Logger) (openfeature.FeatureProvider, error) {
 	if cfg.PostHogKey != "" {
 		return newPostHogProvider(cfg, logger)
