@@ -84,7 +84,7 @@ func PDFText(ctx context.Context, body []byte, limits Limits) (text string, err 
 		glyphs, err := pageText(page, limits.MaxGlyphsPerPage)
 		switch {
 		case errors.Is(err, ErrLimitExceeded):
-			return "", fmt.Errorf("page %d: %w", i+1, err)
+			return "", fmt.Errorf("%w on page %d", err, i+1)
 		case err != nil:
 			unreadable++
 			empty++

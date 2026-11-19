@@ -69,7 +69,7 @@ func pageText(page pdf.Page, maxGlyphs int) (text []pdf.Text, err error) {
 		if rec := recover(); rec != nil {
 			text = nil
 			if e, ok := rec.(error); ok && errors.Is(e, errTooManyGlyphs) {
-				err = fmt.Errorf("%w: more than %d glyphs on the page", ErrLimitExceeded, maxGlyphs)
+				err = fmt.Errorf("%w: more than %d glyphs", ErrLimitExceeded, maxGlyphs)
 				return
 			}
 			err = fmt.Errorf("%v", rec)
