@@ -42,6 +42,35 @@ func (h *harness) summarizeJobs(want int) []*rivertype.JobRow {
 	}
 }
 
+func (h *harness) summarizeJobsAfter(earlier []*rivertype.JobRow, want int) []*rivertype.JobRow {
+	h.t.Helper()
+	newest := int64(0)
+	for _, j := range earlier {
+		newest = max(newest, j.ID)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		res, err := h.client.JobList(h.t.Context(),
+			river.NewJobListParams().Queues(h.queue).Kinds(jobs.SummarizeAgendaArgs{}.Kind()).First(10000))
+		if err != nil {
+			h.t.Fatalf("list jobs: %v", err)
+		}
+		var later []*rivertype.JobRow
+		for _, j := range res.Jobs {
+			if j.ID > newest {
+				later = append(later, j)
+			}
+		}
+		if len(later) >= want || time.Now().After(deadline) {
+			if len(later) != want {
+				h.t.Fatalf("summarize jobs after job %d = %d, want %d", newest, len(later), want)
+			}
+			return later
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func (h *harness) summarizeAndWait(want int, state string) []*rivertype.JobRow {
 	h.t.Helper()
 	queued := h.summarizeJobs(want)
@@ -456,7 +485,7 @@ func TestTheSweepSummarizesVersionsLeftWithoutOne(t *testing.T) {
 	}
 
 	h.sweep(now.Add(2 * time.Hour))
-	h.summarizeJobs(2)
+	backedOff := h.summarizeJobs(2)
 	if calls.Load() != 2 {
 		t.Errorf("model calls = %d, want 2: the cancelled version is backed off", calls.Load())
 	}
@@ -465,11 +494,11 @@ func TestTheSweepSummarizesVersionsLeftWithoutOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.sweep(now.Add(3 * time.Hour))
-	for _, j := range h.summarizeJobs(3) {
-		if strings.Contains(string(j.EncodedArgs), failing.ID.String()) {
-			testdb.WaitForJobState(t, pool, j.ID, "cancelled")
-		}
+	retried := h.summarizeJobsAfter(backedOff, 1)
+	if !strings.Contains(string(retried[0].EncodedArgs), failing.ID.String()) {
+		t.Fatalf("job enqueued after the backoff = %s, want one for the failing version", retried[0].EncodedArgs)
 	}
+	testdb.WaitForJobState(t, pool, retried[0].ID, "cancelled")
 	if calls.Load() != 3 {
 		t.Errorf("model calls = %d, want 3 after the backoff passed", calls.Load())
 	}
