@@ -101,7 +101,7 @@ Every route is under `/v1`. All are public except `GET /v1/me`, which needs a Wo
 
 ## Authentication
 
-The web app signs users in with WorkOS AuthKit and sends the AuthKit access token to the API as `Authorization: Bearer <token>`. The API verifies the token itself, against the WorkOS key set, and never calls WorkOS per request. `internal/auth` does the verification with the standard library only.
+The web app signs users in with WorkOS AuthKit (see [Sign-in on the web](#sign-in-on-the-web)) and sends the AuthKit access token to the API as `Authorization: Bearer <token>`, from its server only. The API verifies the token itself, against the WorkOS key set, and never calls WorkOS per request. `internal/auth` does the verification with the standard library only.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
@@ -137,7 +137,7 @@ Requests:
 - 401 is always `{"code":"unauthorized","message":"a valid bearer token is required"}` with `WWW-Authenticate: Bearer`, whatever the reason; the reason is logged at `debug`. 503 means the token could not be checked, not that it is bad, so a client must not sign the user out on it. Tokens are never logged.
 - `GET /v1/me` checks the token before the flag: no token or an invalid one is a 401, and a token that cannot be checked a 503, whether the flag is on or off, so a client can always tell "refresh the token" from "feature off". Only a verified user is checked against the `accounts` flag, evaluated for that user; with the flag off for them it answers 404 `not_found` and creates no user.
 - Every response of a signed-in route (`GET /v1/me`, all statuses) carries `Cache-Control: no-store`. The `noStore` strict middleware sets it for the operations listed in `privateOperations`; add new signed-in operations there.
-- The API has no CORS handling, so a browser on another origin cannot call it with a bearer token. The web app must make signed-in calls from its server (route handlers or server components), or a later story adds CORS for the web origin.
+- The API has no CORS handling, so a browser on another origin cannot call it with a bearer token. The web app makes signed-in calls from its server (`callApiAsUser`, below); a browser never holds the token.
 
 Users (`users`, migration `00009`):
 
@@ -150,6 +150,60 @@ Users (`users`, migration `00009`):
 
 Not verified against a real WorkOS environment: the tests sign tokens with generated RSA keys and serve the key set from `httptest`.
 
+### Sign-in on the web
+
+The web app uses [`@workos-inc/authkit-nextjs`](https://github.com/workos/authkit-nextjs) with the hosted AuthKit page, so the sign-in methods (Google, Apple, GitHub, magic link) are whatever the WorkOS environment enables; the app has no code per method. Sign-in is on only when WorkOS is configured **and** the `accounts` flag is on (see [Feature flags](#web)). `web/src/lib/auth/` holds it.
+
+| Variable | Meaning |
+| --- | --- |
+| `WORKOS_CLIENT_ID` | The client id (`client_...`) of the WorkOS environment, the same value the API uses. |
+| `WORKOS_COOKIE_PASSWORD` | At least 32 characters; encrypts the session cookie. A secret. Generate it with `openssl rand -base64 32`, one per environment. Changing it signs everyone out. |
+| `NEXT_PUBLIC_WORKOS_REDIRECT_URI` | The callback URL, `https://<site>/auth/callback` (`http` only on `localhost`). It must be listed as a redirect URI in WorkOS. Inlined at `next build`, like every `NEXT_PUBLIC_` value. |
+
+`WORKOS_API_KEY` is not used: AuthKit runs as a PKCE public client, so the web app holds no WorkOS secret besides the cookie password. Leave it unset everywhere the web app runs, because the WorkOS SDK reads it from the environment by itself. AuthKit's optional variables (`WORKOS_COOKIE_NAME`, `WORKOS_COOKIE_DOMAIN`, `WORKOS_COOKIE_MAX_AGE`, `WORKOS_COOKIE_SAMESITE`, `WORKOS_ISSUER`, `WORKOS_API_HOSTNAME`) keep their defaults and should stay unset unless there is a reason; `WORKOS_COOKIE_SAMESITE=none` must never be set.
+
+Configuration states (`web/src/lib/auth/config.ts`):
+
+- **Off:** none of the three is set. Nothing about sign-in runs: no header, the `/auth/*` routes answer 404, the proxy returns at once, nothing is logged. This is local development, tests, preview deploys and production until CIV-3 provisions WorkOS.
+- **Misconfigured:** some are set but one is missing, the client id does not start with `client_`, the password is shorter than 32 characters, or the redirect URI is not an `https` (or `localhost`) URL whose path is exactly `/auth/callback` with no user info, query or fragment. Sign-in stays off exactly as above, and the server logs `Sign-in is disabled because WorkOS is misconfigured: <reasons>` once per process at startup (`src/instrumentation.ts`). The reasons name variables, never values. The site keeps working rather than failing to start, because a mistake in an optional, flagged feature must not take the public pages down.
+- **On:** all three valid. The header and routes still wait for the `accounts` flag.
+
+Flag: `accounts`, the same key that gates `GET /v1/me` in the API, so one PostHog flag turns accounts on for both sides. The web evaluates it for its one anonymous identity (see the identity note under [Web](#web) flags) and the API per user, so a percentage rollout gives different answers; turn it on for everyone or no one until web flags are per user. If the API says 404 for a user the web considers signed in, the header shows the neutral label.
+
+Routes (`web/src/app/auth/`):
+
+| Route | What it does |
+| --- | --- |
+| `GET /auth/sign-in?returnTo=<path>` | Starts sign-in: `getSignInUrl` seals a PKCE verifier and nonce into a 10-minute `wos-auth-verifier-<hash>` cookie and the OAuth `state`, then a 307 to the AuthKit authorization URL. Building the URL is local; nothing is sent to WorkOS. |
+| `GET /auth/callback` | AuthKit's `handleAuth`: requires the verifier cookie to match `state` (CSRF), exchanges the code with the PKCE verifier, sets the session cookie, deletes the verifier cookie, and redirects to the return path on the redirect URI's origin. Any failure is a plain 400 `Sign-in failed`; AuthKit logs the error with whether a code and state were present, never their values. |
+| `GET /auth/session` | `{"signedIn": false}` or `{"signedIn": true, "email": <string or null>}`, `Cache-Control: private, no-store`. Calls `GET /v1/me` for the email. |
+
+Sign-out is the server action `signOutAction` (`web/src/lib/auth/actions.ts`), a POST from a form, never a link. It deletes the session cookie and any verifier cookies and redirects to WorkOS's logout URL for the session, which ends the WorkOS session and sends the browser to the environment's default sign-out URI. Next.js checks the action's `Origin` against the host, and the cookie is `SameSite=Lax`, so another site cannot sign a user out.
+
+Return paths: `returnTo` goes through `safeReturnPath` (`return-path.ts`) before it is sealed into the state. Only a path starting with a single `/`, without backslashes or control characters, at most 2,048 characters, and not under `/auth`, is kept (pathname and query; the fragment is dropped); anything else, including `//host`, `/\host`, absolute and `javascript:` URLs and encoded `..` into `/auth`, becomes `/`. The callback also builds the final URL on the redirect URI's origin from only the path and query, so a return path cannot leave the site either way.
+
+The proxy (`web/src/proxy.ts`) runs only for `/auth/session` (`matcher: ["/auth/session"]`), and returns at once unless WorkOS is configured and the request has a session cookie. Then AuthKit's proxy verifies the access token against the WorkOS key set (fetched once and cached by `jose`), refreshes it when it expires within 60 seconds, and passes the session to the route in request headers that never reach the browser. Pages, the RSS route and static assets never go through it, so the route table is unchanged: `/` stays static and `/agencies` and the feed stay dynamic as before.
+
+The header (`web/src/components/account-menu.tsx`) is rendered by the root layout only when sign-in is on; otherwise the layout's HTML is exactly what it was. It is a client component with no props: after hydration it fetches `/auth/session` and shows nothing until the answer arrives (and nothing if the request fails), so static pages stay static and nobody sees a flash of the wrong control. Signed out, it is a `Sign in` link (a plain `<a>`, so nothing prefetches it and starts a flow) with the current path as `returnTo`. Signed in, it is a button labelled with the email, or `Account` without one, that discloses a panel with a `Sign out` button (`aria-expanded` and `aria-controls`, Escape closes and returns focus to the button, a pointer down outside closes it). It uses the page's underline link style; there is no mockup, and no account, dashboard or billing page. Cost: about 1.3 KB gzipped of first-load JavaScript on every page even with sign-in off, and with sign-in on one `/auth/session` request per full page load, which for a signed-in user also calls `GET /v1/me`.
+
+Calling the API as the user (`web/src/lib/auth/api.ts`, server only):
+
+```ts
+const me = await callApiAsUser((api) => api.GET("/me"));
+```
+
+- `api` is the generated `openapi-fetch` client on `NEXT_PUBLIC_API_BASE_URL` with `Authorization: Bearer <access token>` from the session. Its fetch refuses any URL outside that origin and path, so the token cannot go to another host, and it uses `redirect: "manual"` (a redirect is a failure, never followed), `cache: "no-store"` and a 10-second timeout.
+- The result is `ok` with the data, `signed-out` (no session; or a 401, a refresh with `refreshSession`, and a second 401; or a refresh token WorkOS rejects), `unavailable` (a 503 from the API, or a refresh that failed for a transient reason; the user stays signed in), `not-found` (a 404: accounts are off for this user) or `failed` (anything else, including an unreachable API). On `signed-out` after a session existed, the session cookie is deleted.
+- It needs the AuthKit proxy on the route (add the path to the matcher) and a context that can write cookies, a route handler or a server action, because a refresh rotates the refresh token and must store the new one. Do not call it while rendering a server component.
+
+What the browser stores (privacy):
+
+- `wos-session`: `HttpOnly`, `SameSite=Lax`, `Path=/`, `Secure` whenever the redirect URI or the request is `https`, 400-day max age (the tokens inside expire much sooner). Its value is sealed with iron-session (AES-256-CBC with an HMAC-SHA256, keyed by `WORKOS_COOKIE_PASSWORD`) and holds the WorkOS access token, the refresh token, the WorkOS user object (WorkOS user id, email, whether it is verified, name, first and last name, profile picture URL, locale, last sign-in time, created and updated times, external id, metadata), the impersonator's email and reason when a WorkOS admin impersonates the user, and the authentication method. JavaScript cannot read it, and the tokens are never in page HTML, props, JSON responses, URLs, `localStorage` or logs.
+- `wos-auth-verifier-<hash>`: the same attributes, 10 minutes, only during sign-in: a nonce, the PKCE code verifier, the return path and the redirect URI, sealed the same way.
+- What the app reads about the user: the session's access token, to call the API, and the email the API returns from `GET /v1/me`. The header shows only that email. The app stores nothing else, and sends nothing about the user to analytics (see below).
+
+Not verified: no WorkOS environment exists yet (CIV-3), so sign-in has not been run end to end. The tests mock the SDK; a local run with placeholder values checked the routes, the redirect to the authorization URL, the verifier cookie and the sealed return path, and the callback's failure paths.
+
 ## Feature flags
 
 Unfinished work ships dark behind a flag. Both sides evaluate flags through [OpenFeature](https://openfeature.dev), with PostHog as the provider when a key is set and an in-memory list otherwise. Each side has its own variables.
@@ -158,7 +212,7 @@ Unfinished work ships dark behind a flag. Both sides evaluate flags through [Ope
 
 The web app evaluates every flag on the server, through `@openfeature/server-sdk`, and hands the results to client components. `web/src/lib/flags/` wraps it. Callers import only from there, never from OpenFeature or PostHog.
 
-- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `test-only-flag` exists only for the module's own tests.
+- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `test-only-flag` exists only for the module's own tests.
 - **Server components:** `await isFlagEnabled("flag-key")` from `@/lib/flags/server`.
 - **Client components:** `useFlag("flag-key")` from `@/lib/flags/client`. The root layout calls `getFlagsOn()` from `@/lib/flags/server`, which evaluates each registered key with the OpenFeature client, and passes the keys that are on to `FlagsProvider`, a plain React context that supplies `useFlag`. A client component's server-rendered HTML and its first render in the browser therefore already show the right value: a flag that is on does not flash off, and hydration does not mismatch.
 
@@ -180,7 +234,7 @@ Notes:
 - The in-memory list is an OpenFeature provider too (`web/src/lib/flags/memory.ts`), so both modes go through the same OpenFeature client.
 - Within one request, `getFlagsOn` is memoised with React's `cache`, so the layout, server components and client components see the same values even if the 30-second entry expires mid-render.
 - Rendering: in PostHog mode `getFlagsOn` calls `connection()` before asking PostHog, and the root layout calls `getFlagsOn`, so every page is rendered on each request, including pages that check no flag. That is the price of client components getting PostHog values in their first render, and it keeps a change in PostHog live without a deploy. It adds a server render per page view, not a PostHog request. In in-memory mode `getFlagsOn` does not call `connection()`, so pages stay static.
-- Identity: there is no sign-in yet, and the app stores no visitor identifier, so the server evaluates every flag for one anonymous distinct ID, `anonymous`, and the browser uses the server's values. Both sides always agree, but a percentage rollout or person targeting is on or off for everyone. Per-user flags later mean evaluating for the user's distinct ID per request instead of reading the shared cache, and passing the result through the same `FlagsProvider`; callers do not change.
+- Identity: flags are not evaluated per user, even when someone is signed in, and the app stores no visitor identifier, so the server evaluates every flag for one anonymous distinct ID, `anonymous`, and the browser uses the server's values. Both sides always agree, but a percentage rollout or person targeting is on or off for everyone. Per-user flags later mean evaluating for the user's distinct ID per request instead of reading the shared cache, and passing the result through the same `FlagsProvider`; callers do not change.
 - The browser loads no OpenFeature code and makes no `/flags` request. The only PostHog code in the browser is the analytics client, fetched only when a PostHog key is set, with flags turned off. The layout sends the registered keys that are on, and only those, in the page payload, so anyone can read them in the page source: a flag key must not be secret.
 - Navigating between pages in the browser does not render the root layout again, so client components keep the values from the last full page load, while server components on the new page read current values. After a flag changes in PostHog, the two can disagree until the visitor reloads.
 - The flags module picks its provider once, when it loads. A test sets `NEXT_PUBLIC_FEATURE_FLAGS` with `vi.stubEnv`, calls `vi.resetModules()`, and imports the module again; see `web/src/lib/flags/*.test.*` and `web/src/app/layout.test.tsx`. Tests never call PostHog: the PostHog cases stub `fetch`, which `posthog-node` uses.
@@ -248,7 +302,7 @@ Search params: `ALLOWED_SEARCH_PARAMS` in `payload.ts` is the list of search par
 ### Privacy settings
 
 - **No cookies or storage:** `persistence: "memory"`. The distinct ID lives only as long as the page; a full reload, a new tab or a return visit is a new anonymous visitor, so visitor and retention numbers count page loads, not people. When it starts, PostHog checks whether `localStorage` works by writing and removing one constant key, `__mplssupport__`; it stores nothing and sets no cookie. Relaxing persistence to `localStorage` or `cookie` would need a consent decision first.
-- **No person profiles:** `person_profiles: "identified_only"` and nothing calls `identify`, so every event is sent with `$process_person_profile: false`. When sign-in arrives (CIV-16), identifying the user means calling `posthog.identify` after sign-in and `posthog.reset()` on sign-out from `client.ts`, and allowing `$identify` and the properties it needs in `payload.ts`.
+- **No person profiles:** `person_profiles: "identified_only"` and nothing calls `identify`, so every event is sent with `$process_person_profile: false`. Signing in does not change this: the app never identifies a signed-in user to PostHog, and the auth routes (`/auth/*`) are route handlers that render no page, so they send no page view; the callback's `code` and `state` could not be sent anyway, since no search params are allowed. Identifying users later means calling `posthog.identify` after sign-in and `posthog.reset()` on sign-out from `client.ts`, and allowing `$identify` and the properties it needs in `payload.ts`, and needs a privacy decision first.
 - **Do Not Track and Global Privacy Control:** checked before PostHog is loaded (`navigator.globalPrivacyControl`, `navigator.doNotTrack`, `window.doNotTrack`, `navigator.msDoNotTrack`). A visitor who sends either gets no PostHog code and no requests. `respect_dnt` is also on inside PostHog.
 - **Nothing captured automatically:** autocapture, PostHog's own page view and page leave capture, session recording, heatmaps, dead clicks, exceptions, surveys, product tours, conversations and web experiments are all off. The browser makes no `/flags` request (`advanced_disable_flags`), since flags are evaluated on the server.
 - **No third-party scripts:** the bundle is `posthog-js/dist/module.slim.no-external`, which has no code to inject scripts, and `disable_external_dependency_loading` is set as well.
