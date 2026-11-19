@@ -296,7 +296,7 @@ func TestDefaultChunkingSplitsOnTenMinuteBoundaries(t *testing.T) {
 	for _, e := range splitter.Extracts() {
 		starts = append(starts, fmt.Sprint(e.Start))
 	}
-	if got := strings.Join(starts, " "); got != "0s 9m55s 19m50s" {
+	if got := strings.Join(starts, " "); got != "0s 9m30s 19m0s" {
 		t.Errorf("chunk starts = %s", got)
 	}
 }

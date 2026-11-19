@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
 const (
 	defaultChunkLength  = 10 * time.Minute
-	defaultChunkOverlap = 5 * time.Second
+	defaultChunkOverlap = 30 * time.Second
 	chunkExtension      = ".mp3"
 	defaultRetryDelay   = 5 * time.Second
 	maxRetryDelay       = time.Minute
@@ -113,6 +114,14 @@ func scopeSpeakers(segments []Segment, chunk int) {
 	}
 }
 
+func scopeWordSpeakers(words []Word, chunk int) {
+	for i := range words {
+		if words[i].Speaker != "" {
+			words[i].Speaker = fmt.Sprintf("c%d/%s", chunk, words[i].Speaker)
+		}
+	}
+}
+
 func WithSplitter(s Splitter) Option {
 	return func(c *chunker) { c.splitter = s }
 }
@@ -171,19 +180,28 @@ func (r *pass) transcribeChunked(ctx context.Context, path string) (Transcript, 
 	if err != nil {
 		return Transcript{}, err
 	}
-	var segments []Segment
 	for i, chunk := range chunks {
 		scopeSpeakers(results[i].Segments, chunk.Index)
-		lo, hi := r.ownedRange(chunk.Index, step, i == len(chunks)-1)
-		for _, s := range results[i].Segments {
-			s.Start += chunk.Start
-			s.End += chunk.Start
-			if mid := s.Start + (s.End-s.Start)/2; mid >= lo && mid < hi {
-				segments = append(segments, s)
-			}
+		scopeWordSpeakers(results[i].Words, chunk.Index)
+	}
+	if textOnly(results) {
+		texts := make([]string, len(results))
+		for i, t := range results {
+			texts[i] = t.Text
+		}
+		return Transcript{Text: stitchText(texts), Duration: total}, nil
+	}
+	segments := stitchSegments(chunks, results)
+	return Transcript{Text: joinText(segments, ""), Segments: segments, Duration: total}, nil
+}
+
+func textOnly(results []Transcript) bool {
+	for _, t := range results {
+		if len(t.Segments) == 0 && strings.TrimSpace(t.Text) != "" {
+			return true
 		}
 	}
-	return Transcript{Text: joinText(segments, ""), Segments: segments, Duration: total}, nil
+	return false
 }
 
 type firstError struct {
@@ -249,18 +267,6 @@ func acquire(ctx context.Context, slots chan struct{}) bool {
 	case <-ctx.Done():
 		return false
 	}
-}
-
-func (c *chunker) ownedRange(index int, step time.Duration, last bool) (lo, hi time.Duration) {
-	const unbounded = time.Duration(1<<63 - 1)
-	lo, hi = 0, unbounded
-	if index > 0 {
-		lo = time.Duration(index)*step + c.chunkOverlap/2
-	}
-	if !last {
-		hi = time.Duration(index+1)*step + c.chunkOverlap/2
-	}
-	return lo, hi
 }
 
 func (r *pass) chunkTranscript(ctx context.Context, src, dst string, chunk Chunk) (Transcript, error) {

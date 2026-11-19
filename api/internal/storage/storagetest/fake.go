@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +85,22 @@ func (f *Fake) ListOlderThan(_ context.Context, cutoff time.Time) ([]string, err
 	var keys []string
 	for key, obj := range f.objects {
 		if obj.modified.Before(cutoff) {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	return keys, nil
+}
+
+func (f *Fake) ListPrefix(_ context.Context, prefix string) ([]string, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var keys []string
+	for key := range f.objects {
+		if strings.HasPrefix(key, prefix) {
 			keys = append(keys, key)
 		}
 	}

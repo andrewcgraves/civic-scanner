@@ -83,13 +83,14 @@ func run(ctx context.Context) error {
 		SummaryTier:  llm.Tier(cfg.Summary.AgendaTier),
 		LLMTimeout:   cfg.LLM.Timeout,
 		Transcription: jobs.Transcription{
-			Client:        transcriber,
-			Model:         cfg.Transcription.Provider + "/" + cfg.Transcription.Model,
-			Timeout:       cfg.Transcribe.Timeout,
-			MaxDuration:   cfg.Transcribe.MaxDuration,
-			MaxAudioBytes: cfg.Transcribe.MaxAudioBytes,
-			Concurrency:   cfg.Transcribe.Concurrency,
-			ChunkRetries:  cfg.Transcribe.ChunkRetries,
+			Client:          transcriber,
+			Model:           cfg.Transcription.Provider + "/" + cfg.Transcription.Model,
+			ProviderOptions: cfg.Transcription.ProviderOptions,
+			Timeout:         cfg.Transcribe.Timeout,
+			MaxDuration:     cfg.Transcribe.MaxDuration,
+			MaxAudioBytes:   cfg.Transcribe.MaxAudioBytes,
+			Concurrency:     cfg.Transcribe.Concurrency,
+			ChunkRetries:    cfg.Transcribe.ChunkRetries,
 		},
 	})
 	if err != nil {

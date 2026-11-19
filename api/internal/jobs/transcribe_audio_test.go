@@ -178,62 +178,115 @@ func TestTranscriptInputRefusesTranscriptsOverTheLimits(t *testing.T) {
 	}
 }
 
-func TestChunkCheckpointRoundTripsAndClears(t *testing.T) {
-	bucket := storagetest.New()
+func TestChunkCheckpointPrefixChangesWithEverythingThatChangesTheOutput(t *testing.T) {
 	info := storage.Info{Key: "recordings/x.mp3", Size: 10, LastModified: time.Unix(100, 5)}
 	id := uuid.New()
-	prefix := ChunkCheckpointPrefix(id, info, "gateway/elevenlabs/scribe-v2")
-	if !strings.HasPrefix(prefix, "transcripts/"+id.String()+"/chunks/") || !strings.HasSuffix(prefix, "/") {
+	in := CheckpointInputs{Model: "gateway/elevenlabs/scribe-v2"}
+	prefix := ChunkCheckpointPrefix(id, info, in)
+	if !strings.HasPrefix(prefix, TranscriptObjectsPrefix(id)+"chunks/") || !strings.HasSuffix(prefix, "/") {
 		t.Errorf("prefix = %s", prefix)
 	}
-	if other := ChunkCheckpointPrefix(id, info, "gateway/microsoft/mai-transcribe-2"); other == prefix {
-		t.Error("another model shares the checkpoints")
+	other := info
+	other.Size = 11
+	for name, got := range map[string]string{
+		"model":            ChunkCheckpointPrefix(id, info, CheckpointInputs{Model: "gateway/microsoft/mai-transcribe-2"}),
+		"provider options": ChunkCheckpointPrefix(id, info, CheckpointInputs{Model: in.Model, ProviderOptions: `{"elevenlabs":{"diarize":false}}`}),
+		"audio":            ChunkCheckpointPrefix(id, other, in),
+	} {
+		if got == prefix {
+			t.Errorf("another %s shares the checkpoints", name)
+		}
 	}
-	info.Size = 11
-	if other := ChunkCheckpointPrefix(id, info, "gateway/elevenlabs/scribe-v2"); other == prefix {
-		t.Error("other audio shares the checkpoints")
-	}
-	cp := newChunkCheckpoint(bucket, discard, prefix)
-	chunk := transcribe.Chunk{Index: 2, Start: 19*time.Minute + 50*time.Second, Length: 10 * time.Minute}
+}
+
+func TestChunkCheckpointRoundTripsAndClearsTheRecordingsObjects(t *testing.T) {
+	bucket := storagetest.New()
+	id := uuid.New()
+	root := TranscriptObjectsPrefix(id)
+	prefix := ChunkCheckpointPrefix(id, storage.Info{Key: "k"}, CheckpointInputs{Model: "m"})
+	cp := newChunkCheckpoint(bucket, discard, root, prefix)
+	chunk := transcribe.Chunk{Index: 2, Start: 19 * time.Minute, Length: 10 * time.Minute}
 	if _, ok := cp.Load(t.Context(), chunk); ok {
 		t.Fatal("Load before Save hit")
 	}
-	want := transcribe.Transcript{Text: "hi", Duration: 3 * time.Second, Segments: []transcribe.Segment{{Start: 1500 * time.Microsecond, End: time.Second, Text: "hi", Speaker: "s"}}}
-	cp.Save(t.Context(), chunk, want)
+	want := transcribe.Transcript{
+		Text:     "hi",
+		Duration: 3 * time.Second,
+		Segments: []transcribe.Segment{{Start: 1500 * time.Microsecond, End: time.Second, Text: "hi", Speaker: "s"}},
+		Words:    []transcribe.Word{{Start: 1500 * time.Microsecond, End: time.Second, Text: "hi", Speaker: "s"}},
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	cp.Save(cancelled, chunk, want)
 
-	again := newChunkCheckpoint(bucket, discard, prefix)
+	again := newChunkCheckpoint(bucket, discard, root, prefix)
 	got, ok := again.Load(t.Context(), chunk)
-	if !ok || got.Text != want.Text || got.Duration != want.Duration || len(got.Segments) != 1 || got.Segments[0] != want.Segments[0] {
-		t.Fatalf("Load = %+v, %v", got, ok)
+	if !ok || got.Text != want.Text || got.Duration != want.Duration || len(got.Segments) != 1 || got.Segments[0] != want.Segments[0] ||
+		len(got.Words) != 1 || got.Words[0] != want.Words[0] {
+		t.Fatalf("Load = %+v, %v; want the chunk saved even though the job was cancelled", got, ok)
 	}
 	if again.reused() != 1 {
 		t.Errorf("reused = %d", again.reused())
 	}
+	stale := root + "chunks/0123456789abcdef/00000-0-600000.json"
+	if err := bucket.Put(t.Context(), stale, strings.NewReader("{}")); err != nil {
+		t.Fatal(err)
+	}
+	if err := bucket.Put(t.Context(), "transcripts/"+uuid.NewString()+"/chunks/x/1.json", strings.NewReader("{}")); err != nil {
+		t.Fatal(err)
+	}
 	again.clear(t.Context())
-	if keys, _ := bucket.ListOlderThan(t.Context(), time.Now().Add(time.Hour)); len(keys) != 0 {
+	if keys, _ := bucket.ListPrefix(t.Context(), root); len(keys) != 0 {
 		t.Errorf("keys left after clear: %v", keys)
+	}
+	if keys, _ := bucket.ListPrefix(t.Context(), "transcripts/"); len(keys) != 1 {
+		t.Errorf("clear touched another recording: %v", keys)
 	}
 }
 
 func TestChunkCheckpointTreatsBadOrUnreachableObjectsAsMisses(t *testing.T) {
 	bucket := storagetest.New()
-	cp := newChunkCheckpoint(bucket, discard, "transcripts/x/chunks/y/")
+	cp := newChunkCheckpoint(bucket, discard, "transcripts/x/", "transcripts/x/chunks/y/")
 	chunk := transcribe.Chunk{Index: 0, Length: time.Minute}
-	for _, body := range []string{"not json", `{"segments":[{"start_ns":5,"end_ns":1,"text":"x"}]}`, strings.Repeat(" ", chunkCheckpointMaxBytes+1)} {
+	tooMany := `{"segments":[` + strings.TrimSuffix(strings.Repeat(`{"start_ns":0,"end_ns":1,"text":"x"},`, checkpointMaxItems+1), ",") + `]}`
+	for name, body := range map[string]string{
+		"not json":        "not json",
+		"out of order":    `{"segments":[{"start_ns":5,"end_ns":1,"text":"x"}]}`,
+		"past the chunk":  fmt.Sprintf(`{"segments":[{"start_ns":0,"end_ns":%d,"text":"x"}]}`, (2 * time.Minute).Nanoseconds()),
+		"word past chunk": `{"words":[{"start_ns":-1,"end_ns":1,"text":"x"}]}`,
+		"long duration":   fmt.Sprintf(`{"duration_ns":%d}`, time.Hour.Nanoseconds()),
+		"too many":        tooMany,
+		"huge text":       `{"segments":[{"start_ns":0,"end_ns":1,"text":"` + strings.Repeat("a", checkpointMaxTextBytes+1) + `"}]}`,
+		"too much text":   `{"text":"` + strings.Repeat("a", checkpointMaxTextBytes) + `","segments":[{"start_ns":0,"end_ns":1,"text":"` + strings.Repeat("a", checkpointMaxTextBytes) + `"},{"start_ns":0,"end_ns":1,"text":"b"}]}`,
+		"oversized":       strings.Repeat(" ", chunkCheckpointMaxBytes+1),
+	} {
 		if err := bucket.Put(t.Context(), cp.key(chunk), strings.NewReader(body)); err != nil {
 			t.Fatal(err)
 		}
 		if _, ok := cp.Load(t.Context(), chunk); ok {
-			t.Errorf("Load of %.20q hit", body)
+			t.Errorf("Load of a checkpoint that is %s hit", name)
 		}
 	}
-	failing := newChunkCheckpoint(storagetest.Failing(errors.New("down")), discard, "p/")
+	failing := newChunkCheckpoint(storagetest.Failing(errors.New("down")), discard, "p/", "p/c/")
 	if _, ok := failing.Load(t.Context(), chunk); ok {
 		t.Error("Load from a failing bucket hit")
 	}
 	failing.Save(t.Context(), chunk, transcribe.Transcript{})
-	failing.remember("p/k", false)
+	failing.remember("p/c/k", false)
 	failing.clear(t.Context())
+}
+
+func TestTranscriptInputRefusesAnEmptyTranscript(t *testing.T) {
+	for name, tr := range map[string]transcribe.Transcript{
+		"nothing":         {},
+		"blank segments":  {Segments: []transcribe.Segment{{Text: " \u200b "}}},
+		"formatting only": {Text: "\u2066\u2069"},
+	} {
+		_, err := TranscriptInput(uuid.Nil, tr)
+		if !errors.Is(err, ErrEmptyTranscript) || TranscribeFailureKind(err) != TranscribeKindEmpty {
+			t.Errorf("%s: err = %v, want an empty failure", name, err)
+		}
+	}
 }
 
 func TestEnqueueTranscribeAudioNeverFailsTheAudioTransaction(t *testing.T) {

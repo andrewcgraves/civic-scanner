@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -466,10 +467,7 @@ func chunkGateway(t *testing.T, fail func(chunk string, n int) int) (*httptest.S
 				return
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"duration": 10,
-			"segments": []map[string]any{{"start": 1, "end": 3, "text": " " + chunk}},
-		})
+		_ = json.NewEncoder(w).Encode(map[string]any{"duration": chunkSeconds, "segments": scriptedSentences(chunk)})
 	}))
 	t.Cleanup(srv.Close)
 	return srv, func() []string {
@@ -477,6 +475,34 @@ func chunkGateway(t *testing.T, fail func(chunk string, n int) int) (*httptest.S
 		defer mu.Unlock()
 		return append([]string(nil), calls...)
 	}
+}
+
+const (
+	chunkSeconds    = 10.0
+	sentenceEvery   = 3.0
+	sentenceSeconds = 2.5
+	scriptSeconds   = 20.0
+)
+
+func scriptedSentences(chunk string) []map[string]any {
+	start, err := time.ParseDuration(strings.TrimPrefix(chunk, "chunk@"))
+	if err != nil {
+		return nil
+	}
+	from, to := start.Seconds(), start.Seconds()+chunkSeconds
+	var out []map[string]any
+	for k := 0; float64(k)*sentenceEvery < to; k++ {
+		a, b := float64(k)*sentenceEvery, float64(k)*sentenceEvery+sentenceSeconds
+		if b <= from || b > scriptSeconds {
+			continue
+		}
+		text := fmt.Sprintf(" s%d", k)
+		if a < from || b > to {
+			text += "-part"
+		}
+		out = append(out, map[string]any{"start": max(a, from) - from, "end": min(b, to) - from, "text": text})
+	}
+	return out
 }
 
 func chunkingClient(url string, splitter transcribe.Splitter) transcribe.Client {
@@ -513,7 +539,7 @@ func TestARetryAfterPartialProgressTranscribesOnlyTheChunksLeft(t *testing.T) {
 	testdb.WaitForJobState(t, pool, id, "completed")
 
 	tr, ok := transcriptOf(t, pool, rec.ID)
-	if !ok || tr.Text != "chunk@0s chunk@8s chunk@16s" {
+	if !ok || tr.Text != "s0 s1 s2 s3 s4 s5" {
 		t.Fatalf("transcript = %+v, %v", tr, ok)
 	}
 	counts := map[string]int{}
@@ -559,6 +585,29 @@ func TestATransientFailureOnTheLastAttemptIsDiscardedAndBackedOffBySweep(t *test
 	}
 }
 
+func sortFirst(t *testing.T, pool *pgxpool.Pool, recs ...store.Recording) {
+	t.Helper()
+	for i, rec := range recs {
+		if _, err := pool.Exec(t.Context(), `UPDATE meetings SET starts_at = $2 WHERE id = $1`,
+			rec.MeetingID, time.Date(2200, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func failedTranscription(t *testing.T, pool *pgxpool.Pool, rec store.Recording, age string) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `
+INSERT INTO river_job (kind, args, queue, state, finalized_at, max_attempts, attempt)
+VALUES ($1, $2, 'elsewhere', 'cancelled', now() - $3::interval, 3, 1)`,
+		jobs.TranscribeAudioArgs{}.Kind(), fmt.Sprintf(`{"recording_id": %q}`, rec.ID), age); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.WithoutCancel(t.Context()), `DELETE FROM river_job WHERE queue = 'elsewhere' AND args->>'recording_id' = $1`, rec.ID.String())
+	})
+}
+
 func TestTheTranscriptSweepEnqueuesOwedRecordingsWithBackoff(t *testing.T) {
 	pool := testdb.Pool(t)
 	bucket := storagetest.New()
@@ -569,32 +618,37 @@ func TestTheTranscriptSweepEnqueuesOwedRecordingsWithBackoff(t *testing.T) {
 		t.Fatal(err)
 	}
 	failing := recordingWithAudio(t, pool, bucket, "failing")
+	failedTranscription(t, pool, failing, "1 minute")
+	expired := recordingWithAudio(t, pool, bucket, "expired")
+	failedTranscription(t, pool, expired, "8 days")
 	pendingAgency := seedAgency(t, pool, "jobs-test-transcribe-pending-"+randomSuffix(t), "pending")
 	notLive := storeAudio(t, pool, bucket, seedRecording(t, pool, pendingAgency, "pending"), fakeMP3)
 	noAudio := seedRecording(t, pool, seedAgency(t, pool, "jobs-test-transcribe-noaudio-"+randomSuffix(t), "live"), "none")
-	if _, err := pool.Exec(t.Context(), `
-INSERT INTO river_job (kind, args, queue, state, finalized_at, max_attempts, attempt)
-VALUES ($1, $2, 'elsewhere', 'cancelled', now() - interval '1 day', 3, 1)`,
-		jobs.TranscribeAudioArgs{}.Kind(), fmt.Sprintf(`{"recording_id": %q}`, failing.ID)); err != nil {
+	sortFirst(t, pool, owed, done, failing, expired, notLive, noAudio)
+
+	listed, err := s.ListUntranscribedRecordings(t.Context(), store.UntranscribedParams{
+		FailedKind: jobs.TranscribeAudioArgs{}.Kind(), FailedWithin: 7 * 24 * time.Hour, Limit: 10,
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.WithoutCancel(t.Context()), `DELETE FROM river_job WHERE queue = 'elsewhere' AND args->>'recording_id' = $1`, failing.ID.String())
-	})
+	if len(listed) < 2 || listed[0] != expired.ID || listed[1] != owed.ID {
+		t.Errorf("listed = %v, want the expired back-off and the owed recording first, latest meeting first", listed)
+	}
+	for name, id := range map[string]uuid.UUID{"transcribed": done.ID, "backing off": failing.ID, "not live": notLive.ID, "no audio": noAudio.ID} {
+		if slices.Contains(listed, id) {
+			t.Errorf("%s recording listed", name)
+		}
+	}
+
 	h := start(t, pool, jobs.Config{Storage: bucket, Transcription: jobs.Transcription{Client: &transcribetest.Fake{
 		Respond: func(string) (transcribe.Transcript, error) { return transcribe.Transcript{}, errors.New("stop here") },
 	}}})
-
-	sweep := func() {
-		t.Helper()
-		res, err := h.client.Insert(t.Context(), jobs.EnqueueTranscriptionsArgs{Slot: time.Now()},
-			&river.InsertOpts{Queue: h.queue})
-		if err != nil {
-			t.Fatal(err)
-		}
-		testdb.WaitForJobState(t, pool, res.Job.ID, "completed")
+	res, err := h.client.Insert(t.Context(), jobs.EnqueueTranscriptionsArgs{Slot: time.Now()}, &river.InsertOpts{Queue: h.queue})
+	if err != nil {
+		t.Fatal(err)
 	}
-	sweep()
+	testdb.WaitForJobState(t, pool, res.Job.ID, "completed")
 	enqueued := map[uuid.UUID]bool{}
 	for _, j := range h.transcribeJobs() {
 		var args jobs.TranscribeAudioArgs
@@ -603,16 +657,130 @@ VALUES ($1, $2, 'elsewhere', 'cancelled', now() - interval '1 day', 3, 1)`,
 		}
 		enqueued[args.RecordingID] = true
 	}
-	if !enqueued[owed.ID] {
-		t.Error("owed recording not enqueued")
-	}
-	for name, id := range map[string]uuid.UUID{"transcribed": done.ID, "backing off": failing.ID, "not live": notLive.ID, "no audio": noAudio.ID} {
-		if enqueued[id] {
-			t.Errorf("%s recording enqueued", name)
-		}
+	if !enqueued[owed.ID] || !enqueued[expired.ID] || enqueued[failing.ID] || enqueued[done.ID] {
+		t.Errorf("enqueued = %v", enqueued)
 	}
 	if _, err := s.ListUntranscribedRecordings(t.Context(), store.UntranscribedParams{Limit: 0}); !errors.Is(err, store.ErrInvalidLimit) {
 		t.Errorf("limit 0 = %v", err)
+	}
+}
+
+type hookedBucket struct {
+	*storagetest.Fake
+	onStat func()
+	get    func(ctx context.Context, key string) (io.ReadCloser, error)
+}
+
+func (b *hookedBucket) Stat(ctx context.Context, key string) (storage.Info, error) {
+	if b.onStat != nil {
+		b.onStat()
+	}
+	return b.Fake.Stat(ctx, key)
+}
+
+func (b *hookedBucket) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if b.get != nil {
+		return b.get(ctx, key)
+	}
+	return b.Fake.Get(ctx, key)
+}
+
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestTranscribeClassifiesBucketReadFailures(t *testing.T) {
+	pool := testdb.Pool(t)
+	busy := &storage.Error{StatusCode: 503, Retryable: true, Err: errors.New("busy")}
+	denied := &storage.Error{StatusCode: 403, Err: errors.New("denied")}
+	cases := map[string]struct {
+		get   func(context.Context, string) (io.ReadCloser, error)
+		state string
+		kind  string
+	}{
+		"retryable get": {func(context.Context, string) (io.ReadCloser, error) { return nil, busy }, "discarded", "busy"},
+		"denied get":    {func(context.Context, string) (io.ReadCloser, error) { return nil, denied }, "cancelled", "denied"},
+		"short read": {func(context.Context, string) (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(fakeMP3[:10])), nil
+		}, "discarded", "does not match"},
+		"broken read": {func(context.Context, string) (io.ReadCloser, error) {
+			return io.NopCloser(failingReader{errors.New("connection reset")}), nil
+		}, "discarded", "connection reset"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			bucket := &hookedBucket{Fake: storagetest.New(), get: tc.get}
+			rec := recordingWithAudio(t, pool, bucket, "read")
+			client := &transcribetest.Fake{}
+			h := start(t, pool, jobs.Config{Storage: bucket, Transcription: jobs.Transcription{Client: client}})
+
+			id := h.transcribeWith(rec.ID, &river.InsertOpts{MaxAttempts: 1})
+			testdb.WaitForJobState(t, pool, id, tc.state)
+			if msg := lastError(t, h, id); !strings.Contains(msg, tc.kind) || len(client.Calls()) != 0 {
+				t.Errorf("error = %q after %d calls", msg, len(client.Calls()))
+			}
+		})
+	}
+}
+
+func TestTranscribeWhenTheRecordingIsGoneAfterTheBucketLostItsAudio(t *testing.T) {
+	pool := testdb.Pool(t)
+	bucket := &hookedBucket{Fake: storagetest.New()}
+	rec := recordingWithAudio(t, pool, bucket, "vanished")
+	bucket.onStat = func() {
+		_ = bucket.Delete(context.Background(), rec.Audio.Key)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM recordings WHERE id = $1`, rec.ID)
+	}
+	h := start(t, pool, jobs.Config{Storage: bucket, Transcription: jobs.Transcription{Client: &transcribetest.Fake{}}})
+
+	testdb.WaitForJobState(t, pool, h.transcribe(rec.ID), "cancelled")
+}
+
+func TestTextOnlyChunksAreStitchedAndAnEmptyResultIsNeverStored(t *testing.T) {
+	pool := testdb.Pool(t)
+	bucket := storagetest.New()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseMultipartForm(1 << 20) //nolint:gosec
+		f, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		b, _ := io.ReadAll(f)
+		text := map[string]string{
+			"chunk@0s":  "The board will now vote on item five.",
+			"chunk@8s":  "vote on item five. All in favour?",
+			"chunk@16s": "All in favour? Motion carries.",
+		}[strings.TrimSpace(string(b))]
+		_ = json.NewEncoder(w).Encode(map[string]any{"duration": 10, "text": text, "segments": []any{}})
+	}))
+	defer srv.Close()
+	rec := recordingWithAudio(t, pool, bucket, "text-only")
+	h := start(t, pool, jobs.Config{Storage: bucket, Transcription: jobs.Transcription{
+		Client: chunkingClient(srv.URL, &transcribetest.FakeSplitter{Total: 20 * time.Second}),
+	}})
+
+	testdb.WaitForJobState(t, pool, h.transcribe(rec.ID), "completed")
+	if tr, ok := transcriptOf(t, pool, rec.ID); !ok || tr.Text != "The board will now vote on item five. All in favour? Motion carries." || len(tr.Segments) != 0 {
+		t.Errorf("transcript = %+v, %v", tr, ok)
+	}
+
+	silent := recordingWithAudio(t, pool, bucket, "empty")
+	nothing := transcribetest.Returning(transcribe.Transcript{Segments: []transcribe.Segment{{End: time.Second, Text: " "}}})
+	h2 := start(t, pool, jobs.Config{Storage: bucket, Transcription: jobs.Transcription{Client: nothing}})
+	id := h2.transcribe(silent.ID)
+	testdb.WaitForJobState(t, pool, id, "cancelled")
+	if msg := lastError(t, h2, id); !strings.Contains(msg, jobs.TranscribeKindEmpty) {
+		t.Errorf("error = %q, want the empty kind", msg)
+	}
+	if _, ok := transcriptOf(t, pool, silent.ID); ok {
+		t.Error("an empty transcript was stored")
+	}
+	listed, err := store.New(pool).ListUntranscribedRecordings(t.Context(), store.UntranscribedParams{
+		FailedKind: jobs.TranscribeAudioArgs{}.Kind(), FailedWithin: 7 * 24 * time.Hour, Limit: 100000,
+	})
+	if err != nil || slices.Contains(listed, silent.ID) {
+		t.Errorf("listed = %d recordings, %v; want the empty one backed off for a week", len(listed), err)
 	}
 }
 

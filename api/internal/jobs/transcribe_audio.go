@@ -46,6 +46,7 @@ const (
 	TranscribeKindMalformed    = "malformed"
 	TranscribeKindRefused      = "refused"
 	TranscribeKindTooLarge     = "too_large"
+	TranscribeKindEmpty        = "empty"
 	TranscribeKindMissingAudio = "missing_audio"
 	TranscribeKindTransient    = "transient"
 	TranscribeKindFailed       = "failed"
@@ -54,20 +55,22 @@ const (
 var (
 	ErrAudioTooLarge      = errors.New("jobs: stored audio is larger than the transcription limit")
 	ErrTranscriptTooLarge = errors.New("jobs: transcript is larger than the storage limit")
+	ErrEmptyTranscript    = errors.New("jobs: transcription returned no text")
 	ErrAudioMissing       = errors.New("jobs: recording has audio but the bucket has no object")
 	errAudioReadShort     = errors.New("jobs: audio read from the bucket does not match its size")
 )
 
 type Transcription struct {
-	Client        transcribe.Client
-	Model         string
-	Timeout       time.Duration
-	MaxDuration   time.Duration
-	MaxAudioBytes int64
-	Concurrency   int
-	ChunkRetries  int
-	RetryDelay    time.Duration
-	FollowUp      TranscriptFollowUp
+	Client          transcribe.Client
+	Model           string
+	ProviderOptions string
+	Timeout         time.Duration
+	MaxDuration     time.Duration
+	MaxAudioBytes   int64
+	Concurrency     int
+	ChunkRetries    int
+	RetryDelay      time.Duration
+	FollowUp        TranscriptFollowUp
 }
 
 func (t Transcription) withDefaults() Transcription {
@@ -213,7 +216,8 @@ func (w *TranscribeAudioWorker) Work(ctx context.Context, job *river.Job[Transcr
 		return err
 	}
 
-	checkpoint := newChunkCheckpoint(w.storage, logger, ChunkCheckpointPrefix(id, info, w.settings.Model))
+	checkpoint := newChunkCheckpoint(w.storage, logger, TranscriptObjectsPrefix(id),
+		ChunkCheckpointPrefix(id, info, CheckpointInputs{Model: w.settings.Model, ProviderOptions: w.settings.ProviderOptions}))
 	started := time.Now()
 	t, err := w.transcribe(ctx, path, dir, checkpoint)
 	if errors.Is(err, transcribe.ErrNotConfigured) {
@@ -307,6 +311,8 @@ func TranscribeFailureKind(err error) string {
 		return TranscribeKindTooLarge
 	case errors.Is(err, ErrAudioMissing):
 		return TranscribeKindMissingAudio
+	case errors.Is(err, ErrEmptyTranscript):
+		return TranscribeKindEmpty
 	case errors.Is(err, media.ErrUnavailable), errors.Is(err, transcribe.ErrInvalidProviderOptions), errors.Is(err, transcribe.ErrInvalidChunking):
 		return TranscribeKindUnavailable
 	case errors.Is(err, media.ErrMalformed), errors.Is(err, media.ErrNoAudio):
@@ -401,6 +407,9 @@ func TranscriptInput(recordingID uuid.UUID, t transcribe.Transcript) (store.Tran
 	}
 	if len(text) > MaxTranscriptBytes {
 		return store.TranscriptInput{}, fmt.Errorf("%w: %d bytes, limit %d", ErrTranscriptTooLarge, len(text), MaxTranscriptBytes)
+	}
+	if text == "" {
+		return store.TranscriptInput{}, fmt.Errorf("%w: %d segments from the model, none with text", ErrEmptyTranscript, len(t.Segments))
 	}
 	return store.TranscriptInput{RecordingID: recordingID, Text: text, Segments: segments}, nil
 }

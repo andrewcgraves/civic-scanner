@@ -442,8 +442,8 @@ func (t Tool) checkComplete(expected expectation, got time.Duration) error {
 
 func (t Tool) localDuration(ctx context.Context, path string) (time.Duration, error) {
 	out, _, err := t.run(ctx, probeTimeout, maxProbeOutputBytes, []string{
-		t.FFprobe, "-v", "error", "-protocol_whitelist", "file",
-		"-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "--", path,
+		t.FFprobe, "-v", "error", "-protocol_whitelist", localProtocols, "-format_whitelist", chunkFormats,
+		"-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "file:" + path,
 	}, nil, nil)
 	if err != nil {
 		return 0, fmt.Errorf("probe audio: %w", err)

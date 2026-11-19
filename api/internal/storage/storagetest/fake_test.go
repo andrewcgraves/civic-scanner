@@ -108,11 +108,24 @@ func TestFailingReturnsTheErrorFromEveryOperation(t *testing.T) {
 	_, getErr := fake.Get(t.Context(), "k")
 	_, statErr := fake.Stat(t.Context(), "k")
 	_, listErr := fake.ListOlderThan(t.Context(), time.Now())
-	errs = append(errs, getErr, statErr, listErr)
+	_, prefixErr := fake.ListPrefix(t.Context(), "k")
+	errs = append(errs, getErr, statErr, listErr, prefixErr)
 
 	for i, err := range errs {
 		if !errors.Is(err, boom) || !storage.IsRetryable(err) {
 			t.Errorf("operation %d error = %v, want the retryable error", i, err)
 		}
+	}
+}
+
+func TestFakeListPrefixListsOnlyThePrefix(t *testing.T) {
+	fake := storagetest.New()
+	putKey(t, fake, "transcripts/a/2", "x")
+	putKey(t, fake, "transcripts/a/1", "x")
+	putKey(t, fake, "transcripts/b/1", "x")
+
+	keys, err := fake.ListPrefix(t.Context(), "transcripts/a/")
+	if err != nil || !slices.Equal(keys, []string{"transcripts/a/1", "transcripts/a/2"}) {
+		t.Errorf("ListPrefix = %v, %v", keys, err)
 	}
 }

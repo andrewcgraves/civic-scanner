@@ -18,4 +18,5 @@ type Store interface {
 	Delete(ctx context.Context, key string) error
 	Stat(ctx context.Context, key string) (Info, error)
 	ListOlderThan(ctx context.Context, cutoff time.Time) ([]string, error)
+	ListPrefix(ctx context.Context, prefix string) ([]string, error)
 }

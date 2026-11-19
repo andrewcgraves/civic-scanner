@@ -76,3 +76,13 @@ func TestSplitterOutputIsBoundedByMaxBytes(t *testing.T) {
 		t.Errorf("err = %v, want ErrLimitExceeded", err)
 	}
 }
+
+func TestSplitterProbesOnlyMP3Files(t *testing.T) {
+	requireFFmpeg(t)
+	dir := t.TempDir()
+	generate(t, dir, "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "meeting.wav")
+
+	if _, err := NewSplitter(realTool(t)).Duration(t.Context(), filepath.Join(dir, "meeting.wav")); err == nil {
+		t.Error("Duration of a WAV file succeeded, want only MP3 probed")
+	}
+}

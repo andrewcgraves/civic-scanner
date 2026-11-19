@@ -94,6 +94,7 @@ func (g *gateway) transcribeFile(ctx context.Context, path string) (Transcript, 
 	return Transcript{
 		Text:     joinText(segments, parsed.Text),
 		Segments: segments,
+		Words:    gatewayWords(parsed.ProviderMetadata.ElevenLabs.Words),
 		Duration: seconds(parsed.DurationInSeconds),
 	}, nil
 }
