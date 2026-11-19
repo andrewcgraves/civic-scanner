@@ -91,7 +91,7 @@ func silenceSegmentingModel(t *testing.T, edgeSegments *atomic.Int32) *httptest.
 			if i == 0 && s.start < 0.05 || i == len(found)-1 && s.end > 599.9 {
 				edgeSegments.Add(1)
 			}
-			n := int(math.Round((s.end - s.start + wordPeriod - wordLength) / wordPeriod))
+			n := int(math.Floor((s.end-s.start+wordPeriod-wordLength)/wordPeriod + 0.25))
 			segments = append(segments, map[string]any{"start": s.start, "end": s.end, "text": strings.TrimSpace(strings.Repeat("w ", n))})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"duration": 600, "text": "", "segments": segments})
@@ -150,6 +150,20 @@ func TestChunkStitchingKeepsEveryWordOnceAcrossBoundaries(t *testing.T) {
 			case n > 1:
 				duplicated++
 			}
+		}
+	}
+	for _, s := range got.Segments {
+		expected := 0
+		for k := 0; float64(k)*sentencePeriod < meetingSeconds; k++ {
+			for j := 0; float64(j)*wordPeriod < sentenceLength; j++ {
+				mid := float64(k)*sentencePeriod + float64(j)*wordPeriod + wordLength/2
+				if mid <= meetingSeconds && s.Start.Seconds() <= mid && mid < s.End.Seconds() {
+					expected++
+				}
+			}
+		}
+		if n := len(strings.Fields(s.Text)); n != expected {
+			t.Logf("segment %s-%s has %d words in its text and %d words in its time", s.Start, s.End, n, expected)
 		}
 	}
 	textWords := len(strings.Fields(got.Text))
