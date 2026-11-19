@@ -22,6 +22,7 @@ type Config struct {
 	Extract       Extract
 	WorkOS        WorkOS
 	Summary       Summary
+	Web           Web
 }
 
 func Load() (Config, error) {
@@ -63,6 +64,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Summary, err = loadSummary(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Web, err = loadWeb(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil

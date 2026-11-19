@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -201,6 +202,9 @@ type User struct {
 // AgencySlug defines model for AgencySlug.
 type AgencySlug = string
 
+// IfNoneMatch defines model for IfNoneMatch.
+type IfNoneMatch = string
+
 // AuthUnavailable defines model for AuthUnavailable.
 type AuthUnavailable = Error
 
@@ -215,6 +219,18 @@ type NotFound = Error
 
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
+
+// GetAgencyFeedParams defines parameters for GetAgencyFeed.
+type GetAgencyFeedParams struct {
+	// IfNoneMatch ETags from earlier responses. When one matches the current feed, the response is 304 with no body.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
+}
+
+// HeadAgencyFeedParams defines parameters for HeadAgencyFeed.
+type HeadAgencyFeedParams struct {
+	// IfNoneMatch ETags from earlier responses. When one matches the current feed, the response is 304 with no body.
+	IfNoneMatch *IfNoneMatch `json:"If-None-Match,omitempty"`
+}
 
 // ListAgencyMeetingsParams defines parameters for ListAgencyMeetings.
 type ListAgencyMeetingsParams struct {
@@ -233,6 +249,12 @@ type ServerInterface interface {
 	// GetAgency Get a tracked agency
 	// (GET /agencies/{slug})
 	GetAgency(w http.ResponseWriter, r *http.Request, slug AgencySlug)
+	// GetAgencyFeed Get an agency's RSS feed
+	// (GET /agencies/{slug}/feed.xml)
+	GetAgencyFeed(w http.ResponseWriter, r *http.Request, slug AgencySlug, params GetAgencyFeedParams)
+	// HeadAgencyFeed Get the headers of an agency's RSS feed
+	// (HEAD /agencies/{slug}/feed.xml)
+	HeadAgencyFeed(w http.ResponseWriter, r *http.Request, slug AgencySlug, params HeadAgencyFeedParams)
 	// ListAgencyMeetings List an agency's meetings
 	// (GET /agencies/{slug}/meetings)
 	ListAgencyMeetings(w http.ResponseWriter, r *http.Request, slug AgencySlug, params ListAgencyMeetingsParams)
@@ -260,6 +282,18 @@ func (_ Unimplemented) ListAgencies(w http.ResponseWriter, r *http.Request) {
 // GetAgency Get a tracked agency
 // (GET /agencies/{slug})
 func (_ Unimplemented) GetAgency(w http.ResponseWriter, r *http.Request, slug AgencySlug) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetAgencyFeed Get an agency's RSS feed
+// (GET /agencies/{slug}/feed.xml)
+func (_ Unimplemented) GetAgencyFeed(w http.ResponseWriter, r *http.Request, slug AgencySlug, params GetAgencyFeedParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// HeadAgencyFeed Get the headers of an agency's RSS feed
+// (HEAD /agencies/{slug}/feed.xml)
+func (_ Unimplemented) HeadAgencyFeed(w http.ResponseWriter, r *http.Request, slug AgencySlug, params HeadAgencyFeedParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -327,6 +361,106 @@ func (siw *ServerInterfaceWrapper) GetAgency(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetAgency(w, r, slug)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetAgencyFeed operation middleware
+func (siw *ServerInterfaceWrapper) GetAgencyFeed(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slug" -------------
+	var slug AgencySlug
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slug", chi.URLParam(r, "slug"), &slug, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slug", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetAgencyFeedParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch IfNoneMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetAgencyFeed(w, r, slug, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// HeadAgencyFeed operation middleware
+func (siw *ServerInterfaceWrapper) HeadAgencyFeed(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "slug" -------------
+	var slug AgencySlug
+
+	err = runtime.BindStyledParameterWithOptions("simple", "slug", chi.URLParam(r, "slug"), &slug, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "slug", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params HeadAgencyFeedParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "If-None-Match" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("If-None-Match")]; found {
+		var IfNoneMatch IfNoneMatch
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "If-None-Match", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "If-None-Match", valueList[0], &IfNoneMatch, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "If-None-Match", Err: err})
+			return
+		}
+
+		params.IfNoneMatch = &IfNoneMatch
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.HeadAgencyFeed(w, r, slug, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -571,6 +705,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/agencies/{slug}/meetings", wrapper.ListAgencyMeetings)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/agencies/{slug}/feed.xml", wrapper.GetAgencyFeed)
+	})
+	r.Group(func(r chi.Router) {
+		r.Head(options.BaseURL+"/agencies/{slug}/feed.xml", wrapper.HeadAgencyFeed)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/meetings/{id}", wrapper.GetMeeting)
 	})
 	r.Group(func(r chi.Router) {
@@ -578,6 +718,17 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 
 	return r
+}
+
+type AgencyFeedResponseHeaders struct {
+	CacheControl *string
+	ETag         *string
+}
+type AgencyFeedApplicationrssXmlCharsetUtf8Response struct {
+	Body io.Reader
+
+	Headers       AgencyFeedResponseHeaders
+	ContentLength int64
 }
 
 type AuthUnavailableResponseHeaders struct {
@@ -601,6 +752,14 @@ type MethodNotAllowedJSONResponse struct {
 }
 
 type NotFoundJSONResponse Error
+
+type NotModifiedResponseHeaders struct {
+	CacheControl *string
+	ETag         *string
+}
+type NotModifiedResponse struct {
+	Headers NotModifiedResponseHeaders
+}
 
 type UnauthorizedResponseHeaders struct {
 	CacheControl    *string
@@ -726,6 +885,196 @@ type GetAgencydefaultJSONResponse struct {
 }
 
 func (response GetAgencydefaultJSONResponse) VisitGetAgencyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAgencyFeedRequestObject struct {
+	Slug   AgencySlug `json:"slug"`
+	Params GetAgencyFeedParams
+}
+
+type GetAgencyFeedResponseObject interface {
+	VisitGetAgencyFeedResponse(w http.ResponseWriter) error
+}
+
+type GetAgencyFeed200ApplicationrssXmlCharsetUtf8Response struct {
+	AgencyFeedApplicationrssXmlCharsetUtf8Response
+}
+
+func (response GetAgencyFeed200ApplicationrssXmlCharsetUtf8Response) VisitGetAgencyFeedResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	if response.Headers.ETag != nil {
+		w.Header().Set("ETag", fmt.Sprint(*response.Headers.ETag))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type GetAgencyFeed304Response = NotModifiedResponse
+
+func (response GetAgencyFeed304Response) VisitGetAgencyFeedResponse(w http.ResponseWriter) error {
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	if response.Headers.ETag != nil {
+		w.Header().Set("ETag", fmt.Sprint(*response.Headers.ETag))
+	}
+	w.WriteHeader(304)
+	return nil
+}
+
+type GetAgencyFeed404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetAgencyFeed404JSONResponse) VisitGetAgencyFeedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAgencyFeed405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response GetAgencyFeed405JSONResponse) VisitGetAgencyFeedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetAgencyFeeddefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response GetAgencyFeeddefaultJSONResponse) VisitGetAgencyFeedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type HeadAgencyFeedRequestObject struct {
+	Slug   AgencySlug `json:"slug"`
+	Params HeadAgencyFeedParams
+}
+
+type HeadAgencyFeedResponseObject interface {
+	VisitHeadAgencyFeedResponse(w http.ResponseWriter) error
+}
+
+type HeadAgencyFeed200ApplicationrssXmlCharsetUtf8Response struct {
+	AgencyFeedApplicationrssXmlCharsetUtf8Response
+}
+
+func (response HeadAgencyFeed200ApplicationrssXmlCharsetUtf8Response) VisitHeadAgencyFeedResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	if response.Headers.ETag != nil {
+		w.Header().Set("ETag", fmt.Sprint(*response.Headers.ETag))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type HeadAgencyFeed304Response = NotModifiedResponse
+
+func (response HeadAgencyFeed304Response) VisitHeadAgencyFeedResponse(w http.ResponseWriter) error {
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	if response.Headers.ETag != nil {
+		w.Header().Set("ETag", fmt.Sprint(*response.Headers.ETag))
+	}
+	w.WriteHeader(304)
+	return nil
+}
+
+type HeadAgencyFeed404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response HeadAgencyFeed404JSONResponse) VisitHeadAgencyFeedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type HeadAgencyFeed405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response HeadAgencyFeed405JSONResponse) VisitHeadAgencyFeedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type HeadAgencyFeeddefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response HeadAgencyFeeddefaultJSONResponse) VisitHeadAgencyFeedResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -1080,6 +1429,12 @@ type StrictServerInterface interface {
 	// GetAgency Get a tracked agency
 	// (GET /agencies/{slug})
 	GetAgency(ctx context.Context, request GetAgencyRequestObject) (GetAgencyResponseObject, error)
+	// GetAgencyFeed Get an agency's RSS feed
+	// (GET /agencies/{slug}/feed.xml)
+	GetAgencyFeed(ctx context.Context, request GetAgencyFeedRequestObject) (GetAgencyFeedResponseObject, error)
+	// HeadAgencyFeed Get the headers of an agency's RSS feed
+	// (HEAD /agencies/{slug}/feed.xml)
+	HeadAgencyFeed(ctx context.Context, request HeadAgencyFeedRequestObject) (HeadAgencyFeedResponseObject, error)
 	// ListAgencyMeetings List an agency's meetings
 	// (GET /agencies/{slug}/meetings)
 	ListAgencyMeetings(ctx context.Context, request ListAgencyMeetingsRequestObject) (ListAgencyMeetingsResponseObject, error)
@@ -1176,6 +1531,60 @@ func (sh *strictHandler) GetAgency(w http.ResponseWriter, r *http.Request, slug 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetAgencyResponseObject); ok {
 		if err := validResponse.VisitGetAgencyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetAgencyFeed operation middleware
+func (sh *strictHandler) GetAgencyFeed(w http.ResponseWriter, r *http.Request, slug AgencySlug, params GetAgencyFeedParams) {
+	var request GetAgencyFeedRequestObject
+
+	request.Slug = slug
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetAgencyFeed(ctx, request.(GetAgencyFeedRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetAgencyFeed")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetAgencyFeedResponseObject); ok {
+		if err := validResponse.VisitGetAgencyFeedResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// HeadAgencyFeed operation middleware
+func (sh *strictHandler) HeadAgencyFeed(w http.ResponseWriter, r *http.Request, slug AgencySlug, params HeadAgencyFeedParams) {
+	var request HeadAgencyFeedRequestObject
+
+	request.Slug = slug
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.HeadAgencyFeed(ctx, request.(HeadAgencyFeedRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "HeadAgencyFeed")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(HeadAgencyFeedResponseObject); ok {
+		if err := validResponse.VisitHeadAgencyFeedResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

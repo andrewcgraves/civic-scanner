@@ -58,3 +58,10 @@ func TestWithIdentitySetsTheTargetingKey(t *testing.T) {
 		t.Error("an empty identity changed the context")
 	}
 }
+
+func TestAnonymousDropsTheTargetingKey(t *testing.T) {
+	ctx := Anonymous(WithIdentity(t.Context(), "user_01"))
+	if got := openfeature.TransactionContext(ctx).TargetingKey(); got != "" {
+		t.Errorf("targeting key = %q, want none", got)
+	}
+}

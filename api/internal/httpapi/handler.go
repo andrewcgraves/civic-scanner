@@ -22,6 +22,7 @@ type Store interface {
 	GetLiveAgency(ctx context.Context, slug string) (store.Agency, error)
 	ListMeetings(ctx context.Context, agencyID uuid.UUID, params store.ListMeetingsParams) (store.MeetingPage, error)
 	GetLiveMeetingDetail(ctx context.Context, id uuid.UUID) (store.MeetingDetail, error)
+	GetLiveAgencyFeed(ctx context.Context, slug string) (store.AgencyFeed, error)
 	EnsureUser(ctx context.Context, in store.UserInput) (store.User, bool, error)
 }
 
@@ -31,6 +32,8 @@ type Handler struct {
 	version string
 	auth    Authenticator
 	enabled func(ctx context.Context, flag string) bool
+	webURL  string
+	feeds   *feedCache
 }
 
 var _ v1.StrictServerInterface = (*Handler)(nil)
@@ -44,7 +47,7 @@ func WithFlags(enabled func(ctx context.Context, flag string) bool) HandlerOptio
 }
 
 func NewHandler(s Store, logger *slog.Logger, version string, opts ...HandlerOption) *Handler {
-	h := &Handler{store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled}
+	h := &Handler{store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled, feeds: newFeedCache()}
 	for _, opt := range opts {
 		opt(h)
 	}
