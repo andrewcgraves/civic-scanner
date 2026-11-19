@@ -15,6 +15,10 @@ func extractor() *Extractor {
 	return &Extractor{PDF: InProcess{}, MinChars: 1}
 }
 
+func textOf(r Result, err error) (string, error) {
+	return r.Text, err
+}
+
 func TestNormalizeCollapsesFormattingNoise(t *testing.T) {
 	cases := map[string]string{
 		"":                                    "",
@@ -44,7 +48,7 @@ func TestNormalizeMakesWhitespaceOnlyEditsEqual(t *testing.T) {
 
 func TestTextHandlesPlainAndMarkdown(t *testing.T) {
 	for _, ct := range []string{"text/plain; charset=utf-8", "text/markdown", ""} {
-		got, err := extractor().Text(t.Context(), Request{ContentType: ct, Body: []byte("# Agenda\n\n1. Call to order\n")})
+		got, err := textOf(extractor().Text(t.Context(), Request{ContentType: ct, Body: []byte("# Agenda\n\n1. Call to order\n")}))
 		if err != nil {
 			t.Fatalf("Text(%q): %v", ct, err)
 		}
@@ -55,7 +59,7 @@ func TestTextHandlesPlainAndMarkdown(t *testing.T) {
 }
 
 func TestTextDecodesPlainTextByCharset(t *testing.T) {
-	got, err := extractor().Text(t.Context(), Request{ContentType: "text/plain; charset=iso-8859-1", Body: []byte("Caf\xe9 Agenda")})
+	got, err := textOf(extractor().Text(t.Context(), Request{ContentType: "text/plain; charset=iso-8859-1", Body: []byte("Caf\xe9 Agenda")}))
 	if err != nil || got != "Café Agenda" {
 		t.Errorf("Text = %q, %v", got, err)
 	}
@@ -135,7 +139,7 @@ func TestTextTreatsInterstitialsAsBlocked(t *testing.T) {
 }
 
 func TestTextAcceptsMarkdownForAPDFURL(t *testing.T) {
-	got, err := extractor().Text(t.Context(), Request{ContentType: "text/markdown", Body: []byte(agendaBody), ExpectPDF: true})
+	got, err := textOf(extractor().Text(t.Context(), Request{ContentType: "text/markdown", Body: []byte(agendaBody), ExpectPDF: true}))
 	if err != nil || !strings.HasPrefix(got, "Item 1.") {
 		t.Errorf("Text = %q, %v", got, err)
 	}

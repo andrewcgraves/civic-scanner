@@ -29,7 +29,12 @@ const (
 )
 
 type PDFReader interface {
-	ReadPDF(ctx context.Context, body []byte) (string, error)
+	ReadPDF(ctx context.Context, body []byte) (Document, error)
+}
+
+type Result struct {
+	Text string
+	PDF  *Report
 }
 
 type Extractor struct {
@@ -43,35 +48,39 @@ type Request struct {
 	ExpectPDF   bool
 }
 
-func (e *Extractor) Text(ctx context.Context, req Request) (string, error) {
-	var raw string
+func (e *Extractor) Text(ctx context.Context, req Request) (Result, error) {
+	var (
+		raw    string
+		report *Report
+	)
 	switch detect(req.ContentType, req.Body) {
 	case kindPDF:
 		if e.PDF == nil {
-			return "", ErrUnavailable
+			return Result{}, ErrUnavailable
 		}
-		var err error
-		if raw, err = e.PDF.ReadPDF(ctx, req.Body); err != nil {
-			return "", err
+		doc, err := e.PDF.ReadPDF(ctx, req.Body)
+		if err != nil {
+			return Result{}, err
 		}
+		raw, report = doc.Text, &doc.Report
 	case kindHTML:
 		if req.ExpectPDF {
-			return "", fmt.Errorf("%w: expected a PDF, got an HTML page", ErrBlocked)
+			return Result{}, fmt.Errorf("%w: expected a PDF, got an HTML page", ErrBlocked)
 		}
 		if marker, ok := Interstitial(req.Body); ok {
-			return "", fmt.Errorf("%w: page contains %q", ErrBlocked, marker)
+			return Result{}, fmt.Errorf("%w: page contains %q", ErrBlocked, marker)
 		}
 		var err error
 		if raw, err = htmlText(req.ContentType, req.Body); err != nil {
-			return "", err
+			return Result{}, err
 		}
 	case kindPlain:
 		if marker, ok := Interstitial(req.Body); ok {
-			return "", fmt.Errorf("%w: text contains %q", ErrBlocked, marker)
+			return Result{}, fmt.Errorf("%w: text contains %q", ErrBlocked, marker)
 		}
 		raw = decode(req.ContentType, req.Body)
 	default:
-		return "", fmt.Errorf("%w: %q", ErrUnsupported, req.ContentType)
+		return Result{}, fmt.Errorf("%w: %q", ErrUnsupported, req.ContentType)
 	}
 	text := Normalize(raw)
 	minChars := e.MinChars
@@ -79,9 +88,9 @@ func (e *Extractor) Text(ctx context.Context, req Request) (string, error) {
 		minChars = DefaultMinChars
 	}
 	if n := visibleChars(text); n < minChars {
-		return "", fmt.Errorf("%w: %d characters, want at least %d", ErrNoText, n, minChars)
+		return Result{}, fmt.Errorf("%w: %d characters, want at least %d", ErrNoText, n, minChars)
 	}
-	return text, nil
+	return Result{Text: text, PDF: report}, nil
 }
 
 func visibleChars(s string) int {

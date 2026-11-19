@@ -8,6 +8,7 @@ import (
 const (
 	canonicalHeader = "%PDF-1.7\n"
 	trailerWindow   = 1024
+	endOfFileWindow = 64 << 10
 	startxref       = "startxref"
 	endOfFile       = "%%EOF"
 )
@@ -66,16 +67,12 @@ func validHeader(body []byte) bool {
 }
 
 func trimAfterEOF(body []byte) []byte {
-	tail := max(0, len(body)-trailerWindow)
+	tail := max(0, len(body)-endOfFileWindow)
 	i := bytes.LastIndex(body[tail:], []byte(endOfFile))
 	if i < 0 {
 		return body
 	}
-	end := tail + i + len(endOfFile)
-	if len(bytes.TrimLeft(body[end:], "\t\n\r ")) == 0 {
-		return body
-	}
-	return body[:end]
+	return body[:tail+i+len(endOfFile)]
 }
 
 func isBlank(c byte) bool {

@@ -3,6 +3,7 @@ package extract
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -72,10 +73,10 @@ func (s Subprocess) withDefaults() Subprocess {
 	return s
 }
 
-func (s Subprocess) ReadPDF(ctx context.Context, body []byte) (string, error) {
+func (s Subprocess) ReadPDF(ctx context.Context, body []byte) (Document, error) {
 	s = s.withDefaults()
 	if s.Binary == "" {
-		return "", fmt.Errorf("%w: no binary configured, set EXTRACT_PDF_BINARY", ErrUnavailable)
+		return Document{}, fmt.Errorf("%w: no binary configured, set EXTRACT_PDF_BINARY", ErrUnavailable)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, s.Timeout)
 	defer cancel()
@@ -95,27 +96,42 @@ func (s Subprocess) ReadPDF(ctx context.Context, body []byte) (string, error) {
 	detail := strings.TrimSpace(stderr.String())
 	switch {
 	case ctx.Err() != nil:
-		return "", fmt.Errorf("pdf extraction: %w", ctx.Err())
+		return Document{}, fmt.Errorf("pdf extraction: %w", ctx.Err())
 	case stdout.overflowed():
-		return "", fmt.Errorf("%w: text exceeds %d bytes", ErrLimitExceeded, s.MaxTextBytes)
+		return Document{}, fmt.Errorf("%w: text exceeds %d bytes", ErrLimitExceeded, s.MaxTextBytes)
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
-		return "", fmt.Errorf("%w: pdf extraction took longer than %s", ErrLimitExceeded, s.Timeout)
+		return Document{}, fmt.Errorf("%w: pdf extraction took longer than %s", ErrLimitExceeded, s.Timeout)
 	case err == nil:
-		return stdout.String(), nil
+		report, err := parseReport(stderr.String())
+		if err != nil {
+			return Document{}, err
+		}
+		return Document{Text: stdout.String(), Report: report}, nil
 	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
-		return "", fmt.Errorf("%w: run %s: %w", ErrUnavailable, s.Binary, err)
+		return Document{}, fmt.Errorf("%w: run %s: %w", ErrUnavailable, s.Binary, err)
 	}
 	switch exitErr.ExitCode() {
 	case exitMalformed:
-		return "", childError(ErrMalformed, detail)
+		return Document{}, childError(ErrMalformed, detail)
 	case exitLimit:
-		return "", childError(ErrLimitExceeded, detail)
+		return Document{}, childError(ErrLimitExceeded, detail)
 	case exitNoText:
-		return "", childError(ErrNoText, detail)
+		return Document{}, childError(ErrNoText, detail)
 	}
-	return "", fmt.Errorf("%w: pdf extractor failed (%w): %s", ErrMalformed, exitErr, detail)
+	return Document{}, fmt.Errorf("%w: pdf extractor failed (%w): %s", ErrMalformed, exitErr, detail)
+}
+
+func parseReport(stderr string) (Report, error) {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	last := lines[len(lines)-1]
+	encoded, ok := strings.CutPrefix(last, reportPrefix)
+	var report Report
+	if !ok || json.Unmarshal([]byte(encoded), &report) != nil {
+		return Report{}, fmt.Errorf("%w: pdf extractor exited without a valid report: %q", ErrMalformed, truncateUTF8(last, maxReportedError))
+	}
+	return report, nil
 }
 
 func childError(sentinel error, detail string) error {

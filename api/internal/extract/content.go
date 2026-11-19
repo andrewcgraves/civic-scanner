@@ -43,47 +43,81 @@ type graphicsState struct {
 	ctm         matrix
 }
 
-const maxContentBytes = 32 << 20
+const (
+	maxContentBytes         = 32 << 20
+	maxDocumentContentBytes = 4 * maxContentBytes
+)
 
 var errTooManyGlyphs = errors.New("too many glyphs")
 
-type pageReader struct {
-	page      pdf.Page
-	fonts     map[string]*pdf.Font
-	encodings map[string]pdf.TextEncoding
-	maxGlyphs int
-	state     graphicsState
-	saved     []graphicsState
-	text      []pdf.Text
+type cachedFont struct {
+	font     *pdf.Font
+	encoding pdf.TextEncoding
 }
 
-func pageText(page pdf.Page, maxGlyphs int) (text []pdf.Text, err error) {
+type documentReader struct {
+	maxGlyphs int
+	fonts     map[string]cachedFont
+	decoded   int64
+}
+
+func newDocumentReader(maxGlyphs int) *documentReader {
+	return &documentReader{maxGlyphs: maxGlyphs, fonts: map[string]cachedFont{}}
+}
+
+func (d *documentReader) font(v pdf.Value) cachedFont {
+	key := v.String()
+	if f, ok := d.fonts[key]; ok {
+		return f
+	}
+	font := &pdf.Font{V: v}
+	f := cachedFont{font: font, encoding: fontEncoding(font)}
+	d.fonts[key] = f
+	return f
+}
+
+type pageContent struct {
+	text      []pdf.Text
+	truncated error
+}
+
+type pageReader struct {
+	doc   *documentReader
+	page  pdf.Page
+	fonts map[string]cachedFont
+	state graphicsState
+	saved []graphicsState
+	text  []pdf.Text
+}
+
+func (d *documentReader) pageText(page pdf.Page) (content pageContent, err error) {
 	r := &pageReader{
-		page:      page,
-		fonts:     map[string]*pdf.Font{},
-		encodings: map[string]pdf.TextEncoding{},
-		maxGlyphs: maxGlyphs,
-		state:     graphicsState{scale: 1, ctm: identity, font: &pdf.Font{}, encoding: identityEncoding{}},
+		doc:   d,
+		page:  page,
+		fonts: map[string]cachedFont{},
+		state: graphicsState{scale: 1, ctm: identity, font: &pdf.Font{}, encoding: identityEncoding{}},
 	}
 	defer func() {
 		if rec := recover(); rec != nil {
-			text = nil
+			content.text = nil
 			if e, ok := rec.(error); ok && errors.Is(e, errTooManyGlyphs) {
-				err = fmt.Errorf("%w: more than %d glyphs", ErrLimitExceeded, maxGlyphs)
+				err = fmt.Errorf("%w: more than %d glyphs", ErrLimitExceeded, d.maxGlyphs)
 				return
 			}
 			err = fmt.Errorf("%v", rec)
 		}
 	}()
-	contents, err := contentStream(page.V.Key("Contents"))
-	if err != nil || contents.Kind() != pdf.Stream {
-		return nil, err
+	contents, truncated, err := d.contentStream(page.V.Key("Contents"))
+	if err != nil {
+		return pageContent{}, err
 	}
+	content.truncated = truncated
 	pdf.Interpret(contents, r.do)
-	return r.text, nil
+	content.text = r.text
+	return content, nil
 }
 
-func contentStream(contents pdf.Value) (pdf.Value, error) {
+func (d *documentReader) contentStream(contents pdf.Value) (pdf.Value, error, error) {
 	parts := []pdf.Value{contents}
 	if contents.Kind() == pdf.Array {
 		parts = make([]pdf.Value, 0, contents.Len())
@@ -91,24 +125,38 @@ func contentStream(contents pdf.Value) (pdf.Value, error) {
 			parts = append(parts, contents.Index(i))
 		}
 	}
-	var doc bytes.Buffer
+	var (
+		doc       bytes.Buffer
+		decoded   int64
+		truncated error
+	)
 	doc.WriteString(canonicalHeader)
 	object := doc.Len()
 	doc.WriteString("1 0 obj\n<< /Length ")
 	lengthAt := doc.Len()
 	fmt.Fprintf(&doc, "%010d >>\nstream\n", 0)
 	start := doc.Len()
-	for _, part := range parts {
+	for i, part := range parts {
 		if part.Kind() != pdf.Stream {
 			continue
 		}
-		rc := part.Reader()
-		_, _ = io.Copy(&doc, io.LimitReader(rc, maxContentBytes-int64(doc.Len()-start)+1))
-		_ = rc.Close()
-		if doc.Len()-start > maxContentBytes {
-			return pdf.Value{}, fmt.Errorf("%w: page content exceeds %d bytes", ErrLimitExceeded, maxContentBytes)
+		if doc.Len() > start {
+			doc.WriteByte('\n')
 		}
-		doc.WriteByte('\n')
+		allowance := min(maxContentBytes-decoded, maxDocumentContentBytes-d.decoded)
+		rc := part.Reader()
+		n, err := io.Copy(&doc, io.LimitReader(rc, allowance+1))
+		_ = rc.Close()
+		decoded += n
+		d.decoded += n
+		switch {
+		case decoded > maxContentBytes:
+			return pdf.Value{}, nil, fmt.Errorf("%w: page content exceeds %d bytes", ErrLimitExceeded, maxContentBytes)
+		case d.decoded > maxDocumentContentBytes:
+			return pdf.Value{}, nil, fmt.Errorf("%w: document content exceeds %d bytes", ErrLimitExceeded, maxDocumentContentBytes)
+		case err != nil && truncated == nil:
+			truncated = fmt.Errorf("content stream %d: %w", i, err)
+		}
 	}
 	copy(doc.Bytes()[lengthAt:], fmt.Sprintf("%010d", doc.Len()-start))
 	doc.WriteString("\nendstream\nendobj\n")
@@ -116,9 +164,9 @@ func contentStream(contents pdf.Value) (pdf.Value, error) {
 	fmt.Fprintf(&doc, "xref\n0 2\n0000000000 65535 f \n%010d 00000 n \ntrailer\n<< /Size 2 /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", object, xref)
 	r, err := pdf.NewReader(bytes.NewReader(doc.Bytes()), int64(doc.Len()))
 	if err != nil {
-		return pdf.Value{}, err
+		return pdf.Value{}, nil, err
 	}
-	return r.Trailer().Key("Root"), nil
+	return r.Trailer().Key("Root"), truncated, nil
 }
 
 type identityEncoding struct{}
@@ -219,14 +267,26 @@ func matrixOf(args []pdf.Value) (matrix, bool) {
 }
 
 func (r *pageReader) setFont(name string, size float64) {
-	font, ok := r.fonts[name]
+	f, ok := r.fonts[name]
 	if !ok {
-		f := r.page.Font(name)
-		font = &f
-		r.fonts[name] = font
-		r.encodings[name] = fontEncoding(font)
+		f = r.doc.font(resources(r.page).Key("Font").Key(name))
+		r.fonts[name] = f
 	}
-	r.state.font, r.state.encoding, r.state.fontSize = font, r.encodings[name], size
+	r.state.font, r.state.encoding, r.state.fontSize = f.font, f.encoding, size
+}
+
+func resources(page pdf.Page) pdf.Value {
+	v := page.V
+	for range maxPageTreeDepth + 1 {
+		if v.IsNull() {
+			break
+		}
+		if res := v.Key("Resources"); !res.IsNull() {
+			return res
+		}
+		v = v.Key("Parent")
+	}
+	return pdf.Value{}
 }
 
 func (r *pageReader) moveLine(tx, ty float64) {
@@ -246,7 +306,7 @@ func (r *pageReader) showArray(v pdf.Value) {
 		tx := -item.Float64() / 1000 * g.fontSize * g.scale
 		g.textMatrix = translation(tx, 0).mul(g.textMatrix)
 	}
-	r.show("\n")
+	r.text = append(r.text, pdf.Text{S: "\n"})
 }
 
 func (r *pageReader) show(raw string) {
@@ -262,7 +322,7 @@ func (r *pageReader) show(raw string) {
 			w0 = g.font.Width(int(raw[n]))
 		}
 		n++
-		if len(r.text) >= r.maxGlyphs {
+		if len(r.text) >= r.doc.maxGlyphs {
 			panic(errTooManyGlyphs)
 		}
 		trm := matrix{{g.fontSize * g.scale, 0, 0}, {0, g.fontSize, 0}, {0, g.rise, 1}}.mul(g.textMatrix).mul(g.ctm)

@@ -68,22 +68,61 @@ func pdfObjects(widths bool, pages ...string) []string {
 }
 
 func SplitContents(parts ...string) []byte {
-	refs := make([]string, len(parts))
+	streams := make([]string, len(parts))
+	for i, part := range parts {
+		streams[i] = Stream(part)
+	}
+	return PageOfStreams(streams...)
+}
+
+func PageOfStreams(streams ...string) []byte {
+	refs := make([]string, len(streams))
 	objects := []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
 		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
 		"",
 		"<< /Type /Font /Subtype /Type1 /BaseFont /Courier " + courierWidths + " >>",
 	}
-	for i, part := range parts {
+	for i, stream := range streams {
 		refs[i] = fmt.Sprintf("%d 0 R", len(objects)+1)
-		objects = append(objects, Stream(part))
+		objects = append(objects, stream)
 	}
 	objects[2] = fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents [%s] >>", strings.Join(refs, " "))
 	return Assemble(objects...)
 }
 
-func NarrowCodespaceTrueType(content string) []byte {
+func FlateStream(content []byte) (string, error) {
+	var packed bytes.Buffer
+	w, err := zlib.NewWriterLevel(&packed, zlib.BestCompression)
+	if err != nil {
+		return "", err
+	}
+	if _, err := w.Write(content); err != nil {
+		return "", err
+	}
+	if err := w.Close(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("<< /Length %d /Filter /FlateDecode >>\nstream\n%s\nendstream", packed.Len(), packed.Bytes()), nil
+}
+
+func SharedContents(pages int, stream string) []byte {
+	objects := []string{
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"",
+		"<< /Type /Font /Subtype /Type1 /BaseFont /Courier " + courierWidths + " >>",
+		stream,
+	}
+	kids := make([]string, pages)
+	for i := range pages {
+		kids[i] = fmt.Sprintf("%d 0 R", len(objects)+1)
+		objects = append(objects, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>")
+	}
+	objects[1] = fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), pages)
+	return Assemble(objects...)
+}
+
+func NarrowCodespaceTrueType(pages ...string) []byte {
 	cmap := "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n" +
 		"/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n" +
 		"/CMapName /Adobe-Identity-UCS def\n" +
@@ -91,14 +130,21 @@ func NarrowCodespaceTrueType(content string) []byte {
 		"2 beginbfchar\n<41> <0041>\n<5b> <005b>\nendbfchar\n" +
 		"2 beginbfrange\n<20> <3f> <0020>\n<61> <7a> [<0061> <0062> <0063> <0064> <0065> <0066> <0067> <0068> <0069> <006a> <006b> <006c> <006d> <006e> <006f> <0070> <0071> <0072> <0073> <0074> <0075> <0076> <0077> <0078> <0079> <007a>]\nendbfrange\n" +
 		"endcmap CMapName currentdict /CMap defineresource pop end end\n"
-	return Assemble(
+	objects := []string{
 		"<< /Type /Catalog /Pages 2 0 R >>",
-		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-		Stream(content),
-		"<< /Type /Font /Subtype /TrueType /BaseFont /AAAAAA+Arial "+courierWidths+" /ToUnicode 6 0 R >>",
+		"",
+		"<< /Type /Font /Subtype /TrueType /BaseFont /AAAAAA+Arial " + courierWidths + " /ToUnicode 4 0 R >>",
 		Stream(cmap),
-	)
+	}
+	kids := make([]string, len(pages))
+	for i, content := range pages {
+		kids[i] = fmt.Sprintf("%d 0 R", len(objects)+1)
+		objects = append(objects,
+			fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>", len(objects)+2),
+			Stream(content))
+	}
+	objects[1] = fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(pages))
+	return Assemble(objects...)
 }
 
 func Lines(lines ...string) []byte {

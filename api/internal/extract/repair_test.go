@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ledongthuc/pdf"
 
@@ -62,7 +63,7 @@ func TestPDFTextRejectsWhatIsNotAPDFHeader(t *testing.T) {
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := PDFText(t.Context(), []byte(doc), Limits{})
+			_, err := ReadPDF(t.Context(), []byte(doc), Limits{})
 			if !errors.Is(err, ErrMalformed) || !strings.Contains(err.Error(), "invalid header") {
 				t.Errorf("err = %v, want ErrMalformed for an invalid header", err)
 			}
@@ -196,15 +197,171 @@ func TestPDFTextKeepsTheDecodedPartOfATruncatedStream(t *testing.T) {
 		fmt.Sprintf("<< /Length %d /Filter /FlateDecode >>\nstream\n%s\nendstream", len(truncated), truncated),
 		"<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>",
 	)
-	got, err := inProcessText(t, doc)
-	if err != nil || got != "Agenda" {
-		t.Errorf("PDFText = %q, %v", got, err)
+	got, err := ReadPDF(t.Context(), doc, Limits{})
+	if err != nil || Normalize(got.Text) != "Agenda" {
+		t.Errorf("ReadPDF = %q, %v", got.Text, err)
+	}
+	r := got.Report
+	if r.Pages != 1 || r.TruncatedPages != 1 || r.UnreadablePages != 0 || !strings.HasPrefix(r.FirstError, "page 1: content stream 0: ") || !r.Partial() {
+		t.Errorf("Report = %+v", r)
+	}
+}
+
+func TestReadPDFReportsUnreadablePagesAndTheFirstError(t *testing.T) {
+	got, err := ReadPDF(t.Context(), extracttest.PDF(true, agendaPage, "1 begin", "2 begin", agendaPage), Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.Report
+	if r.Pages != 4 || r.UnreadablePages != 2 || r.TruncatedPages != 0 || !strings.HasPrefix(r.FirstError, "page 2: cannot begin") {
+		t.Errorf("Report = %+v", r)
+	}
+	clean, err := ReadPDF(t.Context(), extracttest.PDF(true, agendaPage), Limits{})
+	if err != nil || clean.Report.Partial() || clean.Report.FirstError != "" || clean.Report.DecodedContentBytes != int64(len(agendaPage)) {
+		t.Errorf("clean Report = %+v, %v", clean.Report, err)
+	}
+}
+
+func TestTheUnreadableThresholdIsMoreThanTheShare(t *testing.T) {
+	cases := []struct {
+		unreadable, pages int
+		want              bool
+	}{{0, 1, false}, {1, 2, false}, {1, 1, true}, {2, 3, true}, {50, 100, false}, {51, 100, true}}
+	for _, tc := range cases {
+		if got := tooManyUnreadable(tc.unreadable, tc.pages); got != tc.want {
+			t.Errorf("tooManyUnreadable(%d, %d) = %v", tc.unreadable, tc.pages, got)
+		}
+	}
+}
+
+func TestTruncateUTF8KeepsWholeRunes(t *testing.T) {
+	if got := truncateUTF8("abécd", 3); got != "ab" {
+		t.Errorf("truncateUTF8 = %q", got)
+	}
+	if got := truncateUTF8("abc", 3); got != "abc" {
+		t.Errorf("truncateUTF8 = %q", got)
+	}
+}
+
+func TestTJDoesNotDecodeItsLineBreak(t *testing.T) {
+	doc := extracttest.NarrowCodespaceTrueType("BT /F1 12 Tf 72 720 Td [(Agen)-20(da)] TJ ET")
+	got, err := ReadPDF(t.Context(), doc, Limits{})
+	if err != nil || got.Text != "Agenda\n" || strings.ContainsRune(got.Text, '\ufffd') {
+		t.Errorf("ReadPDF = %q, %v", got.Text, err)
+	}
+}
+
+func TestFontsAreDecodedOncePerDocument(t *testing.T) {
+	doc := extracttest.NarrowCodespaceTrueType(
+		"BT /F1 12 Tf 72 720 Td (Agenda) Tj ET",
+		"BT /F1 12 Tf 72 720 Td (minutes) Tj /F1 10 Tf (item) Tj ET",
+		"BT /F1 12 Tf 72 720 Td (adjourn) Tj ET",
+	)
+	r, err := pdf.NewReader(bytes.NewReader(doc), int64(len(doc)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages, err := pageTree(r, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newDocumentReader(DefaultLimits.MaxGlyphsPerPage)
+	for _, p := range pages {
+		if _, err := d.pageText(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(d.fonts) != 1 {
+		t.Errorf("decoded %d fonts, want 1 shared by every page", len(d.fonts))
+	}
+}
+
+func TestPDFTextBoundsDecodedDocumentContent(t *testing.T) {
+	stream, err := extracttest.FlateStream([]byte(agendaPage + "\n" + strings.Repeat(" ", maxContentBytes-len(agendaPage)-1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = ReadPDF(t.Context(), extracttest.SharedContents(2000, stream), Limits{})
+	if !errors.Is(err, ErrLimitExceeded) || !strings.Contains(err.Error(), "document content exceeds") || !strings.HasSuffix(err.Error(), "on page 5") {
+		t.Errorf("err = %v, want the document content limit on page 5", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Errorf("took %s", elapsed)
+	}
+}
+
+func TestThePartSeparatorDoesNotCountTowardThePageLimit(t *testing.T) {
+	full, err := extracttest.FlateStream([]byte(agendaPage + "\n" + strings.Repeat(" ", maxContentBytes-len(agendaPage)-1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadPDF(t.Context(), extracttest.PageOfStreams(full, extracttest.Stream(""), extracttest.Stream("")), Limits{})
+	if err != nil || Normalize(got.Text) != "Agenda" || got.Report.DecodedContentBytes != maxContentBytes {
+		t.Errorf("ReadPDF = %q, %+v, %v", got.Text, got.Report, err)
+	}
+}
+
+func TestPDFTextCutsEverythingAfterTheLastEOF(t *testing.T) {
+	cases := map[string]string{
+		"99 spaces":     strings.Repeat(" ", 99),
+		"200 spaces":    strings.Repeat(" ", 200),
+		"2000 newlines": strings.Repeat("\n", 2000),
+		"2000 NULs":     strings.Repeat("\x00", 2000),
+		"60000 NULs":    strings.Repeat("\x00", 60000),
+		"html and crlf": "\r\n<html><body>appended</body></html>\r\n",
+		"second %%EOF":  "\n%%EOF\n",
+		"no padding":    "",
+	}
+	for name, tail := range cases {
+		t.Run(name, func(t *testing.T) {
+			got, err := inProcessText(t, append(extracttest.PDF(true, agendaPage), tail...))
+			if err != nil || got != "Agenda" {
+				t.Errorf("PDFText = %q, %v", got, err)
+			}
+		})
+	}
+	if _, err := inProcessText(t, append(extracttest.PDF(true, agendaPage), strings.Repeat("\x00", endOfFileWindow)...)); !errors.Is(err, ErrMalformed) {
+		t.Errorf("padding past the window: err = %v, want ErrMalformed", err)
 	}
 }
 
 func TestPDFTextBoundsDecodedPageContent(t *testing.T) {
-	_, err := PDFText(t.Context(), flateBombPDF(t, maxContentBytes+1<<20), Limits{MaxGlyphsPerPage: 1 << 30})
+	_, err := ReadPDF(t.Context(), flateBombPDF(t, maxContentBytes+1<<20), Limits{MaxGlyphsPerPage: 1 << 30})
 	if !errors.Is(err, ErrLimitExceeded) || !strings.Contains(err.Error(), "page content exceeds") {
 		t.Errorf("err = %v, want the page content limit", err)
+	}
+}
+
+func TestResourcesAreInheritedWithinABoundedWalk(t *testing.T) {
+	loop := extracttest.Assemble(
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+		"<< /Type /Page /Parent 3 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+		extracttest.Stream(agendaPage),
+	)
+	done := make(chan error, 1)
+	go func() {
+		_, err := ReadPDF(t.Context(), loop, Limits{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("parent loop: err = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a page whose /Parent is itself did not finish")
+	}
+	inherited := extracttest.Assemble(
+		"<< /Type /Catalog /Pages 2 0 R >>",
+		"<< /Type /Pages /Kids [3 0 R] /Count 1 /Resources << /Font << /F1 5 0 R >> >> >>",
+		"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>",
+		extracttest.Stream("BT /F1 12 Tf 72 720 Td (Agenda item 7?) Tj ET"),
+		"<< /Type /Font /Subtype /TrueType /BaseFont /Arial /ToUnicode 6 0 R >>",
+		extracttest.Stream("1 begincodespacerange <6d> <7a> endcodespacerange 1 beginbfrange <20> <7a> <0020> endbfrange"),
+	)
+	if got, err := inProcessText(t, inherited); err != nil || got != "Agenda item 7?" {
+		t.Errorf("inherited resources: PDFText = %q, %v", got, err)
 	}
 }

@@ -42,58 +42,91 @@ func (l Limits) withDefaults() Limits {
 	return l
 }
 
+const (
+	maxUnreadableShare = 0.5
+	maxReportedError   = 512
+)
+
+type Report struct {
+	Pages               int    `json:"pages"`
+	UnreadablePages     int    `json:"unreadable_pages"`
+	TruncatedPages      int    `json:"truncated_pages"`
+	FirstError          string `json:"first_error,omitempty"`
+	DecodedContentBytes int64  `json:"decoded_content_bytes"`
+}
+
+func (r Report) Partial() bool {
+	return r.UnreadablePages > 0 || r.TruncatedPages > 0
+}
+
+type Document struct {
+	Text   string
+	Report Report
+}
+
 type InProcess struct {
 	Limits Limits
 }
 
-func (p InProcess) ReadPDF(ctx context.Context, body []byte) (string, error) {
-	return PDFText(ctx, body, p.Limits)
+func (p InProcess) ReadPDF(ctx context.Context, body []byte) (Document, error) {
+	return ReadPDF(ctx, body, p.Limits)
 }
 
-func PDFText(ctx context.Context, body []byte, limits Limits) (text string, err error) {
+func tooManyUnreadable(unreadable, pages int) bool {
+	return float64(unreadable) > maxUnreadableShare*float64(pages)
+}
+
+func ReadPDF(ctx context.Context, body []byte, limits Limits) (result Document, err error) {
 	limits = limits.withDefaults()
 	doc, err := repair(body)
 	if err != nil {
-		return "", err
+		return Document{}, err
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			text, err = "", fmt.Errorf("%w: pdf: %v", ErrMalformed, r)
+			result, err = Document{}, fmt.Errorf("%w: pdf: %v", ErrMalformed, r)
 		}
 	}()
 	reader, err := pdf.NewReader(doc, doc.Size())
 	if err != nil {
-		return "", fmt.Errorf("%w: pdf: %w", ErrMalformed, err)
+		return Document{}, fmt.Errorf("%w: pdf: %w", ErrMalformed, err)
 	}
 	maxPages := min(limits.MaxPages, max(1, int(doc.Size())/minBytesPerPage))
 	pages, err := pageTree(reader, maxPages)
 	if err != nil {
-		return "", err
+		return Document{}, err
 	}
 
 	var (
-		b          strings.Builder
-		empty      int
-		unreadable int
-		firstErr   error
+		b        strings.Builder
+		empty    int
+		firstErr error
+		report   = Report{Pages: len(pages)}
+		document = newDocumentReader(limits.MaxGlyphsPerPage)
 	)
+	note := func(page int, err error) {
+		if firstErr == nil {
+			firstErr = fmt.Errorf("page %d: %w", page, err)
+		}
+	}
 	for i, page := range pages {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return Document{}, err
 		}
-		glyphs, err := pageText(page, limits.MaxGlyphsPerPage)
+		content, err := document.pageText(page)
 		switch {
 		case errors.Is(err, ErrLimitExceeded):
-			return "", fmt.Errorf("%w on page %d", err, i+1)
+			return Document{}, fmt.Errorf("%w on page %d", err, i+1)
 		case err != nil:
-			unreadable++
+			report.UnreadablePages++
 			empty++
-			if firstErr == nil {
-				firstErr = fmt.Errorf("page %d: %w", i+1, err)
-			}
+			note(i+1, err)
 			continue
+		case content.truncated != nil:
+			report.TruncatedPages++
+			note(i+1, content.truncated)
 		}
-		lines := pageLines(glyphs)
+		lines := pageLines(content.text)
 		if visibleChars(strings.Join(lines, "")) == 0 {
 			empty++
 		}
@@ -102,16 +135,27 @@ func PDFText(ctx context.Context, body []byte, limits Limits) (text string, err 
 			b.WriteByte('\n')
 		}
 		if int64(b.Len()) > limits.MaxTextBytes {
-			return "", fmt.Errorf("%w: text exceeds %d bytes", ErrLimitExceeded, limits.MaxTextBytes)
+			return Document{}, fmt.Errorf("%w: text exceeds %d bytes", ErrLimitExceeded, limits.MaxTextBytes)
 		}
 	}
-	if unreadable*2 > len(pages) {
-		return "", fmt.Errorf("%w: %d of %d pages could not be read, first %w", ErrMalformed, unreadable, len(pages), firstErr)
+	report.DecodedContentBytes = document.decoded
+	if firstErr != nil {
+		report.FirstError = truncateUTF8(firstErr.Error(), maxReportedError)
+	}
+	if tooManyUnreadable(report.UnreadablePages, len(pages)) {
+		return Document{}, fmt.Errorf("%w: %d of %d pages could not be read, first %w", ErrMalformed, report.UnreadablePages, len(pages), firstErr)
 	}
 	if len(pages) == 0 || empty*2 > len(pages) {
-		return "", fmt.Errorf("%w: %d of %d pages have no text layer (scanned pages and text inside form XObjects are not read)", ErrNoText, empty, len(pages))
+		return Document{}, fmt.Errorf("%w: %d of %d pages have no text layer (scanned pages and text inside form XObjects are not read)", ErrNoText, empty, len(pages))
 	}
-	return b.String(), nil
+	return Document{Text: b.String(), Report: report}, nil
+}
+
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "")
 }
 
 func pageTree(reader *pdf.Reader, maxPages int) ([]pdf.Page, error) {
