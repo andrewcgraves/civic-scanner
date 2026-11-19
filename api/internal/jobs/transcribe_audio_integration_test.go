@@ -278,7 +278,7 @@ func TestTranscribeCompletesQuietlyWhenRetentionDeletesTheAudioBeforeItIsRead(t 
 	bucket := &deletingBucket{Fake: storagetest.New()}
 	rec := recordingWithAudio(t, pool, bucket, "racing")
 	bucket.onGet = func() {
-		_ = bucket.Fake.Delete(context.Background(), rec.Audio.Key)
+		_ = bucket.Delete(context.Background(), rec.Audio.Key)
 		_, _ = store.New(pool).MarkRecordingAudioDeleted(context.Background(), rec.ID, rec.Audio.Key)
 	}
 	client := transcribetest.Returning(meetingTranscript)
@@ -299,7 +299,7 @@ func TestTranscriptOfACompleteReadIsKeptWhenRetentionDeletesTheAudioMeanwhile(t 
 	rec := recordingWithAudio(t, pool, bucket, "read-then-deleted")
 	client := &transcribetest.Fake{Respond: func(path string) (transcribe.Transcript, error) {
 		if b, err := os.ReadFile(path); err != nil || !bytes.Equal(b, fakeMP3) { //nolint:gosec
-			return transcribe.Transcript{}, fmt.Errorf("audio file = %d bytes, %v", len(b), err)
+			return transcribe.Transcript{}, fmt.Errorf("audio file = %d bytes: %w", len(b), err)
 		}
 		_ = bucket.Delete(context.Background(), rec.Audio.Key)
 		_, _ = store.New(pool).MarkRecordingAudioDeleted(context.Background(), rec.ID, rec.Audio.Key)
@@ -425,8 +425,8 @@ func TestTranscribeCleansModelOutputBeforeStoringIt(t *testing.T) {
 	client := transcribetest.Returning(transcribe.Transcript{
 		Text: "ignored",
 		Segments: []transcribe.Segment{
-			{Start: -time.Second, End: time.Second, Text: "<script>alert(1)</script>‮\x1b[31m ok"},
-			{Start: time.Second, End: 2 * time.Second, Text: "​⁠"},
+			{Start: -time.Second, End: time.Second, Text: "<script>alert(1)</script>\u202e\x1b[31m ok"},
+			{Start: time.Second, End: 2 * time.Second, Text: "\u200b\u2060"},
 		},
 	})
 	h := start(t, pool, jobs.Config{Storage: bucket, Transcription: jobs.Transcription{Client: client}})

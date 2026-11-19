@@ -123,9 +123,9 @@ func TestTranscriptInputCleansAndBoundsModelOutput(t *testing.T) {
 	got, err := TranscriptInput(uuid.Nil, transcribe.Transcript{
 		Text: "ignored when there are segments",
 		Segments: []transcribe.Segment{
-			{Start: -5 * ms, End: 100 * ms, Text: " Call‮ to\x00 order.\n\nRoll​ call ", Speaker: "c0/speaker_0⁦"},
+			{Start: -5 * ms, End: 100 * ms, Text: " Call\u202e to\x00 order.\n\nRoll\u200b call ", Speaker: "c0/speaker_0\u2066"},
 			{Start: 200 * ms, End: 150 * ms, Text: "\U000E0041hidden tag\U000E007F"},
-			{Start: 300 * ms, End: 400 * ms, Text: " \t‍ "},
+			{Start: 300 * ms, End: 400 * ms, Text: " \t\u200d "},
 			{Start: 500 * ms, End: 600 * ms, Text: strings.Repeat("é", MaxSegmentBytes), Speaker: strings.Repeat("s", 200)},
 		},
 	})
@@ -152,7 +152,7 @@ func TestTranscriptInputCleansAndBoundsModelOutput(t *testing.T) {
 }
 
 func TestTranscriptInputWithoutSegmentsKeepsTheCleanedText(t *testing.T) {
-	got, err := TranscriptInput(uuid.Nil, transcribe.Transcript{Text: "  Silence.⁧\x07 "})
+	got, err := TranscriptInput(uuid.Nil, transcribe.Transcript{Text: "  Silence.\u2067\x07 "})
 	if err != nil || got.Text != "Silence." || len(got.Segments) != 0 {
 		t.Errorf("got %+v, %v", got, err)
 	}
