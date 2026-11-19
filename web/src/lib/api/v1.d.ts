@@ -267,8 +267,6 @@ export interface components {
        */
       endMs: number;
       text: string;
-      /** @description Opaque speaker label. Segments with the same label have the same speaker, but two labels may still be the same person. Absent when the speaker is unknown. */
-      speaker?: string;
     };
     User: {
       /**

@@ -57,11 +57,7 @@ func apiTranscript(t *store.Transcript) *v1.Transcript {
 	}
 	segments := make([]v1.TranscriptSegment, 0, len(t.Segments))
 	for _, s := range t.Segments {
-		segment := v1.TranscriptSegment{StartMs: s.Start.Milliseconds(), EndMs: s.End.Milliseconds(), Text: s.Text}
-		if speaker := s.Speaker; speaker != "" {
-			segment.Speaker = &speaker
-		}
-		segments = append(segments, segment)
+		segments = append(segments, v1.TranscriptSegment{StartMs: s.Start.Milliseconds(), EndMs: s.End.Milliseconds(), Text: s.Text})
 	}
 	return &v1.Transcript{Summary: t.Summary, Segments: segments}
 }

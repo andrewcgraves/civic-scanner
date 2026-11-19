@@ -84,8 +84,7 @@ func TestGetMeetingAgainstPostgres(t *testing.T) {
 	}
 	first, second := detail.Recordings[0], detail.Recordings[1]
 	if first.SourceUrl != "https://example.com/video/1" || first.Transcript == nil || first.Transcript.Summary != nil ||
-		len(first.Transcript.Segments) != 1 || first.Transcript.Segments[0].StartMs != 250 || first.Transcript.Segments[0].EndMs != 1250 ||
-		first.Transcript.Segments[0].Speaker == nil || *first.Transcript.Segments[0].Speaker != "c0/speaker_1" {
+		len(first.Transcript.Segments) != 1 || first.Transcript.Segments[0].StartMs != 250 || first.Transcript.Segments[0].EndMs != 1250 {
 		t.Errorf("first recording = %+v", first)
 	}
 	if second.SourceUrl != "https://example.com/video/2" || second.Transcript != nil {
@@ -93,7 +92,7 @@ func TestGetMeetingAgainstPostgres(t *testing.T) {
 	}
 
 	_, raw := getBody(t, srv.URL+"/v1/meetings/"+full.String())
-	for _, hidden := range []string{audioKey, agendaText, "audio", "expires"} {
+	for _, hidden := range []string{audioKey, agendaText, "audio", "expires", "speaker", "c0/speaker_1"} {
 		if strings.Contains(raw, hidden) {
 			t.Errorf("response exposes %q: %s", hidden, raw)
 		}
