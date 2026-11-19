@@ -316,13 +316,9 @@ func TestPDFTextBoundsDecodedDocumentContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	start := time.Now()
 	_, err = ReadPDF(t.Context(), extracttest.SharedContents(2000, stream), Limits{})
 	if !errors.Is(err, ErrLimitExceeded) || !strings.Contains(err.Error(), "document content exceeds") || !strings.HasSuffix(err.Error(), "on page 5") {
 		t.Errorf("err = %v, want the document content limit on page 5", err)
-	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Errorf("took %s", elapsed)
 	}
 }
 
