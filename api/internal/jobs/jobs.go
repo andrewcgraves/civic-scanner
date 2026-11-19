@@ -38,6 +38,7 @@ type Config struct {
 	AudioFollowUp  AudioFollowUp
 	AudioQueue     string
 	AudioTempDir   string
+	Transcription  Transcription
 	LLM            llm.Client
 	SummaryTier    llm.Tier
 	LLMTimeout     time.Duration
@@ -71,8 +72,9 @@ func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
 		c.Storage = unconfiguredStorage()
 	}
 	if c.AudioFollowUp == nil {
-		c.AudioFollowUp = NoAudioFollowUp{}
+		c.AudioFollowUp = EnqueueTranscribeAudio{Queue: c.AudioQueue, Enabled: c.Enabled, Logger: logger}
 	}
+	c.Transcription = c.Transcription.withDefaults()
 	if c.Extractor == nil {
 		c.Extractor = extract.New(config.Extract{})
 	}
@@ -140,6 +142,22 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		enabled: cfg.Enabled,
 		queue:   cfg.Queue,
 	})
+	river.AddWorker(workers, &TranscribeAudioWorker{
+		logger:   logger,
+		pool:     pool,
+		store:    st,
+		storage:  cfg.Storage,
+		settings: cfg.Transcription,
+		enabled:  cfg.Enabled,
+		tempDir:  cfg.AudioTempDir,
+	})
+	river.AddWorker(workers, &EnqueueTranscriptionsWorker{
+		logger:      logger,
+		store:       st,
+		transcriber: cfg.Transcription.Client,
+		enabled:     cfg.Enabled,
+		queue:       cfg.AudioQueue,
+	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,
 		store:   st,
@@ -158,6 +176,11 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 			river.PeriodicInterval(summarySweepInterval),
 			periodicSummarySweep(cfg.Clock, cfg.Queue),
 			&river.PeriodicJobOpts{ID: EnqueueAgendaSummariesArgs{}.Kind(), RunOnStart: true},
+		))
+		periodic = append(periodic, river.NewPeriodicJob(
+			river.PeriodicInterval(transcriptSweepInterval),
+			periodicTranscriptSweep(cfg.Clock, cfg.Queue),
+			&river.PeriodicJobOpts{ID: EnqueueTranscriptionsArgs{}.Kind(), RunOnStart: true},
 		))
 	}
 

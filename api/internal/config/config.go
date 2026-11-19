@@ -18,6 +18,7 @@ type Config struct {
 
 	FeatureFlags  FeatureFlags
 	Transcription Transcription
+	Transcribe    TranscriptionJob
 	Ingest        Ingest
 	Extract       Extract
 	Audio         Audio
@@ -50,6 +51,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Transcription, err = loadTranscription(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Transcribe, err = loadTranscriptionJob(); err != nil {
 		return Config{}, err
 	}
 	if cfg.FeatureFlags, err = loadFeatureFlags(); err != nil {
