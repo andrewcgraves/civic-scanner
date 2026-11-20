@@ -104,3 +104,22 @@ func TestVCTCIsRegisteredForTheCommissionPostsOnly(t *testing.T) {
 		t.Errorf("requests = %+v, want one to the goventura.org meeting posts of types 25 and 33 and none to YouTube", calls)
 	}
 }
+
+func TestSBCTAIsRegisteredAsAPrimeGovAdapter(t *testing.T) {
+	fake := fetchtest.Returning("[]")
+	now := time.Date(2026, 11, 19, 13, 0, 0, 0, time.UTC)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fake, Clock: sourcestest.NewClock(now)}, adapters)
+
+	adapter, ok := registry.Lookup("sbcta")
+	if !ok {
+		t.Fatalf("no adapter for sbcta; registered: %v", registry.Slugs())
+	}
+	if _, err := adapter.Meetings(t.Context(), sources.Window{From: now.AddDate(0, 0, -30), To: now.AddDate(0, 0, 90)}); err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.Calls()
+	if len(calls) != 2 || calls[0].URL != "https://sbcta.primegov.com/api/v2/PublicPortal/ListUpcomingMeetings" ||
+		calls[1].URL != "https://sbcta.primegov.com/api/v2/PublicPortal/ListArchivedMeetings?year=2026" {
+		t.Errorf("requests = %+v, want the SBCTA PrimeGov upcoming and 2026 archived lists", calls)
+	}
+}
