@@ -7,7 +7,7 @@
 The only exceptions:
 
 - Functional directives, which tools read: `//go:generate`, `//go:build`, `//go:embed`, bare `//nolint:<linter>`, goose `-- +goose ...` annotations, `-- squawk-ignore <rule>`, `-- migration: contract`, `eslint-disable` lines, shebangs, the `# vX.Y.Z` version after a pinned action SHA in workflows, the `## ` target descriptions in the `Makefile` (printed by `make help`), and editor type or schema directives (`# yaml-language-server: $schema=...`, `/** @type {...} */`).
-- Generated files, which are never edited by hand: `api/internal/httpapi/v1/api.gen.go`, `web/src/lib/api/v1.d.ts`, `web/pnpm-lock.yaml`.
+- Generated files, which are never edited by hand: `api/internal/httpapi/v1/api.gen.go`, `web/src/lib/api/v1.d.ts`, `web/pnpm-lock.yaml`, `pnpm-lock.yaml`.
 
 Do not add a comment to satisfy a linter. The doc-comment lint rules are disabled in `api/.golangci.yml`.
 
@@ -17,7 +17,7 @@ Do not add a comment to satisfy a linter. The doc-comment lint rules are disable
 - `api/`: Go API. Binaries in `api/cmd/` (`api`, `migrate`, `worker`), goose migrations in `api/migrations/`.
 - `web/`: Next.js front end (pnpm, Node 26).
 - `.github/`: CI workflow, scripts, Dependabot, ruleset for `main`.
-- `.railway/`: Railway infrastructure as code (`railway.ts`). Change Railway settings there and run `railway config plan`; never `railway config apply` without the user's approval.
+- `.railway/`: Railway infrastructure as code (`railway.ts`). Change Railway settings there in a pull request: the `Railway config` workflow comments the plan on the pull request and applies it on merge. Run `railway config plan` to preview locally; never run `railway config apply` by hand without the user's approval.
 
 ## OpenAPI-first workflow
 
