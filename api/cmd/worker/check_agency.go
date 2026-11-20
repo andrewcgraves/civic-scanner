@@ -48,8 +48,12 @@ With no arguments, runs the worker.
 const checkHelp = `usage: worker check-agency (<agency-slug> | --all)
 
 Enqueues a manual check_agency job, which also re-reads every agenda in the
-check window, and exits. It needs DATABASE_URL and the ingest-check-agencies
-flag on, and never starts the worker.
+check window, and exits. A manual check bypasses the agenda refresh cutoff, so
+it also re-reads the agendas of meetings that started more than
+INGEST_AGENDA_REFRESH_GRACE (48h by default) ago, which the daily check no
+longer downloads.
+It needs DATABASE_URL and the ingest-check-agencies flag on, and never starts
+the worker.
 
   <agency-slug>     check one live agency that has a source adapter
   --all             check every live agency that has a source adapter

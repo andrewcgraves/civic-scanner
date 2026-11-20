@@ -264,7 +264,10 @@ describe("callApiAsUser", () => {
 
     expect(
       await callApiAsUser((api) => api.POST("/billing/checkout-session")),
-    ).toEqual({ status: "conflict" });
+    ).toEqual({
+      status: "conflict",
+      error: { code: "already_subscribed", message: "x" },
+    });
     expect(mocks.refreshSession).not.toHaveBeenCalled();
   });
 
@@ -276,6 +279,23 @@ describe("callApiAsUser", () => {
       status: "not-found",
     });
   });
+
+  it.each([400, 413, 415, 422, 429])(
+    "reports a %i as rejected with its error body",
+    async (status) => {
+      const { callApiAsUser } = await load([
+        apiResponse(status, { code: "nope", message: "x" }),
+      ]);
+
+      expect(await callApiAsUser((api) => api.GET("/me"))).toEqual({
+        status: "rejected",
+        httpStatus: status,
+        error: { code: "nope", message: "x" },
+      });
+      expect(mocks.refreshSession).not.toHaveBeenCalled();
+      expect(console.warn).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["a server error", apiResponse(500, { code: "internal", message: "x" })],

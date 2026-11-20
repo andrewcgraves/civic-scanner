@@ -1,17 +1,22 @@
 import { MeetingTime } from "@/components/ui/date-time";
 import { ExternalLink, isWebUrl } from "@/components/ui/external-link";
 import { LinkList, LinkListItem } from "@/components/ui/link-list";
-import { MeetingStatusBadge } from "@/components/ui/meeting-status-badge";
+import {
+  MeetingStatusBadge,
+  meetingDisplay,
+} from "@/components/ui/meeting-status-badge";
 import type { MeetingSummary } from "@/lib/api/client";
 
 export function AgencyMeetingList({
   label,
   meetings,
   linkToMeetings,
+  now,
 }: {
   label: string;
   meetings: readonly MeetingSummary[];
   linkToMeetings: boolean;
+  now: Date;
 }) {
   return (
     <LinkList label={label}>
@@ -25,7 +30,11 @@ export function AgencyMeetingList({
           }
           title={meeting.title}
           meta={<MeetingTime value={meeting.startsAt} />}
-          aside={<MeetingStatusBadge status={meeting.status} />}
+          aside={
+            <MeetingStatusBadge
+              display={meetingDisplay(meeting.status, meeting.startsAt, now)}
+            />
+          }
           description={
             linkToMeetings || !isWebUrl(meeting.sourceUrl) ? undefined : (
               <ExternalLink href={meeting.sourceUrl}>

@@ -148,6 +148,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/agency-submissions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Submit an agency for review
+     * @description Creates a pending agency from a name and a website, recorded as submitted by the signed-in user. A pending agency never appears in any public response. The token is checked first, then the `agency-submissions` and `accounts` flags for that user, then the body: at most 16 KiB, `Content-Type: application/json` (a `charset`, if given, must be `utf-8`), and exactly one JSON object whose only members are the strings `name` and `website`, each at most once, with nothing after it. A website whose site is already on file, for an agency of any status, is a 409. A user with too many submissions awaiting review gets a 429. The submitted website is never fetched. Every response carries `Cache-Control: no-store`.
+     */
+    post: operations["createAgencySubmission"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/billing/checkout-session": {
     parameters: {
       query?: never;
@@ -334,6 +354,43 @@ export interface components {
        */
       createdAt: string;
     };
+    AgencySubmissionInput: {
+      /** @description The agency's name, plain text. Surrounding and repeated whitespace is collapsed; 2 to 200 characters after that, with at least one letter or digit and no control or invisible formatting characters. */
+      name: string;
+      /** @description The agency's website, an `http` or `https` URL on a public host name, at most 2,048 characters. Without a scheme, `https://` is assumed. */
+      website: string;
+    };
+    AgencySubmission: {
+      /** Format: uuid */
+      id: string;
+      /** @description The name as stored, after trimming. */
+      name: string;
+      /**
+       * Format: uri
+       * @description The website as stored: scheme, lower-case host and path, without query, fragment, default port or trailing slash.
+       */
+      website: string;
+      /** @enum {string} */
+      status: "pending";
+      /** Format: date-time */
+      submittedAt: string;
+    };
+    ValidationError: {
+      /** @description Stable machine-readable error code. */
+      code: string;
+      /** @description Human-readable explanation. */
+      message: string;
+      /** @description One entry per invalid field, when the fields could be read. */
+      fields?: components["schemas"]["FieldError"][];
+    };
+    FieldError: {
+      /** @enum {string} */
+      field: "name" | "website";
+      /** @description Why the field is invalid: `required`, `too_short`, `too_long` or `invalid_characters` for `name`; `required`, `too_long`, `invalid_url`, `unsupported_scheme`, `credentials`, `port`, `ip_address`, `not_public` or `invalid_host` for `website`. */
+      code: string;
+      /** @description Human-readable explanation, fit to show next to the field. */
+      message: string;
+    };
     Error: {
       /** @description Stable machine-readable error code. */
       code: string;
@@ -446,6 +503,56 @@ export interface components {
     /** @description No live agency has this slug, no meeting of a live agency has this id, or the route is turned off for the signed-in user. */
     NotFound: {
       headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The body is not valid. `code` is `invalid_body`, with no `fields`, when it is not a single JSON object, has a member other than `name` and `website`, names a member twice, has a member that is not a string, or has data after the object; `code` is `invalid_submission` when a field is invalid, with one entry in `fields` per invalid field. A missing member counts as empty. */
+    InvalidSubmission: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["ValidationError"];
+      };
+    };
+    /** @description An agency with the same site is already on file. `code` is `already_on_file`; the response says nothing about that agency. */
+    AlreadyOnFile: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The body is larger than the endpoint accepts. `code` is `body_too_large`. */
+    PayloadTooLarge: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The body is not declared as `application/json` in UTF-8. `code` is `unsupported_media_type`. */
+    UnsupportedMediaType: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The user already has as many submissions awaiting review as one user may have. `code` is `submission_limit_reached`. Waiting does not help; the limit frees up as submissions are reviewed. */
+    SubmissionLimit: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
         [name: string]: unknown;
       };
       content: {
@@ -734,6 +841,49 @@ export interface operations {
       401: components["responses"]["Unauthorized"];
       404: components["responses"]["NotFound"];
       405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  createAgencySubmission: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AgencySubmissionInput"];
+      };
+    };
+    responses: {
+      /** @description The agency was submitted and is pending review. */
+      201: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgencySubmission"];
+        };
+      };
+      400: components["responses"]["InvalidSubmission"];
+      401: components["responses"]["Unauthorized"];
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      409: components["responses"]["AlreadyOnFile"];
+      413: components["responses"]["PayloadTooLarge"];
+      415: components["responses"]["UnsupportedMediaType"];
+      429: components["responses"]["SubmissionLimit"];
       503: components["responses"]["AuthUnavailable"];
       /** @description Unexpected error. */
       default: {

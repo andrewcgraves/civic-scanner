@@ -70,8 +70,10 @@ describe("proxy", () => {
     answer();
   });
 
-  it("runs only for the session route and the billing page", () => {
-    expect(config).toEqual({ matcher: ["/auth/session", "/billing"] });
+  it("runs only for the session route, the billing page and the agency submission page", () => {
+    expect(config).toEqual({
+      matcher: ["/auth/session", "/billing", "/submit-agency"],
+    });
   });
 
   it.each([[{ kind: "off" }], [{ kind: "invalid", problems: ["x"] }]])(

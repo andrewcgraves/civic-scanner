@@ -64,6 +64,29 @@ func TestMetrolinkIsRegisteredAsAGranicusAdapter(t *testing.T) {
 	}
 }
 
+func TestRCTCIsRegisteredForTheMeetingsPage(t *testing.T) {
+	page := `<table><tr><th>DATE &amp; TIME</th><th>MEETING</th></tr><tr><td>NOVEMBER 10, 2026 &#8211; 9:30 AM</td><td><a href="https://www.rctc.org/november2026agenda">COMMISSION MEETING</a></td></tr></table>`
+	fake := fetchtest.Returning(page)
+	now := time.Date(2026, 11, 19, 13, 0, 0, 0, time.UTC)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fake, Clock: sourcestest.NewClock(now)}, adapters)
+
+	adapter, ok := registry.Lookup("rctc")
+	if !ok {
+		t.Fatalf("no adapter for rctc; registered: %v", registry.Slugs())
+	}
+	got, err := adapter.Meetings(t.Context(), sources.Window{From: now.AddDate(0, 0, -30), To: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].SourceID != "commission-meeting/2026-11" {
+		t.Errorf("meetings = %+v, want the November commission meeting", got)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].URL != "https://www.rctc.org/meetings-and-agendas/" {
+		t.Errorf("requests = %+v, want one to the RCTC meetings page", calls)
+	}
+}
+
 func TestVCTCIsRegisteredForTheCommissionPostsOnly(t *testing.T) {
 	fake := fetchtest.Returning("[]")
 	now := time.Date(2026, 11, 18, 13, 0, 0, 0, time.UTC)
@@ -79,5 +102,24 @@ func TestVCTCIsRegisteredForTheCommissionPostsOnly(t *testing.T) {
 	calls := fake.Calls()
 	if len(calls) != 1 || !strings.HasPrefix(calls[0].URL, "https://www.goventura.org/wp-json/wp/v2/meeting?") || !strings.Contains(calls[0].URL, "meeting_type=25%2C33") {
 		t.Errorf("requests = %+v, want one to the goventura.org meeting posts of types 25 and 33 and none to YouTube", calls)
+	}
+}
+
+func TestSBCTAIsRegisteredAsAPrimeGovAdapter(t *testing.T) {
+	fake := fetchtest.Returning("[]")
+	now := time.Date(2026, 11, 19, 13, 0, 0, 0, time.UTC)
+	registry := sources.NewRegistry(sources.Deps{Fetcher: fake, Clock: sourcestest.NewClock(now)}, adapters)
+
+	adapter, ok := registry.Lookup("sbcta")
+	if !ok {
+		t.Fatalf("no adapter for sbcta; registered: %v", registry.Slugs())
+	}
+	if _, err := adapter.Meetings(t.Context(), sources.Window{From: now.AddDate(0, 0, -30), To: now.AddDate(0, 0, 90)}); err != nil {
+		t.Fatal(err)
+	}
+	calls := fake.Calls()
+	if len(calls) != 2 || calls[0].URL != "https://sbcta.primegov.com/api/v2/PublicPortal/ListUpcomingMeetings" ||
+		calls[1].URL != "https://sbcta.primegov.com/api/v2/PublicPortal/ListArchivedMeetings?year=2026" {
+		t.Errorf("requests = %+v, want the SBCTA PrimeGov upcoming and 2026 archived lists", calls)
 	}
 }

@@ -62,6 +62,11 @@ type meServer struct {
 
 func newMeServer(t *testing.T, flagOn bool) meServer {
 	t.Helper()
+	return newAuthServer(t, func(_ context.Context, flag string) bool { return flagOn && flag == httpapi.FlagAccounts })
+}
+
+func newAuthServer(t *testing.T, flags func(context.Context, string) bool, opts ...httpapi.HandlerOption) meServer {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -87,8 +92,7 @@ func newMeServer(t *testing.T, flagOn bool) meServer {
 
 	pool := testdb.Pool(t)
 	logger := slog.New(slog.DiscardHandler)
-	flags := func(_ context.Context, flag string) bool { return flagOn && flag == httpapi.FlagAccounts }
-	h := httpapi.NewHandler(store.New(pool), logger, "test", httpapi.WithAuthenticator(verifier), httpapi.WithFlags(flags))
+	h := httpapi.NewHandler(store.New(pool), logger, "test", append([]httpapi.HandlerOption{httpapi.WithAuthenticator(verifier), httpapi.WithFlags(flags)}, opts...)...)
 	srv := httptest.NewServer(httpapi.NewRouter(h, logger))
 	t.Cleanup(srv.Close)
 

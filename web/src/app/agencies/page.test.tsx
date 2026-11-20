@@ -54,6 +54,7 @@ describe("AgenciesPage", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
@@ -125,6 +126,41 @@ describe("AgenciesPage", () => {
     expect(links).toHaveLength(1);
     expect(links[0]).toHaveAttribute("href", "https://www.metro.net");
     expect(screen.getByText("Metrolink")).toBeInTheDocument();
+  });
+
+  it("offers to suggest an agency when sign-in and submissions are on", async () => {
+    vi.stubEnv(
+      "NEXT_PUBLIC_WORKOS_REDIRECT_URI",
+      "https://civic.example/auth/callback",
+    );
+    flags.on = ["accounts", "agency-submissions"];
+    await respondWithAgencies();
+
+    expect(
+      screen.getByRole("link", { name: "Suggest an agency" }),
+    ).toHaveAttribute("href", "/submit-agency");
+  });
+
+  it.each([
+    [
+      "submissions are off",
+      ["accounts"],
+      "https://civic.example/auth/callback",
+    ],
+    [
+      "accounts are off",
+      ["agency-submissions"],
+      "https://civic.example/auth/callback",
+    ],
+    ["sign-in is not configured", ["accounts", "agency-submissions"], ""],
+  ])("does not offer suggestions when %s", async (_name, on, redirectUri) => {
+    vi.stubEnv("NEXT_PUBLIC_WORKOS_REDIRECT_URI", redirectUri);
+    flags.on = on;
+    await respondWithAgencies();
+
+    expect(
+      screen.queryByRole("link", { name: "Suggest an agency" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the empty state when there are no agencies", async () => {

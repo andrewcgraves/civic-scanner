@@ -69,8 +69,8 @@ func TestAddAgendaVersionNumbersNewContentAndSkipsUnchanged(t *testing.T) {
 	if err != nil || created {
 		t.Fatalf("unchanged add = (created %v, err %v), want not created", created, err)
 	}
-	if same.ID != first.ID || same.Version != 1 || same.SourceURL != first.SourceURL {
-		t.Errorf("unchanged add returned %+v, want the existing version %+v", same, first)
+	if same.ID != first.ID || same.Version != 1 || same.SourceURL != again.SourceURL || same.ContentHash != first.ContentHash {
+		t.Errorf("unchanged add from another url returned %+v, want the existing version %+v moved to %s", same, first, again.SourceURL)
 	}
 
 	second, created, err := s.AddAgendaVersion(ctx, agendaInput(meetingID, "agenda two"))

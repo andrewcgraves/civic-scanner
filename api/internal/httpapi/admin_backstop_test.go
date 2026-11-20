@@ -179,6 +179,7 @@ func TestRootMiddlewareOrderKeepsTheGateLast(t *testing.T) {
 		"httpapi.requestLogger.func1",
 		"httpapi.recoverer.func1",
 		"httpapi.joinHeaderLines.func1",
+		"httpapi.captureBody.func1",
 		"httpapi.authenticate.func1",
 		"httpapi.(*Handler).adminGate.func1",
 	}
