@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MeetingDetail } from "@/lib/api/client";
 
@@ -55,6 +55,14 @@ const MEETING: MeetingDetail = {
 
 const ALL_FLAGS = "meeting-pages,agency-pages";
 
+const NOW = new Date("2027-01-15T12:00:00Z");
+const PASSED = { ...MEETING, startsAt: "2027-01-15T11:59:59Z" };
+
+function freezeClock() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+}
+
 function respondWith(body: unknown, status = 200) {
   return () => Promise.resolve(Response.json(body, { status }));
 }
@@ -83,7 +91,10 @@ async function renderPage(
 }
 
 describe("MeetingPage", () => {
+  beforeEach(freezeClock);
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     next.transcriptSection.mockClear();
@@ -95,7 +106,8 @@ describe("MeetingPage", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: "Regular Board Meeting" }),
     ).toBeVisible();
-    expect(screen.getByText("Scheduled")).toBeInTheDocument();
+    expect(screen.getByText("Scheduled")).toHaveClass("bg-scheduled-surface");
+    expect(screen.queryByText("Date passed")).not.toBeInTheDocument();
     expect(
       screen.getByText("Wednesday, January 20, 2027 at 9:00 AM PST"),
     ).toHaveAttribute("dateTime", "2027-01-20T17:00:00Z");
@@ -171,6 +183,48 @@ describe("MeetingPage", () => {
     expect(screen.queryByText(/has been cancelled/)).not.toBeInTheDocument();
   });
 
+  it("shows a scheduled meeting whose date has passed as date passed, without calling it upcoming or held", async () => {
+    await renderPage(respondWith(PASSED));
+
+    expect(screen.getByText("Date passed")).toHaveClass("bg-surface-muted");
+    expect(screen.queryByText("Scheduled")).not.toBeInTheDocument();
+    expect(screen.queryByText("Held")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "The date of this meeting has passed, and Civic Scanner has no confirmation from LA Metro's site that it took place.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/has been cancelled/)).not.toBeInTheDocument();
+    expect(next.transcriptSection.mock.calls[0]?.[0]).toEqual({
+      meeting: PASSED,
+      display: "date-passed",
+    });
+  });
+
+  it("keeps a scheduled meeting starting exactly now scheduled", async () => {
+    await renderPage(respondWith({ ...MEETING, startsAt: NOW.toISOString() }));
+
+    expect(screen.getByText("Scheduled")).toBeInTheDocument();
+    expect(screen.queryByText(/date of this meeting has passed/)).toBeNull();
+  });
+
+  it.each([
+    ["held", "Held"],
+    ["cancelled", "Cancelled"],
+  ] as const)(
+    "keeps a past %s meeting's badge and does not say its date passed",
+    async (status, label) => {
+      await renderPage(respondWith({ ...PASSED, status }));
+
+      expect(screen.getByText(label)).toHaveClass(`bg-${status}-surface`);
+      expect(screen.queryByText("Date passed")).not.toBeInTheDocument();
+      expect(screen.queryByText(/date of this meeting has passed/)).toBeNull();
+      expect(next.transcriptSection.mock.calls[0]?.[0]).toMatchObject({
+        display: status,
+      });
+    },
+  );
+
   it("says prominently that a cancelled meeting is cancelled", async () => {
     await renderPage(respondWith({ ...MEETING, status: "cancelled" }));
 
@@ -193,6 +247,7 @@ describe("MeetingPage", () => {
     expect(next.transcriptSection).toHaveBeenCalledTimes(1);
     expect(next.transcriptSection.mock.calls[0]?.[0]).toEqual({
       meeting: MEETING,
+      display: "scheduled",
     });
     const transcript = screen.getByText("transcript section");
     expect(
@@ -256,7 +311,10 @@ describe("MeetingPage", () => {
 });
 
 describe("generateMetadata", () => {
+  beforeEach(freezeClock);
+
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -283,6 +341,30 @@ describe("generateMetadata", () => {
     expect(await generateMetadata({ params })).toMatchObject({
       description:
         "Regular Board Meeting, a meeting of LA Metro scheduled for Wednesday, January 20, 2027, has been cancelled.",
+    });
+  });
+
+  it("says a scheduled meeting whose date has passed is unconfirmed", async () => {
+    const { generateMetadata, params } = await loadPage(
+      ALL_FLAGS,
+      respondWith(PASSED),
+    );
+
+    expect(await generateMetadata({ params })).toMatchObject({
+      description:
+        "Regular Board Meeting, a meeting of LA Metro scheduled for Friday, January 15, 2027. The date has passed; Civic Scanner has no confirmation that it took place.",
+    });
+  });
+
+  it("describes a past held meeting plainly", async () => {
+    const { generateMetadata, params } = await loadPage(
+      ALL_FLAGS,
+      respondWith({ ...PASSED, status: "held" }),
+    );
+
+    expect(await generateMetadata({ params })).toMatchObject({
+      description:
+        "Regular Board Meeting, a meeting of LA Metro on Friday, January 15, 2027.",
     });
   });
 
