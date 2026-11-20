@@ -28,7 +28,7 @@ const shutdownTimeout = 25 * time.Second
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err := dispatch(ctx, os.Args[1:], os.Stdout)
+	err := dispatch(ctx, os.Args[1:], os.Stdout, os.Stderr)
 	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "worker:", err)
@@ -36,12 +36,15 @@ func main() {
 	}
 }
 
-func dispatch(ctx context.Context, args []string, stdout io.Writer) error {
+func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	switch {
 	case len(args) == 0:
 		return run(ctx)
+	case len(args) == 1 && isHelp(args[0]):
+		_, err := io.WriteString(stdout, workerHelp)
+		return err
 	case args[0] == checkAgencyCommand:
-		return checkAgency(ctx, args[1:], stdout, river.QueueDefault)
+		return checkAgency(ctx, args[1:], stdout, stderr, river.QueueDefault)
 	default:
 		return errWorkerUsage
 	}

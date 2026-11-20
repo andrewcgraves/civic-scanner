@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	TriggerScheduled = "scheduled"
-	TriggerManual    = "manual"
+	triggerScheduled = "scheduled"
+	triggerManual    = "manual"
 )
 
 type ManualCheck struct {
@@ -38,9 +38,9 @@ func manualUniqueOpts() river.UniqueOpts {
 
 func trigger(manual bool) string {
 	if manual {
-		return TriggerManual
+		return triggerManual
 	}
-	return TriggerScheduled
+	return triggerScheduled
 }
 
 func EnqueueManualChecks(ctx context.Context, client *river.Client[pgx.Tx], queue string, slugs []string) ([]ManualCheck, error) {

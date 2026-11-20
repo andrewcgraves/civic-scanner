@@ -20,6 +20,21 @@ func TestBinaryExitsWithErrorOnBadConfig(t *testing.T) {
 	}
 }
 
+func TestBinaryHelpExitsZero(t *testing.T) {
+	bin := testbin.Build(t)
+	for args, want := range map[string]string{"--help": workerHelp, "check-agency -h": checkHelp} {
+		cmd := testbin.Command(t, bin, []string{"DATABASE_URL="}, strings.Fields(args)...)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if code := testbin.ExitCode(t, cmd.Run()); code != 0 {
+			t.Errorf("worker %s: exit code = %d, want 0", args, code)
+		}
+		if stdout.String() != want || stderr.String() != "" {
+			t.Errorf("worker %s: stdout = %q, stderr = %q; want stdout %q", args, stdout.String(), stderr.String(), want)
+		}
+	}
+}
+
 func TestBinaryCheckAgencyExitsWithAnError(t *testing.T) {
 	cases := map[string]struct {
 		args []string

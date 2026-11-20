@@ -2,9 +2,11 @@ package main
 
 import (
 	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/riverqueue/river/rivertype"
 
@@ -111,17 +113,17 @@ func TestReport(t *testing.T) {
 }
 
 func TestDispatchRejectsUnknownCommands(t *testing.T) {
-	if err := dispatch(t.Context(), []string{"check"}, nil); !errors.Is(err, errWorkerUsage) {
+	if err := dispatch(t.Context(), []string{"check"}, io.Discard, io.Discard); !errors.Is(err, errWorkerUsage) {
 		t.Errorf("dispatch(check) = %v, want the usage error", err)
 	}
-	if err := dispatch(t.Context(), []string{checkAgencyCommand}, nil); !errors.Is(err, errCheckUsage) {
+	if err := dispatch(t.Context(), []string{checkAgencyCommand}, io.Discard, io.Discard); !errors.Is(err, errCheckUsage) {
 		t.Errorf("dispatch(check-agency) = %v, want the check usage error", err)
 	}
 }
 
 func TestCheckAgencyRequiresDatabaseURL(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
-	err := dispatch(t.Context(), []string{checkAgencyCommand, "la-metro"}, nil)
+	err := dispatch(t.Context(), []string{checkAgencyCommand, "la-metro"}, io.Discard, io.Discard)
 	if err == nil || err.Error() != "DATABASE_URL is required" {
 		t.Errorf("error = %v, want DATABASE_URL is required", err)
 	}
@@ -129,7 +131,52 @@ func TestCheckAgencyRequiresDatabaseURL(t *testing.T) {
 
 func TestCheckAgencyFailsWhenDatabaseUnreachable(t *testing.T) {
 	t.Setenv("DATABASE_URL", unreachableDatabaseURL)
-	if err := dispatch(t.Context(), []string{checkAgencyCommand, "--all"}, nil); err == nil || !strings.Contains(err.Error(), "ping database") {
-		t.Errorf("error = %v, want a ping failure", err)
+	err := dispatch(t.Context(), []string{checkAgencyCommand, "--all"}, io.Discard, io.Discard)
+	if err == nil || !strings.HasPrefix(err.Error(), "could not connect to the database (connect timeout 1s); nothing enqueued: ") {
+		t.Errorf("error = %v, want a connect failure naming the timeout", err)
+	}
+}
+
+func TestCommandPoolConfigBoundsTheConnectTimeout(t *testing.T) {
+	cases := map[string]time.Duration{
+		"postgres://u:p@db.internal:5432/civic":                    10 * time.Second,
+		"postgres://u:p@db.internal:5432/civic?connect_timeout=3":  3 * time.Second,
+		"postgres://u:p@db.internal:5432/civic?connect_timeout=75": 10 * time.Second,
+		"postgres://u:p@db.internal:5432/civic?connect_timeout=0":  10 * time.Second,
+	}
+	for url, want := range cases {
+		cfg, err := commandPoolConfig(url)
+		if err != nil {
+			t.Fatalf("commandPoolConfig(%s): %v", url, err)
+		}
+		if got := cfg.ConnConfig.ConnectTimeout; got != want {
+			t.Errorf("connect timeout for %s = %v, want %v", url, got, want)
+		}
+	}
+	if _, err := commandPoolConfig("postgres://u:p@db.internal:notaport/civic"); err == nil || !strings.HasPrefix(err.Error(), "parse DATABASE_URL: ") {
+		t.Errorf("bad URL error = %v", err)
+	}
+}
+
+func TestHelpPrintsUsageAndSucceeds(t *testing.T) {
+	cases := map[string]string{}
+	for _, h := range []string{"-h", "--help", "help"} {
+		cases[h] = workerHelp
+		cases[checkAgencyCommand+" "+h] = checkHelp
+	}
+	t.Setenv("DATABASE_URL", "")
+	for args, want := range cases {
+		var out strings.Builder
+		if err := dispatch(t.Context(), strings.Fields(args), &out, io.Discard); err != nil {
+			t.Errorf("dispatch(%s) = %v, want nil", args, err)
+		}
+		if out.String() != want {
+			t.Errorf("dispatch(%s) printed %q, want %q", args, out.String(), want)
+		}
+	}
+	for _, args := range []string{"help extra", "check-agency --help extra"} {
+		if err := dispatch(t.Context(), strings.Fields(args), io.Discard, io.Discard); err == nil {
+			t.Errorf("dispatch(%s) succeeded, want a usage error", args)
+		}
 	}
 }

@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -67,7 +70,7 @@ func queuedChecks(t *testing.T, pool *pgxpool.Pool, queue string) map[string]que
 func runCheck(t *testing.T, queue string, args ...string) (string, error) {
 	t.Helper()
 	var out strings.Builder
-	err := checkAgency(t.Context(), args, &out, queue)
+	err := checkAgency(t.Context(), args, &out, io.Discard, queue)
 	return out.String(), err
 }
 
@@ -160,6 +163,24 @@ func TestCheckAgencyCommandRefusesAndEnqueuesNothing(t *testing.T) {
 		t.Setenv("FEATURE_FLAGS", "")
 		if _, err := runCheck(t, queue, "--all"); !errors.Is(err, errCheckFlagOff) {
 			t.Errorf("error = %v, want %v", err, errCheckFlagOff)
+		}
+	})
+
+	t.Run("flag provider failing", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("FEATURE_FLAGS", jobs.FlagCheckAgencies)
+		t.Setenv("POSTHOG_API_KEY", "phc_test")
+		t.Setenv("POSTHOG_HOST", srv.URL)
+		var stdout, stderr strings.Builder
+		err := checkAgency(t.Context(), []string{"--all"}, &stdout, &stderr, queue)
+		if !errors.Is(err, errCheckFlagOff) || !strings.Contains(err.Error(), "is off or could not be evaluated (see any warnings above on stderr)") {
+			t.Errorf("error = %v, want %v", err, errCheckFlagOff)
+		}
+		if !strings.Contains(stderr.String(), `"level":"WARN"`) || stdout.String() != "" {
+			t.Errorf("stderr = %q, stdout = %q; want a warning on stderr and nothing on stdout", stderr.String(), stdout.String())
 		}
 	})
 
