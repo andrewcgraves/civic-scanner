@@ -347,7 +347,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description A query parameter is invalid. `code` is `invalid_cursor` for a bad cursor and `invalid_parameter` for any other parameter. */
+    /** @description A parameter or the request body is invalid. `code` is `invalid_cursor` for a bad cursor, `invalid_parameter` for any other parameter and `invalid_body` for a body that cannot be decoded. */
     BadRequest: {
       headers: {
         [name: string]: unknown;

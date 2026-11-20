@@ -5,9 +5,11 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -118,5 +120,43 @@ func TestSetRoleCommandNeedsTheMigration(t *testing.T) {
 
 	if out, err := runSetRole(t, uuid.NewString(), "admin"); !errors.Is(err, errRoleNotMigrated) || out != "" {
 		t.Errorf("output %q, err %v; want errRoleNotMigrated", out, err)
+	}
+}
+
+func TestSetRoleCommandGivesUpOnALockedUser(t *testing.T) {
+	pool := testdb.Pool(t)
+	u := signedInUser(t, pool, "set_role_locked_"+uuid.NewString()+"@example.com")
+	holder, err := pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.WithoutCancel(t.Context())) })
+	if _, err := holder.Exec(t.Context(), `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, u.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	err = applyRole(t.Context(), pool, roleTarget{ref: store.UserRef{ID: u.ID}, role: store.RoleAdmin}, 50*time.Millisecond, &out)
+	if !errors.Is(err, errUserBusy) || !errors.Is(err, store.ErrUserLocked) || out.String() != "" {
+		t.Fatalf("output %q, err %v; want errUserBusy", out.String(), err)
+	}
+	if !strings.HasPrefix(err.Error(), "another session is changing this user right now; nothing changed; try again") {
+		t.Errorf("message = %q", err.Error())
+	}
+	if err := holder.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedRole(t, pool, u.ID); got != "user" {
+		t.Errorf("role = %q, want user, unchanged", got)
+	}
+}
+
+func TestSetRoleCommandReportsOtherDatabaseErrors(t *testing.T) {
+	pool := testdb.Pool(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := applyRole(ctx, pool, roleTarget{ref: store.UserRef{ID: uuid.New()}, role: store.RoleAdmin}, time.Second, io.Discard)
+	if err == nil || !strings.HasSuffix(err.Error(), "; nothing changed") {
+		t.Errorf("err = %v, want a database error ending in nothing changed", err)
 	}
 }

@@ -9,13 +9,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 var (
 	ErrInvalidUser   = errors.New("invalid user")
 	ErrInvalidRole   = errors.New("invalid role")
 	ErrAmbiguousUser = errors.New("more than one user matches")
+	ErrUserLocked    = errors.New("the user's row is locked by another transaction")
 )
+
+const pgLockNotAvailable = "55P03"
 
 type Role string
 
@@ -94,15 +98,21 @@ type RoleChange struct {
 	Previous Role
 }
 
-func (s *Store) SetUserRole(ctx context.Context, ref UserRef, role Role) (RoleChange, error) {
+func (s *Store) SetUserRole(ctx context.Context, ref UserRef, role Role, lockTimeout time.Duration) (RoleChange, error) {
 	if _, err := ParseRole(string(role)); err != nil {
 		return RoleChange{}, fmt.Errorf("set user role: %w", err)
+	}
+	if lockTimeout < time.Millisecond {
+		return RoleChange{}, fmt.Errorf("set user role: lock timeout %s is below 1ms", lockTimeout)
 	}
 	if (ref.ID == uuid.Nil) == (ref.Email == "") {
 		return RoleChange{}, fmt.Errorf("set user role: give exactly one of an id or an email: %w", ErrInvalidUser)
 	}
 	var change RoleChange
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", lockTimeout.Milliseconds())); err != nil {
+			return err
+		}
 		target, err := lockUserRef(ctx, tx, ref)
 		if err != nil {
 			return err
@@ -116,6 +126,10 @@ WHERE id = $1
 RETURNING `+userColumns, target.ID, string(role)))
 		return err
 	})
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgLockNotAvailable {
+		return RoleChange{}, fmt.Errorf("set user role: %w (waited %s)", ErrUserLocked, lockTimeout)
+	}
 	if err != nil {
 		return RoleChange{}, fmt.Errorf("set user role: %w", err)
 	}

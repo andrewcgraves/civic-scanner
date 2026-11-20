@@ -145,7 +145,7 @@ func checkAgency(ctx context.Context, args []string, stdout, stderr io.Writer, q
 	}
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	pool, err := openCommandPool(ctx, cfg.DatabaseURL)
+	pool, err := openCommandPool(ctx, cfg.DatabaseURL, "nothing enqueued")
 	if err != nil {
 		return err
 	}
@@ -194,7 +194,7 @@ func commandPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 	return poolCfg, nil
 }
 
-func openCommandPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+func openCommandPool(ctx context.Context, databaseURL, outcome string) (*pgxpool.Pool, error) {
 	poolCfg, err := commandPoolConfig(databaseURL)
 	if err != nil {
 		return nil, err
@@ -205,7 +205,7 @@ func openCommandPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, er
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("could not connect to the database (connect timeout %s); nothing enqueued: %w", poolCfg.ConnConfig.ConnectTimeout, err)
+		return nil, fmt.Errorf("could not connect to the database (connect timeout %s); %s: %w", poolCfg.ConnConfig.ConnectTimeout, outcome, err)
 	}
 	return pool, nil
 }

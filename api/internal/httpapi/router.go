@@ -15,8 +15,21 @@ import (
 )
 
 func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
+	return newRouter(h, logger, adminOperations, func(r chi.Router) {
+		v1.HandlerWithOptions(v1.NewStrictHandlerWithOptions(h, []v1.StrictMiddlewareFunc{noStore}, v1.StrictHTTPServerOptions{
+			RequestErrorHandlerFunc:  invalidBody,
+			ResponseErrorHandlerFunc: responseFailed(logger),
+		}), v1.ChiServerOptions{
+			BaseURL:          "/v1",
+			BaseRouter:       r,
+			ErrorHandlerFunc: invalidParameter,
+		})
+	})
+}
+
+func newRouter(h *Handler, logger *slog.Logger, admin map[string]adminRoute, routes func(chi.Router)) *chi.Mux {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), authenticate(h.auth, logger))
+	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), authenticate(h.auth, logger), h.adminGate(r, admin))
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	})
@@ -24,14 +37,23 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 		w.Header().Set("Allow", allowedMethods(r, req.URL.Path))
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	})
-	v1.HandlerWithOptions(v1.NewStrictHandler(h, []v1.StrictMiddlewareFunc{noStore, h.adminOnly(adminOperations)}), v1.ChiServerOptions{
-		BaseURL:    "/v1",
-		BaseRouter: r,
-		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
-			writeError(w, http.StatusBadRequest, "invalid_parameter", err.Error())
-		},
-	})
+	routes(r)
 	return r
+}
+
+func invalidParameter(w http.ResponseWriter, _ *http.Request, err error) {
+	writeError(w, http.StatusBadRequest, "invalid_parameter", err.Error())
+}
+
+func invalidBody(w http.ResponseWriter, _ *http.Request, err error) {
+	writeError(w, http.StatusBadRequest, "invalid_body", err.Error())
+}
+
+func responseFailed(logger *slog.Logger) func(http.ResponseWriter, *http.Request, error) {
+	return func(w http.ResponseWriter, r *http.Request, err error) {
+		logger.ErrorContext(r.Context(), "response failed", "error", err, "request_id", middleware.GetReqID(r.Context()))
+		writeError(w, http.StatusInternalServerError, internalError.Code, internalError.Message)
+	}
 }
 
 func allowedMethods(routes chi.Routes, path string) string {

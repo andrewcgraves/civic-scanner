@@ -5,6 +5,7 @@ package migrations
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -91,7 +92,7 @@ func TestStoreTreatsAnUnknownRoleAsNotAdmin(t *testing.T) {
 		t.Errorf("role = %q, admin %v; want moderator, not admin", u.Role, u.Role.IsAdmin())
 	}
 
-	change, err := s.SetUserRole(ctx, store.UserRef{ID: u.ID}, store.RoleUser)
+	change, err := s.SetUserRole(ctx, store.UserRef{ID: u.ID}, store.RoleUser, time.Second)
 	if err != nil || change.Previous != "moderator" || change.User.Role != store.RoleUser {
 		t.Errorf("SetUserRole from an unknown role = (%+v, %v)", change, err)
 	}

@@ -4,5 +4,4 @@ ALTER TABLE users
         CONSTRAINT users_role_check CHECK (role IN ('user', 'admin'));
 
 -- +goose Down
--- squawk-ignore ban-drop-column
 ALTER TABLE users DROP COLUMN IF EXISTS role;

@@ -3,6 +3,7 @@ module github.com/andrewcgraves/civic-scanner/api
 go 1.27.4
 
 require (
+	github.com/getkin/kin-openapi v0.142.0
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.13.0
@@ -24,7 +25,6 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dprotaso/go-yit v0.0.0-20220510233725-9ba8df137936 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
-	github.com/getkin/kin-openapi v0.142.0 // indirect
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
 	github.com/go-openapi/swag/jsonname v0.26.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect

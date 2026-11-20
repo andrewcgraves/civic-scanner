@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
@@ -12,7 +13,12 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
-var adminOperations = map[string]bool{}
+type adminRoute struct {
+	method  string
+	pattern string
+}
+
+var adminOperations = map[string]adminRoute{}
 
 var (
 	errAccountsOff  = errors.New("accounts are off for this user")
@@ -39,26 +45,38 @@ func (h *Handler) requireAdmin(ctx context.Context) (store.User, error) {
 	if !user.Role.IsAdmin() {
 		return user, errNotAdmin
 	}
-	if identity.Actor != "" {
+	if identity.Impersonated || identity.Actor != "" {
 		return user, errImpersonated
 	}
 	return user, nil
 }
 
-func (h *Handler) adminOnly(operations map[string]bool) v1.StrictMiddlewareFunc {
-	return func(f v1.StrictHandlerFunc, operationID string) v1.StrictHandlerFunc {
-		if !operations[operationID] {
-			return f
-		}
-		return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
+func (h *Handler) adminGate(mux *chi.Mux, operations map[string]adminRoute) func(http.Handler) http.Handler {
+	gated := make(map[adminRoute]string, len(operations))
+	for operationID, route := range operations {
+		gated[route] = operationID
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.RawPath
+			if path == "" {
+				path = r.URL.Path
+			}
+			pattern := mux.Find(chi.NewRouteContext(), r.Method, path)
+			operationID, ok := gated[adminRoute{method: r.Method, pattern: pattern}]
+			if !ok || pattern == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			ctx := r.Context()
 			w.Header().Set("Cache-Control", "no-store")
 			admin, err := h.requireAdmin(ctx)
 			if err != nil {
 				h.refuseAdmin(ctx, w, operationID, admin, err)
-				return nil, nil
+				return
 			}
-			return f(context.WithValue(ctx, adminContextKey{}, admin), w, r, request)
-		}
+			next.ServeHTTP(w, r.WithContext(context.WithValue(ctx, adminContextKey{}, admin)))
+		})
 	}
 }
 

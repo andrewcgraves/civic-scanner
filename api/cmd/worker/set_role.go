@@ -15,13 +15,18 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
-const setRoleCommand = "set-role"
+const (
+	setRoleCommand  = "set-role"
+	nothingChanged  = "nothing changed"
+	roleLockTimeout = 5 * time.Second
+)
 
 var (
 	errSetRoleUsage      = errors.New("usage: worker " + setRoleCommand + " (<user-id> | <email>) (user | admin)")
-	errRoleNotMigrated   = errors.New("database has no users.role column: run /app/migrate up first; nothing changed")
-	errUserNotFound      = errors.New("no user matches; a user exists only after signing in once; nothing changed")
-	errAmbiguousUserHint = errors.New("rerun with one of the user ids above; nothing changed")
+	errRoleNotMigrated   = errors.New("database has no users.role column: run /app/migrate up first; " + nothingChanged)
+	errUserNotFound      = errors.New("no user matches; a user exists only after signing in once; " + nothingChanged)
+	errAmbiguousUserHint = errors.New("rerun with one of the user ids above; " + nothingChanged)
+	errUserBusy          = errors.New("another session is changing this user right now; " + nothingChanged + "; try again")
 )
 
 const setRoleHelp = `usage: worker set-role (<user-id> | <email>) (user | admin)
@@ -77,7 +82,7 @@ func setRole(ctx context.Context, args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	pool, err := openCommandPool(ctx, cfg.DatabaseURL)
+	pool, err := openCommandPool(ctx, cfg.DatabaseURL, nothingChanged)
 	if err != nil {
 		return err
 	}
@@ -86,14 +91,20 @@ func setRole(ctx context.Context, args []string, stdout io.Writer) error {
 		return err
 	}
 
-	change, err := store.New(pool).SetUserRole(ctx, target.ref, target.role)
+	return applyRole(ctx, pool, target, roleLockTimeout, stdout)
+}
+
+func applyRole(ctx context.Context, pool *pgxpool.Pool, target roleTarget, lockTimeout time.Duration, stdout io.Writer) error {
+	change, err := store.New(pool).SetUserRole(ctx, target.ref, target.role, lockTimeout)
 	switch {
+	case errors.Is(err, store.ErrUserLocked):
+		return fmt.Errorf("%w (%w)", errUserBusy, err)
 	case errors.Is(err, store.ErrNotFound):
 		return errUserNotFound
 	case errors.Is(err, store.ErrAmbiguousUser):
 		return fmt.Errorf("%w; %w", err, errAmbiguousUserHint)
 	case err != nil:
-		return err
+		return fmt.Errorf("%w; %s", err, nothingChanged)
 	}
 	return reportRoleChange(stdout, change)
 }

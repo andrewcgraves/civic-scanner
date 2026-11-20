@@ -8,44 +8,67 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/oapi-codegen/runtime"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
-const testAdminOperation = "TestAdminOperation"
+const (
+	testAdminOperation = "TestAdminOperation"
+	testAdminPattern   = "/v1/test-admin/{id}"
+	testOpenPattern    = "/v1/test-open/{id}"
+)
+
+var testAdminRoutes = map[string]adminRoute{testAdminOperation: {method: http.MethodPost, pattern: testAdminPattern}}
 
 type adminProbe struct {
 	calls int
 	admin store.User
 	ok    bool
+	note  string
 }
 
-func adminTestRouter(h *Handler, probe *adminProbe, operations map[string]bool) http.Handler {
-	inner := func(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ any) (any, error) {
-		probe.calls++
-		probe.admin, probe.ok = adminFrom(ctx)
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"admin": probe.admin.ID.String()})
-		return nil, nil
-	}
-	gated := h.adminOnly(operations)(inner, testAdminOperation)
-	r := chi.NewRouter()
-	r.Use(authenticate(h.auth, slog.New(slog.DiscardHandler)))
-	r.Get("/admin-test", func(w http.ResponseWriter, req *http.Request) {
-		_, _ = gated(req.Context(), w, req, nil)
+func (p *adminProbe) handler(w http.ResponseWriter, r *http.Request) {
+	var id uuid.UUID
+	err := runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{
+		ParamLocation: runtime.ParamLocationPath, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == "",
 	})
-	return r
+	if err != nil {
+		invalidParameter(w, r, &v1.InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		invalidBody(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	p.calls++
+	p.note = body.Note
+	p.admin, p.ok = adminFrom(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"admin": p.admin.ID.String(), "id": id.String()})
 }
 
-func adminRequest(t *testing.T, router http.Handler, authorization string) *httptest.ResponseRecorder {
+func adminTestRouter(h *Handler, probe *adminProbe, operations map[string]adminRoute) http.Handler {
+	return newRouter(h, slog.New(slog.DiscardHandler), operations, func(r chi.Router) {
+		r.Post(testAdminPattern, probe.handler)
+		r.Post(testOpenPattern, probe.handler)
+	})
+}
+
+func adminRequestTo(t *testing.T, router http.Handler, path, body, authorization string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/admin-test", nil)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
@@ -54,10 +77,18 @@ func adminRequest(t *testing.T, router http.Handler, authorization string) *http
 	return rec
 }
 
+func adminRequest(t *testing.T, router http.Handler, authorization string) *httptest.ResponseRecorder {
+	t.Helper()
+	return adminRequestTo(t, router, "/v1/test-admin/"+uuid.NewString(), `{"note":"ok"}`, authorization)
+}
+
 func goodAuth() *fakeAuth {
 	return &fakeAuth{tokens: map[string]auth.Identity{
 		"good":          {UserID: "user_01", Email: "ada@example.com"},
-		"impersonating": {UserID: "user_01", Actor: "workos_admin_01"},
+		"impersonating": {UserID: "user_01", Actor: "workos_admin_01", Impersonated: true},
+		"act-no-sub":    {UserID: "user_01", Impersonated: true},
+		"actor-only":    {UserID: "user_01", Actor: "workos_admin_01"},
+		"role-claim":    {UserID: "user_01", Role: "admin", Permissions: []string{"admin"}},
 	}}
 }
 
@@ -86,6 +117,9 @@ func TestAdminOnlyMatrix(t *testing.T) {
 		{name: "unknown role", auth: goodAuth(), flagOn: true, user: store.User{ID: uuid.New(), Role: "superuser"}, authorization: "Bearer good", wantStatus: http.StatusForbidden, wantCode: "forbidden", wantLookup: true},
 		{name: "role in another case", auth: goodAuth(), flagOn: true, user: store.User{ID: uuid.New(), Role: "Admin"}, authorization: "Bearer good", wantStatus: http.StatusForbidden, wantCode: "forbidden", wantLookup: true},
 		{name: "impersonated admin", auth: goodAuth(), flagOn: true, user: store.User{ID: adminID, Role: store.RoleAdmin}, authorization: "Bearer impersonating", wantStatus: http.StatusForbidden, wantCode: "forbidden", wantLookup: true},
+		{name: "impersonated admin, act without subject", auth: goodAuth(), flagOn: true, user: store.User{ID: adminID, Role: store.RoleAdmin}, authorization: "Bearer act-no-sub", wantStatus: http.StatusForbidden, wantCode: "forbidden", wantLookup: true},
+		{name: "admin with an actor but no impersonation flag", auth: goodAuth(), flagOn: true, user: store.User{ID: adminID, Role: store.RoleAdmin}, authorization: "Bearer actor-only", wantStatus: http.StatusForbidden, wantCode: "forbidden", wantLookup: true},
+		{name: "user whose token claims admin", auth: goodAuth(), flagOn: true, user: store.User{ID: uuid.New(), Role: store.RoleUser}, authorization: "Bearer role-claim", wantStatus: http.StatusForbidden, wantCode: "forbidden", wantLookup: true},
 		{name: "user lookup fails", auth: goodAuth(), flagOn: true, user: store.User{ID: adminID, Role: store.RoleAdmin}, storeErr: errors.New("connection refused"), authorization: "Bearer good", wantStatus: http.StatusInternalServerError, wantCode: "internal_error", wantLookup: true},
 		{name: "admin", auth: goodAuth(), flagOn: true, user: store.User{ID: adminID, Role: store.RoleAdmin}, authorization: "Bearer good", wantStatus: http.StatusOK, wantLookup: true},
 	}
@@ -94,7 +128,7 @@ func TestAdminOnlyMatrix(t *testing.T) {
 			calls := &userCalls{user: tt.user, err: tt.storeErr}
 			h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(tt.auth), WithFlags(flagsOn(tt.flagOn)))
 			probe := &adminProbe{}
-			rec := adminRequest(t, adminTestRouter(h, probe, map[string]bool{testAdminOperation: true}), tt.authorization)
+			rec := adminRequest(t, adminTestRouter(h, probe, testAdminRoutes), tt.authorization)
 
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body %s", rec.Code, tt.wantStatus, rec.Body)
@@ -132,7 +166,7 @@ func TestAdminOnlyReadsTheRoleOnEveryRequest(t *testing.T) {
 	calls := &userCalls{user: store.User{ID: uuid.New(), Role: store.RoleUser}}
 	h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(goodAuth()), WithFlags(flagsOn(true)))
 	probe := &adminProbe{}
-	router := adminTestRouter(h, probe, map[string]bool{testAdminOperation: true})
+	router := adminTestRouter(h, probe, testAdminRoutes)
 
 	steps := []struct {
 		role store.Role
@@ -158,7 +192,7 @@ func TestAdminOnlyLeavesOtherOperationsAlone(t *testing.T) {
 	calls := &userCalls{}
 	h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(goodAuth()), WithFlags(flagsOn(true)))
 	probe := &adminProbe{}
-	rec := adminRequest(t, adminTestRouter(h, probe, map[string]bool{"SomethingElse": true}), "")
+	rec := adminRequest(t, adminTestRouter(h, probe, map[string]adminRoute{"SomethingElse": {method: http.MethodPost, pattern: "/v1/elsewhere"}}), "")
 
 	if rec.Code != http.StatusOK || probe.calls != 1 || len(calls.inputs) != 0 {
 		t.Fatalf("status %d, handler calls %d, lookups %d; want the handler untouched", rec.Code, probe.calls, len(calls.inputs))
@@ -188,7 +222,7 @@ func TestAdminFromFailsClosed(t *testing.T) {
 }
 
 func TestRouterRunsTheAdminGate(t *testing.T) {
-	adminOperations["GetMe"] = true
+	adminOperations["GetMe"] = adminRoute{method: http.MethodGet, pattern: "/v1/me"}
 	t.Cleanup(func() { delete(adminOperations, "GetMe") })
 
 	calls := &userCalls{user: store.User{ID: uuid.New(), Role: store.RoleUser}}

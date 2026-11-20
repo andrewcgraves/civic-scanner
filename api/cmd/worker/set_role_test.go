@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -71,5 +72,13 @@ func TestReportRoleChange(t *testing.T) {
 		if err := reportRoleChange(&out, tc.change); err != nil || out.String() != tc.want {
 			t.Errorf("%s: output = %q, err %v; want %q", name, out.String(), err, tc.want)
 		}
+	}
+}
+
+func TestSetRoleFailsWhenDatabaseUnreachable(t *testing.T) {
+	t.Setenv("DATABASE_URL", unreachableDatabaseURL)
+	err := dispatch(t.Context(), []string{setRoleCommand, "ada@example.com", "admin"}, io.Discard, io.Discard)
+	if err == nil || !strings.HasPrefix(err.Error(), "could not connect to the database (connect timeout 1s); nothing changed: ") {
+		t.Errorf("error = %v, want a connect failure saying nothing changed", err)
 	}
 }
