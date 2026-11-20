@@ -10,6 +10,13 @@ export default defineRailway(() => {
     region: "sfo",
     sizeMB: 50000,
   });
+  db.volumeAttachments = {
+    "postgres-volume": {
+      volume: dbVolume.address,
+      mountPath: "/var/lib/postgresql/data",
+      backupSchedules: ["DAILY"],
+    },
+  };
 
   const audio = bucket("audio", { region: "sjc" });
 
