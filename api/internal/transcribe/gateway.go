@@ -119,20 +119,14 @@ func gatewaySegments(r gatewayReply) []Segment {
 	if segments := azureSegments(r.ProviderMetadata.Azure.Phrases); len(segments) > 0 {
 		return segments
 	}
-	words := r.ProviderMetadata.ElevenLabs.Words
+	if words := r.ProviderMetadata.ElevenLabs.Words; len(words) > 0 {
+		return segmentsFromWords(words)
+	}
 	segments := make([]Segment, 0, len(r.Segments))
 	for _, s := range r.Segments {
 		segments = append(segments, Segment{Start: seconds(s.StartSecond), End: seconds(s.EndSecond), Text: strings.TrimSpace(s.Text)})
 	}
-	switch {
-	case len(words) == 0:
-		return segments
-	case len(segments) == 0:
-		return segmentsFromWords(words)
-	default:
-		labelSpeakers(segments, words)
-		return segments
-	}
+	return segments
 }
 
 type base64Body struct {
