@@ -60,6 +60,11 @@ type AgendaEventPayload struct {
 	NoteSource      NoteSource `json:"note_source,omitempty"`
 }
 
+type TranscriptEventPayload struct {
+	TranscriptID uuid.UUID `json:"transcript_id"`
+	RecordingID  uuid.UUID `json:"recording_id"`
+}
+
 const meetingEventColumns = `id, sequence, type, meeting_id, payload, occurred_at`
 
 func scanMeetingEvent(row pgx.Row) (MeetingEvent, error) {

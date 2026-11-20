@@ -279,3 +279,103 @@ func setTranscriptSummary(ctx context.Context, q querier, transcriptID uuid.UUID
 	}
 	return Transcript{}, fmt.Errorf("set transcript summary: transcript %s: %w", transcriptID, ErrTranscriptChanged)
 }
+
+func (s *Store) GetTranscriptByID(ctx context.Context, transcriptID uuid.UUID) (Transcript, error) {
+	return getTranscriptByID(ctx, s.pool, transcriptID)
+}
+
+func getTranscriptByID(ctx context.Context, q querier, transcriptID uuid.UUID) (Transcript, error) {
+	t, err := scanTranscript(q.QueryRow(ctx, `SELECT `+transcriptColumns+` FROM transcripts WHERE id = $1`, transcriptID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transcript{}, fmt.Errorf("transcript %s: %w", transcriptID, ErrNotFound)
+	}
+	if err != nil {
+		return Transcript{}, fmt.Errorf("get transcript: %w", err)
+	}
+	return t, nil
+}
+
+const recordTranscriptSummarySQL = `
+UPDATE transcripts SET summary = $3, updated_at = clock_timestamp()
+WHERE id = $1 AND summary IS NULL AND encode(sha256(convert_to(full_text, 'UTF8')), 'hex') = $2
+RETURNING ` + transcriptColumns
+
+func (s *Store) RecordTranscriptSummary(ctx context.Context, transcriptID uuid.UUID, summarized ContentHash, summary string) (Transcript, bool, error) {
+	if summarized.IsZero() {
+		return Transcript{}, false, fmt.Errorf("record transcript summary: %w", ErrZeroContentHash)
+	}
+	var (
+		t        Transcript
+		recorded bool
+	)
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var err error
+		t, err = scanTranscript(tx.QueryRow(ctx, recordTranscriptSummarySQL, transcriptID, summarized.String(), summary))
+		if errors.Is(err, pgx.ErrNoRows) {
+			t, err = getTranscriptByID(ctx, tx, transcriptID)
+			if err == nil && t.Summary == nil {
+				err = fmt.Errorf("transcript %s: %w", transcriptID, ErrTranscriptChanged)
+			}
+			return err
+		}
+		if err != nil {
+			return fmt.Errorf("set summary: %w", err)
+		}
+		var meetingID uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT meeting_id FROM recordings WHERE id = $1`, t.RecordingID).Scan(&meetingID); err != nil {
+			return fmt.Errorf("meeting of recording %s: %w", t.RecordingID, err)
+		}
+		if _, err := recordMeetingEvent(ctx, tx, MeetingEventInput{
+			Type:      EventTranscriptReady,
+			MeetingID: meetingID,
+			Payload:   TranscriptEventPayload{TranscriptID: t.ID, RecordingID: t.RecordingID},
+		}); err != nil {
+			return fmt.Errorf("record transcript event: %w", err)
+		}
+		recorded = true
+		return nil
+	})
+	if err != nil {
+		return Transcript{}, false, fmt.Errorf("record transcript summary: %w", err)
+	}
+	return t, recorded, nil
+}
+
+type UnsummarizedTranscriptParams struct {
+	From         time.Time
+	To           time.Time
+	FailedKind   string
+	FailedWithin time.Duration
+	Limit        int
+}
+
+func (s *Store) ListUnsummarizedTranscripts(ctx context.Context, p UnsummarizedTranscriptParams) ([]uuid.UUID, error) {
+	if p.Limit <= 0 {
+		return nil, fmt.Errorf("list unsummarized transcripts: limit %d: %w", p.Limit, ErrInvalidLimit)
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT t.id
+FROM transcripts t
+JOIN recordings r ON r.id = t.recording_id
+JOIN meetings m ON m.id = r.meeting_id
+JOIN agencies a ON a.id = m.agency_id AND a.status = 'live'
+WHERE t.summary IS NULL
+  AND m.starts_at >= $1 AND m.starts_at <= $2
+  AND NOT EXISTS (
+    SELECT 1 FROM river_job j
+    WHERE j.kind = $3
+      AND j.args->>'transcript_id' = t.id::text
+      AND j.state IN ('cancelled', 'discarded')
+      AND j.finalized_at >= now() - $4::interval
+  )
+ORDER BY m.starts_at DESC, r.seq
+LIMIT $5`, p.From, p.To, p.FailedKind, p.FailedWithin, p.Limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unsummarized transcripts: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("scan unsummarized transcripts: %w", err)
+	}
+	return ids, nil
+}

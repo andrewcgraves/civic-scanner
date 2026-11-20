@@ -41,6 +41,7 @@ type Config struct {
 	Transcription  Transcription
 	LLM            llm.Client
 	SummaryTier    llm.Tier
+	TranscriptTier llm.Tier
 	LLMTimeout     time.Duration
 	Queue          string
 	NoPeriodicJobs bool
@@ -74,6 +75,9 @@ func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
 	if c.AudioFollowUp == nil {
 		c.AudioFollowUp = EnqueueTranscribeAudio{Queue: c.AudioQueue, Enabled: c.Enabled, Logger: logger}
 	}
+	if c.Transcription.FollowUp == nil {
+		c.Transcription.FollowUp = EnqueueSummarizeTranscript{Queue: c.Queue, Enabled: c.Enabled, Logger: logger}
+	}
 	c.Transcription = c.Transcription.withDefaults()
 	if c.Extractor == nil {
 		c.Extractor = extract.New(config.Extract{})
@@ -83,6 +87,9 @@ func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
 	}
 	if c.SummaryTier == "" {
 		c.SummaryTier = llm.TierRoutine
+	}
+	if c.TranscriptTier == "" {
+		c.TranscriptTier = llm.TierRoutine
 	}
 	if c.LLMTimeout <= 0 {
 		c.LLMTimeout = defaultLLMTimeout
@@ -174,6 +181,22 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		enabled:     cfg.Enabled,
 		queue:       cfg.AudioQueue,
 	})
+	river.AddWorker(workers, &SummarizeTranscriptWorker{
+		logger:     logger,
+		store:      st,
+		llm:        cfg.LLM,
+		tier:       cfg.TranscriptTier,
+		llmTimeout: cfg.LLMTimeout,
+		enabled:    cfg.Enabled,
+	})
+	river.AddWorker(workers, &EnqueueTranscriptSummariesWorker{
+		logger:  logger,
+		store:   st,
+		clock:   cfg.Clock,
+		llm:     cfg.LLM,
+		enabled: cfg.Enabled,
+		queue:   cfg.Queue,
+	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,
 		store:   st,
@@ -201,6 +224,10 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 			river.PeriodicInterval(transcriptSweepInterval),
 			periodicTranscriptSweep(cfg.Clock, cfg.Queue),
 			&river.PeriodicJobOpts{ID: EnqueueTranscriptionsArgs{}.Kind(), RunOnStart: true},
+		), river.NewPeriodicJob(
+			river.PeriodicInterval(transcriptSummarySweepInterval),
+			periodicTranscriptSummarySweep(cfg.Clock, cfg.Queue),
+			&river.PeriodicJobOpts{ID: EnqueueTranscriptSummariesArgs{}.Kind(), RunOnStart: true},
 		))
 	}
 
