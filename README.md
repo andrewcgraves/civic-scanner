@@ -1288,7 +1288,16 @@ Merging to `main` deploys both sides.
 
 `.railway/railway.ts` owns the Railway project, including every variable on its services. Change settings there, not in the dashboard: the next apply reverts dashboard edits. Secrets go in as `preserve()` so their values stay out of the repository.
 
-With the [Railway CLI](https://docs.railway.com/cli) installed:
+The `Railway config` workflow (`.github/workflows/railway-config.yml`) plans and applies it, using the [`railwayapp/config`](https://github.com/railwayapp/config) action:
+
+- A pull request that changes `.railway/` gets a comment with the plan: what Railway would change, with destructive changes marked. The plan, the environment's state and the `.railway/` tree are pinned in an artifact.
+- Merging the pull request is the approval. The apply job applies the pinned plan and does not evaluate the file again. It fails, changing nothing, when the environment changed after the plan (a dashboard edit or another apply), when the merged `.railway/` tree is not the planned one, or when there is no plan for the merged commit. Push to the pull request again before merging, or open a new one, to plan again.
+- A destructive change, such as removing a service, a volume or the database, is not applied by the workflow (`confirm-destructive: false`): the apply job fails. Apply it by hand after reading the plan.
+- A push straight to `main` has no plan and applies nothing. Pull requests from forks are skipped, since they get no secrets.
+
+The workflow needs one repository secret, `RAILWAY_TOKEN`: a Railway [project token](https://docs.railway.com/integrations/api#project-token) for the production environment. The token can change that environment only. The root `package.json` and `pnpm-lock.yaml` exist for this workflow: they pin the `railway` package that `.railway/railway.ts` imports.
+
+By hand, with the [Railway CLI](https://docs.railway.com/cli) installed:
 
 ```sh
 railway link            # once: pick the project and the production environment
@@ -1296,4 +1305,4 @@ railway config plan     # preview the change; changes nothing
 railway config apply    # apply it after reviewing the plan
 ```
 
-`railway config pull` re-imports the project from Railway. Generated Railway domains are not in the file and are left alone. The file needs no npm install: the CLI evaluates it.
+`railway config pull` re-imports the project from Railway. Generated Railway domains are not in the file and are left alone.
