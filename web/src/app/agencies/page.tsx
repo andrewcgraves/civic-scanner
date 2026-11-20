@@ -1,37 +1,42 @@
 import type { Metadata } from "next";
 
 import { AgencyList } from "@/components/agency-list";
-import { api } from "@/lib/api/client";
-import type { Agency } from "@/lib/api/client";
+import { UnavailableNotice } from "@/components/ui/notice";
+import { PageHeader } from "@/components/ui/page-header";
+import { findComingSoon } from "@/lib/api/coming-soon";
+import { loadAgencies } from "@/lib/api/load";
+import { isFlagEnabled } from "@/lib/flags/server";
 
-export const metadata: Metadata = { title: "Agencies | Civic Scanner" };
-
-export const dynamic = "force-dynamic";
-
-async function loadAgencies(): Promise<Agency[] | null> {
-  try {
-    const { data } = await api.GET("/agencies");
-    return data?.agencies ?? null;
-  } catch {
-    return null;
-  }
-}
+export const metadata: Metadata = {
+  title: "Agencies",
+  description:
+    "The transportation agencies whose board meetings Civic Scanner follows.",
+};
 
 export default async function AgenciesPage() {
-  const agencies = await loadAgencies();
+  const [agencies, linkToAgencyPages] = await Promise.all([
+    loadAgencies(),
+    isFlagEnabled("agency-pages"),
+  ]);
+  const comingSoon = agencies.ok
+    ? await findComingSoon(agencies.data)
+    : new Set<string>();
 
   return (
-    <main>
-      <h1 className="text-2xl font-semibold">Agencies</h1>
-      <div className="mt-4">
-        {agencies === null ? (
-          <p role="alert">
-            Agencies are unavailable right now. Please try again later.
-          </p>
-        ) : (
-          <AgencyList agencies={agencies} />
-        )}
-      </div>
-    </main>
+    <>
+      <PageHeader
+        title="Agencies"
+        description="The transportation agencies whose board meetings Civic Scanner follows."
+      />
+      {agencies.ok ? (
+        <AgencyList
+          agencies={agencies.data}
+          linkToAgencyPages={linkToAgencyPages}
+          comingSoon={comingSoon}
+        />
+      ) : (
+        <UnavailableNotice what="Agencies are" />
+      )}
+    </>
   );
 }

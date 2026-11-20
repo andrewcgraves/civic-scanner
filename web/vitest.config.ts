@@ -16,6 +16,7 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    env: { TZ: "UTC" },
     setupFiles: ["./vitest.setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
     server: { deps: { inline: ["@workos-inc/authkit-nextjs"] } },
