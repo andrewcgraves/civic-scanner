@@ -1237,6 +1237,33 @@ WHERE kind IN ('summarize_transcript', 'summarize_agenda')
 
 This removes only the failure history of those two job kinds; River's other jobs and the summaries already written are untouched.
 
+## End-to-end pipeline test
+
+`internal/jobs/pipeline_integration_test.go` runs the whole pipeline, from an agency check to a transcript summary, through a real River client against Postgres and the S3Mock bucket, with every feature flag on. The test inserts only `check_agency` jobs; every other job is inserted by the pipeline's own follow-up hooks, and the test waits until no job on its queues is waiting or running, then checks that every job completed.
+
+Faked, at the network edges only:
+
+- The agency's source adapter (`sourcestest.Returning`): one held board meeting with an agenda URL and a recording URL.
+- The agency's website: an `httptest` server. It serves the agenda as a PDF built by `extracttest.Lines`, a Granicus-style player page, and a 15-second MP4 that `ffmpeg` generates at the start of the test (no media file is checked in). The player page answers only once the agenda's `agenda_published` event exists, so the two branches record their events in a fixed order.
+- The model (`llmtest.Fake`): fixed agenda summaries, change note and transcript summary.
+- The transcription provider (`transcribetest.Fake`): a fixed two-segment transcript. It records a hash of the file it is given, which the test compares with the object in the bucket.
+
+Real: the plain fetcher with the Firecrawl fallback as the worker composes it (Firecrawl unconfigured, never called), the `cmd/extract` child process, versioning and change detection in the store, the media resolver, page fetcher and gateway (with the guard opened for loopback, as in the download tests), `cmd/limit`, `ffmpeg` and `ffprobe`, the bucket, every job and hook, and the public API's `GET /v1/meetings/{id}` and `GET /v1/agencies/{slug}/feed.xml` handlers.
+
+What it checks:
+
+1. **First check** (scheduled): the meeting with its fields; one agenda version with the PDF's text and its summary; one recording with an MP3 in the bucket, the transcript, its segments and its summary; the events `agenda_published` then `transcript_ready`, with their payloads; one job of each kind, one call per summary and one transcription; the meeting endpoint with the agenda, the recording, the transcript and both summaries, and the agency's, agenda's and recording's original links; two feed items.
+2. **Second check** (manual, with a revised PDF): a second version with its change note (from the model) and its own summary, one `agenda_changed` event after the other two, one `describe_agenda_change` and one more `summarize_agenda`, and nothing else: no second download, transcription, transcript summary or `transcript_ready`, and no second request for the recording. The endpoint and the feed show the revision.
+3. **Third check** (manual, nothing changed): the agenda is fetched again and nothing else happens: no version, event, model call, transcription or job besides `check_agency` and `process_agenda`.
+
+The second and third checks are manual (see [Running a check by hand](#running-a-check-by-hand)) because a scheduled `process_agenda` is unique per URL and UTC day of the wall clock, so a second scheduled check in the same test would not read the agenda again.
+
+A second test turns on only `ingest-check-agencies`: the meeting and the agenda text are stored with their `agenda_published` event, and the model, the transcription provider and the recording URL are never called.
+
+The hourly sweeps are not part of it: they scan every agency in the database, and integration tests share one. Each sweep has its own integration tests.
+
+Run it with `make dev-db`, then `cd api && go test -tags=integration -run TestPipeline ./internal/jobs/`. It needs `ffmpeg` and skips the full run without it. It takes about 6 seconds on a laptop.
+
 **The sweep.** `enqueue_transcript_summaries` is a River periodic job that runs every hour and when the worker starts, unique per hour like the other sweeps. With the flag off or no LLM it does nothing. Otherwise `store.ListUnsummarizedTranscripts` returns at most 10 transcripts without a summary whose meeting belongs to a live agency, started from 365 days before now to 90 days after, and has no `summarize_transcript` job cancelled or discarded in the last 7 days (River's own table, `args->>'transcript_id'`, no migration), latest meetings first, and it inserts a job for each with `InsertMany`; a transcript whose job is still waiting or running is skipped as a duplicate. It covers transcripts saved before the job existed, while the flag was off or the key missing, an enqueue that failed, and jobs that failed. The look-back covers every transcript the pipeline can produce (audio is downloaded only for meetings in the last 30 days and kept about six months) with room for the flag to stay off for months; an older transcript is summarized only by inserting its job by hand. The query scans the transcripts without a summary; there is no index for it, since that set stays small.
 
 **API and feed.** `GET /v1/meetings/{id}` already returns `recordings[].transcript.summary`; it is `null` until this job writes it, and the transcript's segments are returned before that. The RSS feed shows each `transcript_ready` as a `Transcript ready: ` item (see [Agency RSS feeds](#agency-rss-feeds)); nothing there changed. A meeting with several recordings shows one such item per recording, with the same text, and the item does not include the summary.
