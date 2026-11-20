@@ -112,6 +112,11 @@ func retryableStatus(code int) bool {
 	return code >= http.StatusInternalServerError
 }
 
+func (g *gateway) Route(tier Tier) (string, string) {
+	model, _ := modelFor(g.cfg, tier)
+	return config.LLMGateway, model
+}
+
 func modelFor(cfg config.LLM, tier Tier) (string, error) {
 	switch tier {
 	case TierRoutine:

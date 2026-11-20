@@ -40,7 +40,7 @@ func loadLLM() (LLM, error) {
 		return LLM{}, fmt.Errorf("AI_GATEWAY_BASE_URL: %w", err)
 	}
 	anthropicURL := envOr("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-	if err := checkAnthropicURL(anthropicURL); err != nil {
+	if err := checkHTTPURL(anthropicURL); err != nil {
 		return LLM{}, fmt.Errorf("ANTHROPIC_BASE_URL: %w", err)
 	}
 	effort := envOr("ANTHROPIC_EFFORT", "low")
@@ -56,6 +56,9 @@ func loadLLM() (LLM, error) {
 		cfg.RoutineModel = envOr("LLM_ROUTINE_MODEL", "anthropic/claude-haiku-5.5")
 		cfg.StrongModel = envOr("LLM_STRONG_MODEL", "anthropic/claude-sonnet-5.5")
 	case LLMAnthropic:
+		if err := checkAnthropicPath(anthropicURL); err != nil {
+			return LLM{}, fmt.Errorf("ANTHROPIC_BASE_URL: %w", err)
+		}
 		cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
 		cfg.BaseURL = anthropicURL
 		cfg.RoutineModel = envOr("LLM_ROUTINE_MODEL", "claude-haiku-5-5")
@@ -92,16 +95,18 @@ func checkModelID(provider, id string) error {
 	return nil
 }
 
-func checkAnthropicURL(raw string) error {
-	if err := checkHTTPURL(raw); err != nil {
+func checkAnthropicPath(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
 		return err
-	}
-	u, _ := url.Parse(raw)
-	if u.Path != "" && u.Path != "/" {
-		return fmt.Errorf("must have no path, since the SDK adds /v1/messages itself: got %q, use %s://%s", raw, u.Scheme, u.Host)
 	}
 	if u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("must have no query or fragment, got %q", raw)
+	}
+	path := strings.TrimSuffix(u.Path, "/")
+	if strings.HasSuffix(path, "/v1") || strings.HasSuffix(path, "/v1/messages") {
+		prefix := strings.TrimSuffix(strings.TrimSuffix(path, "/messages"), "/v1")
+		return fmt.Errorf("must not end in /v1 or /v1/messages, since the SDK adds v1/messages itself: got %q, use %s://%s%s", raw, u.Scheme, u.Host, prefix)
 	}
 	return nil
 }

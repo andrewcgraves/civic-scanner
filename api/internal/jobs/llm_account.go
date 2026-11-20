@@ -22,54 +22,83 @@ const (
 )
 
 type llmPausedError struct {
+	key  string
 	wait time.Duration
 }
 
 func (e *llmPausedError) Error() string {
-	return fmt.Sprintf("llm calls paused for %s after an account or configuration failure", e.wait)
+	return fmt.Sprintf("llm calls to %s paused for %s after an account or configuration failure", e.key, e.wait)
 }
 
 type llmBreaker struct {
 	clock    sources.Clock
 	cooldown time.Duration
 
-	mu         sync.Mutex
+	mu    sync.Mutex
+	state map[string]*breakerState
+}
+
+type breakerState struct {
+	epoch      uint64
 	openUntil  time.Time
 	probing    bool
 	probeUntil time.Time
 }
 
+type admission struct {
+	key   string
+	epoch uint64
+	probe bool
+}
+
 func newLLMBreaker(clock sources.Clock, cooldown time.Duration) *llmBreaker {
-	return &llmBreaker{clock: clock, cooldown: cooldown}
+	return &llmBreaker{clock: clock, cooldown: cooldown, state: map[string]*breakerState{}}
 }
 
-func (b *llmBreaker) allow() (bool, time.Duration) {
+func (b *llmBreaker) stateOf(key string) *breakerState {
+	s, ok := b.state[key]
+	if !ok {
+		s = &breakerState{}
+		b.state[key] = s
+	}
+	return s
+}
+
+func (b *llmBreaker) allow(key string) (admission, bool, time.Duration) {
 	now := b.clock.Now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if now.Before(b.openUntil) {
-		return false, b.openUntil.Sub(now)
+	s := b.stateOf(key)
+	if now.Before(s.openUntil) {
+		return admission{}, false, s.openUntil.Sub(now)
 	}
-	if b.probing && now.Before(b.probeUntil) {
-		return false, b.probeUntil.Sub(now)
+	if s.probing && now.Before(s.probeUntil) {
+		return admission{}, false, s.probeUntil.Sub(now)
 	}
-	if !b.openUntil.IsZero() {
-		b.probing = true
-		b.probeUntil = now.Add(b.cooldown)
+	if s.openUntil.IsZero() {
+		return admission{key: key, epoch: s.epoch}, true, 0
 	}
-	return true, 0
+	s.epoch++
+	s.probing = true
+	s.probeUntil = now.Add(b.cooldown)
+	return admission{key: key, epoch: s.epoch, probe: true}, true, 0
 }
 
-func (b *llmBreaker) record(err error) {
+func (b *llmBreaker) record(a admission, err error) {
 	now := b.clock.Now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.probing = false
+	s := b.stateOf(a.key)
 	if llm.IsAccountFailure(err) {
-		b.openUntil = now.Add(b.cooldown)
+		s.epoch++
+		s.openUntil = now.Add(b.cooldown)
+		s.probing = false
 		return
 	}
-	b.openUntil = time.Time{}
+	if a.probe && a.epoch == s.epoch {
+		s.openUntil = time.Time{}
+		s.probing = false
+	}
 }
 
 type guardedLLM struct {
@@ -84,12 +113,23 @@ func guardLLM(client llm.Client, breaker *llmBreaker) llm.Client {
 	return guardedLLM{client: client, breaker: breaker}
 }
 
+func (g guardedLLM) key(tier llm.Tier) string {
+	if r, ok := g.client.(llm.Router); ok {
+		if provider, model := r.Route(tier); model != "" {
+			return provider + " " + model
+		}
+	}
+	return "tier " + string(tier)
+}
+
 func (g guardedLLM) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	if ok, wait := g.breaker.allow(); !ok {
-		return llm.Response{}, &llmPausedError{wait: wait}
+	key := g.key(req.Tier)
+	a, ok, wait := g.breaker.allow(key)
+	if !ok {
+		return llm.Response{}, &llmPausedError{key: key, wait: wait}
 	}
 	resp, err := g.client.Complete(ctx, req)
-	g.breaker.record(err)
+	g.breaker.record(a, err)
 	return resp, err
 }
 

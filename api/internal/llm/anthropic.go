@@ -38,6 +38,11 @@ func newAnthropic(cfg config.LLM) Client {
 	}
 }
 
+func (a *anthropicClient) Route(tier Tier) (string, string) {
+	model, _ := modelFor(a.cfg, tier)
+	return config.LLMAnthropic, model
+}
+
 func AnthropicMaxTokens(requested int) int64 {
 	if requested <= 0 {
 		return AnthropicDefaultMaxTokens
@@ -133,7 +138,8 @@ func anthropicAccountFailure(apiErr *anthropic.Error) bool {
 	}
 	switch apiErr.ErrorCode() {
 	case anthropic.ErrorCodeOrganizationOnHold, anthropic.ErrorCodeEnforcedSpendLimitReached,
-		anthropic.ErrorCodeContractSpendLimitReached:
+		anthropic.ErrorCodeContractSpendLimitReached, anthropic.ErrorCodeCMEKKeyDisabled,
+		anthropic.ErrorCodeCMEKKeyNetworkBlocked, anthropic.ErrorCodeClaudeCodeKeyCreatorNotMember:
 		return true
 	}
 	return false

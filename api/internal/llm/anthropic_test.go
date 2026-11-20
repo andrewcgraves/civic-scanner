@@ -185,6 +185,37 @@ func TestAnthropicMapsTierToConfiguredModel(t *testing.T) {
 	}
 }
 
+func TestAnthropicKeepsABaseURLPathPrefix(t *testing.T) {
+	srv := okServer(t, "end_turn", "ok")
+
+	if _, err := llm.New(anthropicConfig(srv.URL+"/anthropic")).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u"}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got := srv.received()[0].path; got != "/anthropic/v1/messages" {
+		t.Errorf("path = %q, want /anthropic/v1/messages", got)
+	}
+}
+
+func TestClientsRouteEachTierToItsModel(t *testing.T) {
+	for _, tc := range []struct {
+		cfg      config.LLM
+		provider string
+	}{
+		{anthropicConfig("http://127.0.0.1"), config.LLMAnthropic},
+		{gatewayConfig("http://127.0.0.1"), config.LLMGateway},
+	} {
+		router, ok := llm.New(tc.cfg).(llm.Router)
+		if !ok {
+			t.Fatalf("%s client is not a Router", tc.provider)
+		}
+		for tier, want := range map[llm.Tier]string{llm.TierRoutine: tc.cfg.RoutineModel, llm.TierStrong: tc.cfg.StrongModel, "bogus": ""} {
+			if provider, model := router.Route(tier); provider != tc.provider || model != want {
+				t.Errorf("%s Route(%q) = %q %q, want %q", tc.provider, tier, provider, model, want)
+			}
+		}
+	}
+}
+
 func TestAnthropicOmitsEmptySystemAndDefaultsMaxTokens(t *testing.T) {
 	srv := okServer(t, "end_turn", "ok")
 
@@ -415,6 +446,46 @@ func TestAnthropicClassifiesAccountFailuresByTypeAndCode(t *testing.T) {
 			"billing type on another status", http.StatusBadRequest,
 			`{"type":"error","error":{"type":"billing_error","message":"credit"}}`,
 			"", false, true,
+		},
+		{
+			"CMEK key disabled", http.StatusBadRequest,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"key","details":{"error_code":"cmek_key_disabled"}}}`,
+			"cmek_key_disabled", false, true,
+		},
+		{
+			"CMEK key network blocked", http.StatusBadRequest,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"key","details":{"error_code":"cmek_key_network_blocked"}}}`,
+			"cmek_key_network_blocked", false, true,
+		},
+		{
+			"Claude Code key creator gone", http.StatusBadRequest,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"key","details":{"error_code":"claude_code_key_creator_not_member"}}}`,
+			"claude_code_key_creator_not_member", false, true,
+		},
+		{
+			"linked organization spend limit", http.StatusPaymentRequired,
+			`{"type":"error","error":{"type":"billing_error","message":"limit","details":{"error_code":"linked_organization_spend_limit_reached"}}}`,
+			"linked_organization_spend_limit_reached", false, true,
+		},
+		{
+			"user profile not billable", http.StatusForbidden,
+			`{"type":"error","error":{"type":"permission_error","message":"profile","details":{"error_code":"user_profile_not_billable"}}}`,
+			"user_profile_not_billable", false, true,
+		},
+		{
+			"CMEK key unreachable", http.StatusServiceUnavailable,
+			`{"type":"error","error":{"type":"api_error","message":"kms","details":{"error_code":"cmek_key_unreachable"}}}`,
+			"cmek_key_unreachable", true, false,
+		},
+		{
+			"request body encoding", http.StatusBadRequest,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"enc","details":{"error_code":"request_body_encoding_invalid"}}}`,
+			"request_body_encoding_invalid", false, false,
+		},
+		{
+			"prompt too long", http.StatusBadRequest,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long"}}`,
+			"", false, false,
 		},
 		{
 			"too large after decoding", http.StatusRequestEntityTooLarge,

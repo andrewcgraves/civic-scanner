@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,11 +53,15 @@ func (r *logRecorder) WithAttrs(attrs []slog.Attr) slog.Handler {
 func (r *logRecorder) WithGroup(string) slog.Handler { return r }
 
 func (r *logRecorder) errors(message string) []map[string]string {
+	return r.lines(slog.LevelError, message)
+}
+
+func (r *logRecorder) lines(level slog.Level, message string) []map[string]string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []map[string]string
 	for _, rec := range r.records {
-		if rec.Level != slog.LevelError || rec.Message != message {
+		if rec.Level != level || rec.Message != message {
 			continue
 		}
 		fields := map[string]string{}
@@ -111,88 +117,244 @@ func snoozeOf(t *testing.T, err error) time.Duration {
 	return snooze.Duration
 }
 
-func TestBreakerOpensOnAnAccountFailureForTheCooldown(t *testing.T) {
+const breakerKey = "gateway anthropic/claude-haiku-5.5"
+
+func admit(t *testing.T, b *llmBreaker) admission {
+	t.Helper()
+	a, ok, _ := b.allow(breakerKey)
+	if !ok {
+		t.Fatal("call refused")
+	}
+	return a
+}
+
+func refused(b *llmBreaker) bool {
+	_, ok, _ := b.allow(breakerKey)
+	return !ok
+}
+
+func openBreaker(t *testing.T) (*llmBreaker, *sourcestest.Clock) {
+	t.Helper()
 	clock := sourcestest.NewClock(breakerNow)
 	b := newLLMBreaker(clock, 10*time.Minute)
+	b.record(admit(t, b), accountError())
+	return b, clock
+}
 
-	if ok, _ := b.allow(); !ok {
-		t.Fatal("a fresh breaker refused a call")
-	}
-	b.record(accountError())
+func TestBreakerOpensOnAnAccountFailureForTheCooldown(t *testing.T) {
+	b, clock := openBreaker(t)
 	clock.Advance(4 * time.Minute)
-	if ok, wait := b.allow(); ok || wait != 6*time.Minute {
+	if _, ok, wait := b.allow(breakerKey); ok || wait != 6*time.Minute {
 		t.Fatalf("allow = %v, %v, want refused for the remaining 6m", ok, wait)
 	}
 	clock.Advance(6*time.Minute - time.Nanosecond)
-	if ok, _ := b.allow(); ok {
+	if !refused(b) {
 		t.Fatal("allowed a call before the cool-down ended")
 	}
 }
 
 func TestBreakerLetsOneProbeThroughAfterTheCooldown(t *testing.T) {
-	clock := sourcestest.NewClock(breakerNow)
-	b := newLLMBreaker(clock, 10*time.Minute)
-	b.record(accountError())
+	b, clock := openBreaker(t)
 	clock.Advance(10 * time.Minute)
 
-	if ok, _ := b.allow(); !ok {
-		t.Fatal("no probe after the cool-down")
-	}
-	if ok, wait := b.allow(); ok || wait != 10*time.Minute {
+	probe := admit(t, b)
+	if _, ok, wait := b.allow(breakerKey); ok || wait != 10*time.Minute {
 		t.Fatalf("second call while the probe is out: allow = %v, %v, want refused", ok, wait)
 	}
-
-	b.record(accountError())
-	if ok, _ := b.allow(); ok {
+	b.record(probe, accountError())
+	if !refused(b) {
 		t.Fatal("a failed probe did not reopen the breaker")
 	}
 	clock.Advance(10 * time.Minute)
-	if ok, _ := b.allow(); !ok {
-		t.Fatal("no second probe after the next cool-down")
-	}
-	b.record(nil)
+	b.record(admit(t, b), nil)
 	for range 3 {
-		if ok, _ := b.allow(); !ok {
+		if refused(b) {
 			t.Fatal("a successful probe did not close the breaker")
 		}
 	}
 }
 
 func TestBreakerReleasesAProbeThatNeverReported(t *testing.T) {
-	clock := sourcestest.NewClock(breakerNow)
-	b := newLLMBreaker(clock, 10*time.Minute)
-	b.record(accountError())
+	b, clock := openBreaker(t)
 	clock.Advance(10 * time.Minute)
-	if ok, _ := b.allow(); !ok {
-		t.Fatal("no probe")
+	lost := admit(t, b)
+	clock.Advance(10 * time.Minute)
+	second := admit(t, b)
+
+	b.record(lost, nil)
+	if !refused(b) {
+		t.Fatal("the lost probe's late result closed the breaker while the second probe is out")
 	}
-	clock.Advance(10 * time.Minute)
-	if ok, _ := b.allow(); !ok {
-		t.Fatal("a lost probe blocked calls past its own cool-down")
+	b.record(second, nil)
+	if refused(b) {
+		t.Fatal("the second probe's success did not close the breaker")
 	}
 }
 
-func TestBreakerClosesOnAnyOtherOutcome(t *testing.T) {
+func TestBreakerClosesOnAnyOtherProbeOutcome(t *testing.T) {
 	for name, err := range map[string]error{
 		"success":     nil,
 		"bad request": &llm.Error{StatusCode: 400, Err: errors.New("bad")},
 		"rate limit":  &llm.Error{StatusCode: 429, Retryable: true, Err: errors.New("slow")},
+		"timeout":     &llm.Error{Retryable: true, Err: context.DeadlineExceeded},
 		"truncated":   llm.ErrTruncated,
 	} {
 		t.Run(name, func(t *testing.T) {
-			clock := sourcestest.NewClock(breakerNow)
-			b := newLLMBreaker(clock, 10*time.Minute)
-			b.record(accountError())
+			b, clock := openBreaker(t)
 			clock.Advance(10 * time.Minute)
-			b.allow()
-			b.record(err)
-			if ok, _ := b.allow(); !ok {
-				t.Error("breaker still open")
-			}
-			if ok, _ := b.allow(); !ok {
-				t.Error("breaker still probing")
+			b.record(admit(t, b), err)
+			for range 2 {
+				if refused(b) {
+					t.Fatal("breaker still open or probing")
+				}
 			}
 		})
+	}
+}
+
+func TestBreakerIgnoresALateResultFromACallAdmittedBeforeItOpened(t *testing.T) {
+	clock := sourcestest.NewClock(breakerNow)
+	b := newLLMBreaker(clock, 10*time.Minute)
+	inFlight := admit(t, b)
+	failing := admit(t, b)
+	b.record(failing, accountError())
+
+	b.record(inFlight, &llm.Error{Retryable: true, Err: errors.New("timeout")})
+	if !refused(b) {
+		t.Fatal("a stale non-account result from a call started before the breaker opened closed it")
+	}
+	b.record(inFlight, nil)
+	if !refused(b) {
+		t.Fatal("a stale success closed the breaker")
+	}
+}
+
+func TestBreakerStrayResultNeverClearsAnInFlightProbe(t *testing.T) {
+	clock := sourcestest.NewClock(breakerNow)
+	b := newLLMBreaker(clock, 10*time.Minute)
+	stray := admit(t, b)
+	b.record(admit(t, b), accountError())
+	clock.Advance(10 * time.Minute)
+	probe := admit(t, b)
+
+	b.record(stray, &llm.Error{Retryable: true, Err: errors.New("context canceled")})
+	if !refused(b) {
+		t.Fatal("second call allowed while the first probe is still in flight")
+	}
+	b.record(probe, nil)
+	if refused(b) {
+		t.Fatal("the probe's own success did not close the breaker")
+	}
+}
+
+func TestBreakerReopensOnALateAccountFailure(t *testing.T) {
+	clock := sourcestest.NewClock(breakerNow)
+	b := newLLMBreaker(clock, 10*time.Minute)
+	late := admit(t, b)
+	b.record(admit(t, b), accountError())
+	clock.Advance(10 * time.Minute)
+	probe := admit(t, b)
+	b.record(late, accountError())
+	b.record(probe, nil)
+	if !refused(b) {
+		t.Fatal("a probe admitted before the latest account failure closed the breaker")
+	}
+}
+
+func TestBreakerKeysAreIndependent(t *testing.T) {
+	b, _ := openBreaker(t)
+	if _, ok, _ := b.allow("gateway anthropic/claude-sonnet-5.5"); !ok {
+		t.Fatal("a failure on one model paused another")
+	}
+}
+
+type gatedLLM struct {
+	calls atomic.Int64
+	gate  chan struct{}
+	err   error
+}
+
+func (g *gatedLLM) Complete(context.Context, llm.Request) (llm.Response, error) {
+	g.calls.Add(1)
+	<-g.gate
+	return llm.Response{}, g.err
+}
+
+func TestBreakerLetsExactlyOneProbeThroughUnderConcurrency(t *testing.T) {
+	for range 50 {
+		clock := sourcestest.NewClock(breakerNow)
+		b := newLLMBreaker(clock, 10*time.Minute)
+		opening, _, _ := b.allow("tier " + string(llm.TierRoutine))
+		b.record(opening, accountError())
+		clock.Advance(10 * time.Minute)
+		inner := &gatedLLM{gate: make(chan struct{}), err: accountError()}
+		guarded := guardLLM(inner, b)
+		var wg sync.WaitGroup
+		var paused atomic.Int64
+		start := make(chan struct{})
+		for range 64 {
+			wg.Go(func() {
+				<-start
+				if _, err := guarded.Complete(context.Background(), llm.Request{Tier: llm.TierRoutine}); isLLMPaused(err) {
+					paused.Add(1)
+				}
+			})
+		}
+		close(start)
+		for paused.Load() < 63 && inner.calls.Load() < 2 {
+			runtime.Gosched()
+		}
+		close(inner.gate)
+		wg.Wait()
+		if inner.calls.Load() != 1 || paused.Load() != 63 {
+			t.Fatalf("calls = %d, paused = %d, want 1 and 63", inner.calls.Load(), paused.Load())
+		}
+	}
+}
+
+type routedLLM struct {
+	*llmtest.Fake
+	models map[llm.Tier]string
+}
+
+func (r routedLLM) Route(tier llm.Tier) (string, string) { return "anthropic", r.models[tier] }
+
+func TestGuardedLLMKeysTheBreakerByProviderAndModel(t *testing.T) {
+	fake := &llmtest.Fake{Respond: func(req llm.Request) (llm.Response, error) {
+		if req.Tier == llm.TierStrong {
+			return llm.Response{}, accountError()
+		}
+		return llm.Response{Text: "ok", FinishReason: "stop"}, nil
+	}}
+	guarded, _ := breakerFor(routedLLM{Fake: fake, models: map[llm.Tier]string{llm.TierRoutine: "claude-haiku-5-5", llm.TierStrong: "claude-sonnet-5-5"}})
+
+	if _, err := guarded.Complete(t.Context(), llm.Request{Tier: llm.TierStrong}); !llm.IsAccountFailure(err) {
+		t.Fatalf("strong: err = %v", err)
+	}
+	_, err := guarded.Complete(t.Context(), llm.Request{Tier: llm.TierStrong})
+	if !isLLMPaused(err) || !strings.Contains(err.Error(), "anthropic claude-sonnet-5-5") {
+		t.Fatalf("strong again: err = %v, want paused for that model", err)
+	}
+	for range 3 {
+		if _, err := guarded.Complete(t.Context(), llm.Request{Tier: llm.TierRoutine}); err != nil {
+			t.Fatalf("routine: err = %v, want calls to the healthy model to flow", err)
+		}
+	}
+	if n := len(fake.Calls()); n != 4 {
+		t.Errorf("model calls = %d, want 4", n)
+	}
+}
+
+func TestGuardedLLMSharesTheBreakerWhenTiersShareAModel(t *testing.T) {
+	fake := llmtest.Failing(accountError())
+	guarded, _ := breakerFor(routedLLM{Fake: fake, models: map[llm.Tier]string{llm.TierRoutine: "claude-haiku-5-5", llm.TierStrong: "claude-haiku-5-5"}})
+
+	_, _ = guarded.Complete(t.Context(), llm.Request{Tier: llm.TierStrong})
+	if _, err := guarded.Complete(t.Context(), llm.Request{Tier: llm.TierRoutine}); !isLLMPaused(err) {
+		t.Errorf("err = %v, want the shared model paused", err)
+	}
+	if n := len(fake.Calls()); n != 1 {
+		t.Errorf("model calls = %d, want 1", n)
 	}
 }
 
@@ -211,6 +373,9 @@ func TestGuardedLLMSkipsTheModelWhileOpen(t *testing.T) {
 	}
 	if n := len(failing.Calls()); n != 1 {
 		t.Errorf("model calls = %d, want 1", n)
+	}
+	if _, err := guarded.Complete(t.Context(), llm.Request{Tier: llm.TierStrong}); !llm.IsAccountFailure(err) {
+		t.Errorf("strong tier: err = %v, want its own call when the client names no models", err)
 	}
 	if guardLLM(nil, b) != nil {
 		t.Error("guarding no client must keep no client")
@@ -374,5 +539,40 @@ func TestChangeNoteAccountFailureFallsBackToTheWordDiffAndTripsTheBreaker(t *tes
 	}
 	if n := len(logs.errors(LLMAccountFailureMessage)); n != 1 {
 		t.Errorf("error lines = %d, want still 1", n)
+	}
+	var reasons []string
+	for _, line := range logs.lines(slog.LevelInfo, "agenda change recorded") {
+		reasons = append(reasons, line["reason"])
+	}
+	if !slices.Equal(reasons, []string{"llm_account_failure", "llm_paused"}) {
+		t.Errorf("reasons = %v, want llm_account_failure then llm_paused", reasons)
+	}
+}
+
+func TestChangeNoteUsesTheModelWhenOnlyAnotherModelIsPaused(t *testing.T) {
+	fake := &llmtest.Fake{Respond: func(req llm.Request) (llm.Response, error) {
+		if req.Tier == llm.TierStrong {
+			return llm.Response{}, accountError()
+		}
+		return llm.Response{Text: "The contract rose.", FinishReason: "stop"}, nil
+	}}
+	client, _ := breakerFor(routedLLM{Fake: fake, models: map[llm.Tier]string{llm.TierRoutine: "claude-haiku-5-5", llm.TierStrong: "claude-sonnet-5-5"}})
+	if _, err := client.Complete(t.Context(), llm.Request{Tier: llm.TierStrong}); !llm.IsAccountFailure(err) {
+		t.Fatalf("strong: err = %v", err)
+	}
+	v1, v2 := changePair()
+	st := newFakeChangeStore(v1, v2)
+	logs := &logRecorder{}
+	w := changeWorker(st, client)
+	w.logger = slog.New(logs)
+
+	if err := w.Work(t.Context(), changeJob(v2.ID, 1)); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	if got := st.recorded(); len(got) != 1 || got[0].source != store.NoteFromModel || got[0].note != "The contract rose." {
+		t.Errorf("recorded = %+v, want the model's note on the healthy routine model", got)
+	}
+	if lines := logs.lines(slog.LevelInfo, "agenda change recorded"); len(lines) != 1 || lines[0]["reason"] != "model" {
+		t.Errorf("recorded lines = %v, want reason model", lines)
 	}
 }
