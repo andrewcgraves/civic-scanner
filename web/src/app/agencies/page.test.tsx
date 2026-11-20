@@ -1,6 +1,8 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("next/server", () => ({ connection: () => Promise.resolve() }));
+
 async function renderWithFetch(fetchImpl: typeof fetch) {
   const fetchMock = vi.fn(fetchImpl);
   vi.stubGlobal("fetch", fetchMock);
@@ -15,6 +17,7 @@ const alertText = "Agencies are unavailable right now. Please try again later.";
 describe("AgenciesPage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("lists agencies from the API", async () => {
@@ -33,7 +36,9 @@ describe("AgenciesPage", () => {
       ),
     );
 
-    expect(screen.getByRole("heading", { name: "Agencies" })).toBeVisible();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Agencies" }),
+    ).toBeVisible();
     expect(screen.getByText("LA Metro")).toBeInTheDocument();
     const [request] = fetchMock.mock.calls[0] ?? [];
     expect(request).toBeInstanceOf(Request);
@@ -51,6 +56,7 @@ describe("AgenciesPage", () => {
   });
 
   it("shows an alert when the API returns an error", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     await renderWithFetch(() =>
       Promise.resolve(
         Response.json(
@@ -64,6 +70,7 @@ describe("AgenciesPage", () => {
   });
 
   it("shows an alert when the API is unreachable", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
     await renderWithFetch(() => Promise.reject(new TypeError("fetch failed")));
 
     expect(screen.getByRole("alert")).toHaveTextContent(alertText);

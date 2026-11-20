@@ -15,3 +15,11 @@ export const api = createClient<paths>({ baseUrl: apiBaseUrl });
 
 export type Agency = components["schemas"]["Agency"];
 export type ApiError = components["schemas"]["Error"];
+export type MeetingStatus = components["schemas"]["MeetingStatus"];
+export type MeetingSummary = components["schemas"]["MeetingSummary"];
+export type MeetingList = components["schemas"]["MeetingList"];
+export type MeetingDetail = components["schemas"]["MeetingDetail"];
+export type Agenda = components["schemas"]["Agenda"];
+export type Recording = components["schemas"]["Recording"];
+export type Transcript = components["schemas"]["Transcript"];
+export type TranscriptSegment = components["schemas"]["TranscriptSegment"];

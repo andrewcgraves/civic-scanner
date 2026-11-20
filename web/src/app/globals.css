@@ -1,1 +1,112 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  --color-canvas: #f7f7f5;
+  --color-surface: #ffffff;
+  --color-surface-muted: #eff1f0;
+  --color-ink: #1a1d21;
+  --color-ink-muted: #4b535e;
+  --color-line: #dbdee2;
+  --color-line-strong: #b5bcc5;
+  --color-accent: #1d5a92;
+  --color-accent-strong: #144675;
+  --color-focus: #1d5a92;
+
+  --color-scheduled-surface: #e6eff8;
+  --color-scheduled-ink: #1b4a77;
+  --color-held-surface: #e5f2e9;
+  --color-held-ink: #1d6036;
+  --color-cancelled-surface: #f8e8e8;
+  --color-cancelled-ink: #8f2828;
+
+  --color-ai-surface: #f5f2fb;
+  --color-ai-line: #dcd3f0;
+  --color-ai-ink: #48388a;
+
+  --color-error-surface: #fbeeee;
+  --color-error-line: #eec3c3;
+  --color-error-ink: #842121;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-canvas: #111417;
+    --color-surface: #181c20;
+    --color-surface-muted: #20252a;
+    --color-ink: #e7e9ec;
+    --color-ink-muted: #a4adb8;
+    --color-line: #2d343b;
+    --color-line-strong: #46505a;
+    --color-accent: #8dc3f2;
+    --color-accent-strong: #b5d8f7;
+    --color-focus: #8dc3f2;
+
+    --color-scheduled-surface: #172f47;
+    --color-scheduled-ink: #b7d7f4;
+    --color-held-surface: #163522;
+    --color-held-ink: #b1e0c1;
+    --color-cancelled-surface: #451c1c;
+    --color-cancelled-ink: #f3c0c0;
+
+    --color-ai-surface: #221d33;
+    --color-ai-line: #3d3460;
+    --color-ai-ink: #d4c9f4;
+
+    --color-error-surface: #2c1717;
+    --color-error-line: #5c2b2b;
+    --color-error-ink: #f2c3c3;
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: light dark;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  [id] {
+    scroll-margin-top: 1.5rem;
+  }
+
+  a {
+    text-underline-offset: 0.2em;
+  }
+}
+
+@layer components {
+  .link {
+    color: var(--color-accent);
+    text-decoration-line: underline;
+    text-decoration-thickness: 1px;
+  }
+
+  .link:hover {
+    color: var(--color-accent-strong);
+    text-decoration-thickness: 2px;
+  }
+
+  .prose {
+    max-width: 70ch;
+    line-height: 1.75;
+    overflow-wrap: break-word;
+  }
+
+  .prose > * + * {
+    margin-top: 1em;
+  }
+}

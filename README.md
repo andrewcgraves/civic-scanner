@@ -214,8 +214,9 @@ Unfinished work ships dark behind a flag. Both sides evaluate flags through [Ope
 
 The web app evaluates every flag on the server, through `@openfeature/server-sdk`, and hands the results to client components. `web/src/lib/flags/` wraps it. Callers import only from there, never from OpenFeature or PostHog.
 
-- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `test-only-flag` exists only for the module's own tests.
+- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `agency-pages` turns on `/agencies/{slug}`, `meeting-pages` turns on `/meetings/{id}`, and `meeting-transcripts` turns on the transcript section of the meeting page (see [Web pages](#web-pages)). The landing page and `/agencies` have no flag. `test-only-flag` exists only for the module's own tests.
 - **Server components:** `await isFlagEnabled("flag-key")` from `@/lib/flags/server`.
+- **Routes behind a flag:** `await requireFlag("flag-key")` from `@/lib/flags/server` calls Next's `notFound()` when the flag is off, so a dark route answers 404 exactly like a path that does not exist.
 - **Client components:** `useFlag("flag-key")` from `@/lib/flags/client`. The root layout calls `getFlagsOn()` from `@/lib/flags/server`, which evaluates each registered key with the OpenFeature client, and passes the keys that are on to `FlagsProvider`, a plain React context that supplies `useFlag`. A client component's server-rendered HTML and its first render in the browser therefore already show the right value: a flag that is on does not flash off, and hydration does not mismatch.
 
 Every flag is a boolean and defaults to off. An unregistered or unknown flag, a multivariate PostHog flag, a PostHog error, a slow or unreachable PostHog, a provider that fails to start, and a client component outside `FlagsProvider` all evaluate to off.
@@ -321,6 +322,81 @@ Search params: `ALLOWED_SEARCH_PARAMS` in `payload.ts` is the list of search par
 - Content-Security-Policy: the app sets none. If one is added, `connect-src` must allow `NEXT_PUBLIC_POSTHOG_HOST`; no `script-src` entry is needed, since the PostHog code is served from our own origin.
 - Reverse proxy: ad blockers commonly block `*.posthog.com`, which loses those visitors' events. A first-party proxy (PostHog's managed proxy, or Next or Vercel rewrites) avoids that; point `NEXT_PUBLIC_POSTHOG_HOST` at it. The server-side flags use the same host, so the proxy must forward `/flags/` as well as `/e/`. Not set up yet.
 - Tests: `client.test.ts` and `analytics.test.tsx` mock `posthog-js/dist/module.slim.no-external`, `next/navigation` and `next/web-vitals`. `real-posthog.test.ts` runs the real PostHog client under jsdom with `fetch`, `XMLHttpRequest` and `sendBeacon` stubbed, and checks the decoded payloads: the exact property set of each event, no search params, hash or referrer anywhere, `/e/` as the only endpoint, no script element, no cookie and nothing left in storage. `client.ts` keeps its state in the module, so each test calls `vi.resetModules()` and imports it again.
+
+## Web pages
+
+The public pages share one shell, one set of primitives and one way of loading data. Follow these conventions in every page.
+
+### Shell
+
+`web/src/app/layout.tsx` renders the skip link, the header (site name linking home, the primary navigation from `NAV_ITEMS` in `web/src/components/site-nav.tsx`, the account menu when sign-in is on), `<main id="main">` and the footer. A page renders only its content: never its own `<main>`, `<header>` for the site, footer or outer width container. The layout sets the width (`max-w-4xl` with side padding) and the vertical padding. `not-found.tsx`, `error.tsx` and `loading.tsx` at the app root cover every route; add a route-level one only when a route needs different words.
+
+### Design tokens
+
+`web/src/app/globals.css` defines the colours as Tailwind 4 `@theme` variables and redefines them under `prefers-color-scheme: dark`, so a utility such as `bg-surface` or `text-ink-muted` is right in both schemes. Use these tokens, not Tailwind's palette (`gray-500`, `blue-700`) or hex values:
+
+| Token | Use |
+| --- | --- |
+| `canvas`, `surface`, `surface-muted` | page background, cards and the header, hover and quiet fills |
+| `ink`, `ink-muted` | body text, secondary text |
+| `line`, `line-strong` | borders and dividers |
+| `accent`, `accent-strong` | links and their hover; `focus` is the focus ring |
+| `scheduled-*`, `held-*`, `cancelled-*`, `ai-*`, `error-*` | `-surface`, `-ink` (and `-line`) for status badges, the AI label and error notices |
+
+Base styles give every focusable element a visible `:focus-visible` outline and every element with an `id` a scroll margin, so in-page links (transcript timestamps) do not land under the edge. Two classes cover text: `link` for an inline link, `prose` for long text (70 characters wide, 1.75 line height, spaced paragraphs). Type is the system font stack: `h1` comes from `PageHeader`, `h2` and `h3` from `Section`.
+
+### Primitives
+
+`web/src/components/ui/`, one component per file, imported by path (there is no index file). Each is a server component unless noted and works at phone width.
+
+| Import | Use it for |
+| --- | --- |
+| `PageHeader` from `@/components/ui/page-header` | the top of every page: the only `h1`, with optional `breadcrumb`, `eyebrow`, `description` and children for a meta line (status badge, date) |
+| `Breadcrumb` from `@/components/ui/breadcrumb` | the trail above the title; pass it through `PageHeader`'s `breadcrumb` rather than rendering it yourself |
+| `Section` from `@/components/ui/section` | each titled part of a page; a `<section>` labelled by its `h2` (or `h3` with `level={3}`), with optional `id`, `description` and `actions` |
+| `LinkList`, `LinkListItem` from `@/components/ui/link-list` | a list of things that each open a page of this site (agencies, meetings); the whole row is one link |
+| `MeetingStatusBadge` from `@/components/ui/meeting-status-badge` | a meeting's `status`; `Badge` from `@/components/ui/badge` for other short labels |
+| `ExternalLink` from `@/components/ui/external-link` | every link to an agency's site, document or recording; same tab, `rel="external noopener noreferrer"`, a visible arrow and "(leaves Civic Scanner)" for screen readers; a URL that is not `http` or `https` renders as plain text |
+| `AiSummary` from `@/components/ui/ai-summary` | any AI-written text (agenda summary, change note, transcript summary): the "AI-generated" label, the text as paragraphs, and a note that the agency's original is the record (pass `note` to link that original) |
+| `EmptyState` from `@/components/ui/empty-state` | a list or section that is legitimately empty |
+| `Notice`, `UnavailableNotice` from `@/components/ui/notice` | `Notice` for an inline note (`tone="info"`, the default) or error (`tone="error"`, `role="alert"`); `UnavailableNotice what="Meetings are"` when a loader returns unavailable |
+| `MeetingTime`, `Offset` from `@/components/ui/date-time` | every date and time a page shows (see below) |
+
+Components used by one route only go in `web/src/app/<route>/_components/`, with their tests beside them. Move one into `web/src/components/ui/` only when a second route needs it.
+
+### Loading data
+
+Pages load API data through the loaders in `web/src/lib/api/load.ts`, never by calling `api` from `@/lib/api/client` directly: `loadAgencies()`, `loadAgency(slug)`, `loadAgencyMeetings(slug, cursor?, limit?)` and `loadMeeting(id)`. Each returns `{ ok: true, data }` or `{ ok: false }`:
+
+- **Not found.** A 404 or 400 from the API, a slug that is not lowercase letters and digits in hyphen-separated groups (at most 100 characters) and a meeting id that is not a UUID all call Next's `notFound()`, which renders the root `not-found.tsx` with status 404. The last two make no request.
+- **Unavailable.** A network error, a timeout (10 seconds) or any other non-2xx status returns `{ ok: false }` and logs `API request failed: <route>` on the server. The page renders the rest of itself with an `UnavailableNotice` where the data would be; it never throws for this.
+- **Caching.** Every loader calls `connection()` and fetches with `cache: "no-store"`, so pages that load data are rendered per request and always show the API's current state. Data changes on its own schedule (agendas, summaries and transcripts arrive at any time), the meeting response can be over Next's 2 MB data-cache limit once a transcript is attached, and in PostHog mode every page is rendered per request already (see [Feature flags](#web)). To cache later, change `settle` in `load.ts`; it is the only place.
+- **Deduplication.** The loaders are wrapped in React's `cache`, so `generateMetadata` and the page calling the same loader with the same arguments make one request.
+
+The types pages need are exported from `@/lib/api/client`: `Agency`, `MeetingStatus`, `MeetingSummary`, `MeetingList`, `MeetingDetail`, `Agenda`, `Recording`, `Transcript`, `TranscriptSegment`.
+
+### Dates and times
+
+All meeting dates are shown in `America/Los_Angeles` with the zone abbreviation, whatever the visitor's zone, through `web/src/lib/datetime.ts`. The functions assemble their output from `Intl` parts with plain spaces, so the same instant gives the same string on the server, in the browser and in tests on any machine.
+
+| Function | Example |
+| --- | --- |
+| `formatMeetingDateTime` (`MeetingTime` default) | `Wednesday, January 20, 2027 at 9:00 AM PST` |
+| `formatMeetingDate` (`format="date"`) | `Wednesday, January 20, 2027` |
+| `formatMeetingTime` (`format="time"`) | `9:00 AM PST` |
+| `formatShortDate` (`format="short-date"`) | `Wed, Jan 20, 2027` |
+| `formatShortDateTime` (`format="short-datetime"`) | `Wed, Jan 20, 2027, 9:00 AM PST` |
+| `formatOffset` (`Offset`) | `1:02:03` from `3723000` ms, `2:03` under an hour |
+
+Render dates with `<MeetingTime value={iso} format="..." />`, which wraps the text in `<time dateTime>`; `<Offset ms={...} />` does the same for transcript offsets with an ISO 8601 duration. `isUpcoming(iso, now)` takes `now` as an argument: read the clock once per render in the page and pass it down, and pass a fixed date in tests.
+
+### Flags
+
+Each new page starts dark. A route behind a flag calls `await requireFlag("agency-pages")` (or `"meeting-pages"`) first in the page and in `generateMetadata`. A section behind a flag checks `await isFlagEnabled("meeting-transcripts")` and renders nothing when it is off. All three keys are already registered; add a new key to `registry.ts` only for a new flag.
+
+### Tests
+
+Every page, `_components` file and helper gets a Vitest test beside it, and coverage of new files stays at 100%. Pages are async server components: render `await Page({ params: Promise.resolve({ slug: "la-metro" }) })` with Testing Library. Stub `fetch` with `vi.stubGlobal`, then `vi.resetModules()` and import the page, since the API client keeps the `fetch` it was created with; mock `next/server` (`connection`) and `next/navigation` (`notFound` throwing a recognisable error); and silence `console.error` in unavailable cases. Cover found, not found, unavailable, empty, and the flag off. No network, no real clock: pass `now` explicitly. `web/src/lib/api/load.test.ts` and `web/src/app/agencies/page.test.tsx` show the pattern.
 
 ## CI
 
