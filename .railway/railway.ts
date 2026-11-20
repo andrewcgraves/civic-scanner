@@ -76,6 +76,8 @@ export default defineRailway(() => {
       AUDIO_MEDIA_USER_AGENT:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       LLM_PROVIDER: "anthropic",
+      TRANSCRIPTION_CONCURRENCY: "1",
+      TRANSCRIPTION_CHUNK_RETRIES: "10",
       ANTHROPIC_API_KEY: preserve(),
       AI_GATEWAY_API_KEY: preserve(),
       FIRECRAWL_API_KEY: preserve(),
