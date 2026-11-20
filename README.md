@@ -1299,6 +1299,7 @@ The workflow needs two things set up in GitHub:
 
 - A repository secret, `RAILWAY_TOKEN`: a Railway [project token](https://docs.railway.com/integrations/api#project-token) for the production environment. The token can change that environment only.
 - An environment named `railway-production` (Settings, Environments) with a required reviewer. Without the required reviewer GitHub creates the environment on first use with no protection, and the apply job runs as soon as the pull request merges.
+
 The root `package.json` and `pnpm-lock.yaml` exist for this workflow: they pin the `railway` package that `.railway/railway.ts` imports.
 
 By hand, with the [Railway CLI](https://docs.railway.com/cli) installed:
