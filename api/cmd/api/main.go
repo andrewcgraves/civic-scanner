@@ -13,6 +13,7 @@ import (
 	_ "time/tzdata"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
+	"github.com/andrewcgraves/civic-scanner/api/internal/billing"
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/httpapi"
@@ -39,6 +40,9 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger := config.NewLogger(cfg)
+	if cfg.Stripe.Problem != "" {
+		logger.ErrorContext(ctx, "billing is not configured: the Stripe settings are invalid", "problem", cfg.Stripe.Problem)
+	}
 
 	shutdownFlags, err := featureflags.Init(ctx, cfg.FeatureFlags, logger)
 	if err != nil {
@@ -60,9 +64,19 @@ func run(ctx context.Context) error {
 	}
 	defer pool.Close()
 
+	db := store.New(pool)
+	biller := billing.New(cfg.Stripe, cfg.Web.PublicURL, db, billing.WithLogger(logger))
+	if biller.Configured() {
+		logger.InfoContext(ctx, "billing configured", "stripe_mode", cfg.Stripe.Mode(), "stripe_price", cfg.Stripe.PriceID)
+	}
+
 	srv := &http.Server{
-		Addr:              net.JoinHostPort("", cfg.Port),
-		Handler:           httpapi.NewRouter(httpapi.NewHandler(store.New(pool), logger, version, httpapi.WithAuthenticator(verifier), httpapi.WithPublicWebURL(cfg.Web.PublicURL)), logger),
+		Addr: net.JoinHostPort("", cfg.Port),
+		Handler: httpapi.NewRouter(httpapi.NewHandler(db, logger, version,
+			httpapi.WithAuthenticator(verifier),
+			httpapi.WithPublicWebURL(cfg.Web.PublicURL),
+			httpapi.WithBilling(biller),
+		), logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

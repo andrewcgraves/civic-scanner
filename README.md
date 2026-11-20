@@ -44,7 +44,7 @@ Generated files are committed and never edited by hand. CI regenerates them and 
 
 ## API
 
-Every route is under `/v1`. All are public except `GET /v1/me`, which needs a WorkOS access token (see [Authentication](#authentication)). `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
+Every route is under `/v1`. All are public except `GET /v1/me` and the two `POST /v1/billing/*` routes, which need a WorkOS access token (see [Authentication](#authentication)). `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
 
 | Route | Returns |
 | --- | --- |
@@ -55,6 +55,8 @@ Every route is under `/v1`. All are public except `GET /v1/me`, which needs a Wo
 | `GET /v1/meetings/{id}` | one meeting of a live agency, with its agency, latest agenda version and recordings with their transcripts |
 | `GET`, `HEAD /v1/agencies/{slug}/feed.xml` | an RSS 2.0 feed of a live agency's latest meeting events, behind a flag (see "Agency RSS feeds"); the website serves it at `/agencies/{slug}/feed.xml` |
 | `GET /v1/me` | the signed-in user (`id`, `email`, `createdAt`), creating it on first sight; behind the `accounts` flag |
+| `POST /v1/billing/checkout-session` | `{"url"}` of a Stripe Checkout Session for the paid plan; behind `accounts` and `billing` (see [Billing](#billing)) |
+| `POST /v1/billing/portal-session` | `{"url"}` of a Stripe billing portal session for the user's Stripe customer; behind `accounts` and `billing` |
 
 - **Not live is not found:** an unknown slug and a pending or rejected agency get the same 404 (`not_found`), so a caller cannot tell whether an unpublished agency exists. A live agency with no meetings returns an empty list.
 - **Meeting items** carry `id`, `title`, `startsAt` (UTC), `status` (`scheduled`, `held`, `cancelled`) and `sourceUrl`, the agency's page for the meeting, left out when the source gave none. New optional fields, such as agenda or summary links, can be added later without breaking clients, which must ignore fields they do not know.
@@ -137,7 +139,7 @@ Requests:
 - Signed-in handlers call `h.requireUser(ctx)`, which returns the `store.User`, creating it on first sight, or an error to map: `ErrNoCredentials` and `auth.ErrInvalidToken` to 401, `auth.ErrNotConfigured` and `auth.ErrUnavailable` to 503. `httpapi.IdentityFrom(ctx)` returns the verified identity without touching the database.
 - 401 is always `{"code":"unauthorized","message":"a valid bearer token is required"}` with `WWW-Authenticate: Bearer`, whatever the reason; the reason is logged at `debug`. 503 means the token could not be checked, not that it is bad, so a client must not sign the user out on it. Tokens are never logged.
 - `GET /v1/me` checks the token before the flag: no token or an invalid one is a 401, and a token that cannot be checked a 503, whether the flag is on or off, so a client can always tell "refresh the token" from "feature off". Only a verified user is checked against the `accounts` flag, evaluated for that user; with the flag off for them it answers 404 `not_found` and creates no user.
-- Every response of a signed-in route (`GET /v1/me`, all statuses) carries `Cache-Control: no-store`. The `noStore` strict middleware sets it for the operations listed in `privateOperations`; add new signed-in operations there.
+- Every response of a signed-in route (`GET /v1/me` and the billing routes, all statuses) carries `Cache-Control: no-store`. The `noStore` strict middleware sets it for the operations listed in `privateOperations`; add new signed-in operations there.
 - The API has no CORS handling, so a browser on another origin cannot call it with a bearer token. The web app makes signed-in calls from its server (`callApiAsUser`, below); a browser never holds the token.
 
 Users (`users`, migration `00009`):
@@ -145,6 +147,7 @@ Users (`users`, migration `00009`):
 - One row per WorkOS user, unique on `workos_user_id` (the token's `sub`), with our own `id` (uuid), a nullable `email`, `created_at` and `updated_at`. The WorkOS id is the only identity key; `GET /v1/me` returns our `id`, not the WorkOS id.
 - AuthKit access tokens carry no email. The API reads an optional `email` claim, which the environment's [JWT template](https://workos.com/docs/authkit/jwt-templates) adds with `{"email": {{ user.email }}}`. Without the template `email` stays null; the API does not call the WorkOS user API, so it needs no WorkOS secret. Email is mutable data: it is not unique, a token with a different email updates it, and a token without one leaves it alone.
 - `store.EnsureUser` reads the row first and writes only when the user is new or the email changed. The write is `INSERT ... ON CONFLICT (workos_user_id) DO UPDATE`, so concurrent first requests for one user create exactly one row and all get it back.
+- `stripe_customer_id` (migration `00013`) is the user's Stripe customer, set by the first checkout and cleared only when Stripe no longer knows it (see [Billing](#billing)); nullable and unique. It is not returned by `GET /v1/me`.
 - `role` (migration `00012`) is `user` or `admin`, `NOT NULL DEFAULT 'user'` with the `users_role_check` constraint, so every new user, and every user from before the column, is `user`. `GET /v1/me` returns it as `role`. Plan (CIV-37) is a later column.
 
 ### Admins
@@ -212,9 +215,9 @@ Sign-out is the server action `signOutAction` (`web/src/lib/auth/actions.ts`), a
 
 Return paths: `returnTo` goes through `safeReturnPath` (`return-path.ts`) before it is sealed into the state. The value is checked, normalised with the URL parser (dot segments resolved, the fragment dropped), and the normalised path and query are checked again, so `/.//host` and `/x/..//host`, which normalise to `//host`, are refused. A path is kept only if it starts with a single `/`, has no backslash, space or control character, is at most 2,048 characters, and, once percent-decoded, does not start with `//`, contain a backslash or a `.` or `..` segment, or lie under `/auth` in any letter case; anything else, including absolute and `javascript:` URLs, becomes `/`. The callback also builds the final URL on the redirect URI's origin from only the path and query, so a return path cannot leave the site either way.
 
-The proxy (`web/src/proxy.ts`) runs only for `/auth/session` (`matcher: ["/auth/session"]`), and returns at once unless WorkOS is configured and the request has a session cookie. Then AuthKit's `authkit()` verifies the access token against the WorkOS key set (fetched once and cached by `jose`), refreshes it when it expires within 60 seconds, and passes the session to the route in request headers that never reach the browser; the configured redirect URI is passed explicitly, and client-sent `x-workos-*`, `x-redirect-uri` and `x-civic-session-state` headers are dropped. The proxy also tells the route, in `x-civic-session-state`, whether it refreshed the session in this request (`refreshed`) or kept a cookie whose session it could not verify (`unverified`). It never sets a sign-in verifier cookie on this route. Pages, the RSS route and static assets never go through it, so the route table is unchanged: `/` stays static and `/agencies` and the feed stay dynamic as before.
+The proxy (`web/src/proxy.ts`) runs only for `/auth/session` and `/billing` (`matcher: ["/auth/session", "/billing"]`; `/billing` because its server actions call the API as the user), and returns at once unless WorkOS is configured and the request has a session cookie. Then AuthKit's `authkit()` verifies the access token against the WorkOS key set (fetched once and cached by `jose`), refreshes it when it expires within 60 seconds, and passes the session to the route in request headers that never reach the browser; the configured redirect URI is passed explicitly, and client-sent `x-workos-*`, `x-redirect-uri` and `x-civic-session-state` headers are dropped. The proxy also tells the route, in `x-civic-session-state`, whether it refreshed the session in this request (`refreshed`) or kept a cookie whose session it could not verify (`unverified`). It never sets a sign-in verifier cookie on this route. Other pages, the RSS route and static assets never go through it, so the route table is unchanged: `/` stays static and `/agencies` and the feed stay dynamic as before.
 
-The header (`web/src/components/account-menu.tsx`) is rendered by the root layout only when the header is reserved as above. Without it the visible HTML is unchanged; the page payload still references the account menu's client chunk and carries a null child where the header would be. The header is one line high (`h-6`) in every state, so nothing on the page moves when the session arrives. It is a client component with no props: after hydration it fetches `/auth/session` and shows nothing until the answer arrives (and nothing if the request fails), so static pages stay static and nobody sees a flash of the wrong control. Signed out, it is a `Sign in` link (a plain `<a>`, so nothing prefetches it and starts a flow) with the current path and query as `returnTo`. Signed in, it is a button labelled with the email, or `Account` without one, that discloses a panel with a `Sign out` button (`aria-expanded` and `aria-controls`; opening it moves focus to `Sign out`; Escape closes it and returns focus to the button; focus leaving it or a pointer down outside closes it). It uses the page's underline link style; there is no mockup, and no account, dashboard or billing page. Cost: about 1.3 KB gzipped of first-load JavaScript on every page even with sign-in off, and with sign-in on one `/auth/session` request per full page load, which for a signed-in user also calls `GET /v1/me`.
+The header (`web/src/components/account-menu.tsx`) is rendered by the root layout only when the header is reserved as above. Without it the visible HTML is unchanged; the page payload still references the account menu's client chunk and carries a null child where the header would be. The header is one line high (`h-6`) in every state, so nothing on the page moves when the session arrives. It is a client component with no props: after hydration it fetches `/auth/session` and shows nothing until the answer arrives (and nothing if the request fails), so static pages stay static and nobody sees a flash of the wrong control. Signed out, it is a `Sign in` link (a plain `<a>`, so nothing prefetches it and starts a flow) with the current path and query as `returnTo`. Signed in, it is a button labelled with the email, or `Account` without one, that discloses a panel with a `Sign out` button (`aria-expanded` and `aria-controls`; opening it moves focus to `Sign out`; Escape closes it and returns focus to the button; focus leaving it or a pointer down outside closes it). With the `billing` flag on, the panel also has a `Billing` link to `/billing` (see [Billing on the web](#billing-on-the-web)). It uses the page's underline link style; there is no mockup, and no account or dashboard page. Cost: about 1.3 KB gzipped of first-load JavaScript on every page even with sign-in off, and with sign-in on one `/auth/session` request per full page load, which for a signed-in user also calls `GET /v1/me`.
 
 Calling the API as the user (`web/src/lib/auth/api.ts`, server only):
 
@@ -223,7 +226,7 @@ const me = await callApiAsUser((api) => api.GET("/me"));
 ```
 
 - `api` is the generated `openapi-fetch` client on `NEXT_PUBLIC_API_BASE_URL` with `Authorization: Bearer <access token>` from the session. Its fetch refuses any URL outside that origin and path, so the token cannot go to another host, and it uses `redirect: "manual"` (a redirect is a failure, never followed), `cache: "no-store"` and a 10-second timeout.
-- The result is `ok` with the data, `signed-out` (no session; or a 401, a refresh with `refreshSession`, and a second 401; or a refresh token WorkOS rejects; or a 401 for a token the proxy refreshed in this same request, in which case it does not refresh again, since `refreshSession` reads the request's cookie and would replay the refresh token the proxy has just spent), `unavailable` (a 503 from the API, or a refresh that failed for a transient reason; the user stays signed in), `not-found` (a 404: accounts are off for this user) or `failed` (anything else, including an unreachable API). On `signed-out` after its own refresh, the session cookie is deleted; after a proxy refresh it is left alone, so the response carries one session `Set-Cookie`, the proxy's. A call that throws or ends in an unexpected status is logged once at `warn` with the error name or status only, never the token or URL.
+- The result is `ok` with the data, `signed-out` (no session; or a 401, a refresh with `refreshSession`, and a second 401; or a refresh token WorkOS rejects; or a 401 for a token the proxy refreshed in this same request, in which case it does not refresh again, since `refreshSession` reads the request's cookie and would replay the refresh token the proxy has just spent), `unavailable` (a 503 from the API, or a refresh that failed for a transient reason; the user stays signed in), `not-found` (a 404: accounts are off for this user), `conflict` (a 409) or `failed` (anything else, including an unreachable API). On `signed-out` after its own refresh, the session cookie is deleted; after a proxy refresh it is left alone, so the response carries one session `Set-Cookie`, the proxy's. A call that throws or ends in an unexpected status is logged once at `warn` with the error name or status only, never the token or URL.
 - It needs the AuthKit proxy on the route (add the path to the matcher) and a context that can write cookies, a route handler or a server action, because a refresh rotates the refresh token and must store the new one. Do not call it while rendering a server component.
 
 What the browser stores (privacy):
@@ -234,6 +237,108 @@ What the browser stores (privacy):
 
 Not verified: no WorkOS environment exists yet (CIV-3), so sign-in has not been run end to end against WorkOS. Most tests mock the SDK; `web/src/lib/auth/sdk.test.ts` runs the real SDK through the sign-in and callback routes against a local stub of the WorkOS API (`WORKOS_API_HOSTNAME`, `WORKOS_API_HTTPS`, `WORKOS_API_PORT`) that serves a key set and the code exchange, and checks the authorization URL, the ignored `x-redirect-uri`, the verifier and session cookie attributes, the sealed return path round trip with hostile values, and that a mismatched or missing verifier is refused without contacting WorkOS. `vitest.config.ts` inlines the SDK so its `next/headers` import can be mocked.
 
+## Billing
+
+A signed-in user starts the single paid plan in Stripe Checkout and manages it in Stripe's billing portal. The API creates both sessions; the web app only redirects to the URLs it returns. `internal/billing` holds it. Nothing here makes anyone paid: returning from Checkout proves nothing, and the plan will come only from signature-verified Stripe webhooks (CIV-37). No code reads a paid status yet.
+
+**Keep the `billing` flag off in production until CIV-37 ships.** Until then a user can pay and nothing on the site changes: the plan is never recorded, and nothing handles a duplicate or failed subscription.
+
+| Route | Does |
+| --- | --- |
+| `POST /v1/billing/checkout-session` | Finds or creates the user's Stripe customer, refuses a user who already has a live subscription, then creates a Checkout Session in `subscription` mode for `STRIPE_PRICE_ID`, quantity 1, and returns `{"url"}`. |
+| `POST /v1/billing/portal-session` | Creates a billing portal session for the user's stored Stripe customer and returns `{"url"}`. |
+
+Checks, in order: the token (401, or 503 `auth_not_configured` / `auth_unavailable`, as for `GET /v1/me`), then the `accounts` and `billing` flags for that user (404 `not_found`, no user created), then whether billing is configured (503 `billing_not_configured`, no call to Stripe). Then the user is created on first sight, as for `GET /v1/me`. Other answers:
+
+- 409 `already_subscribed` from checkout when the customer has a subscription in `active`, `trialing`, `past_due`, `unpaid` or `paused`. The client should send the user to the portal.
+- 409 `no_billing_customer` from the portal when the user has never started checkout (Stripe is not called), or when Stripe no longer knows the stored customer (see [Customers](#customers)).
+- 502 `billing_unavailable` when Stripe refuses or does not answer, or answers without an `https` URL. The body never carries Stripe's message.
+- 500 `internal_error` for a database error.
+
+Every response carries `Cache-Control: no-store` (both operations are in `privateOperations`). They are signed-in routes, not admin routes: neither is marked `x-admin` or listed in `adminOperations`, so the admin gate and backstop (see [Admins](#admins)) let them through to their own checks. There is no request body: the price, the customer and every URL come from the server.
+
+### Configuration
+
+| Variable | Meaning |
+| --- | --- |
+| `STRIPE_SECRET_KEY` | A secret (`sk_...`) or, better, restricted (`rk_...`) key. A secret: set it in Railway, where it is declared with `preserve()`. A restricted key needs at least write access to Customers, Checkout Sessions and the Customer portal, and read access to Subscriptions; confirm in test mode, since this was not checked against Stripe. |
+| `STRIPE_PRICE_ID` | The recurring price of the paid plan (`price_...`). Not a secret. |
+| `PUBLIC_WEB_URL` | The website's origin, shared with the RSS feed (see [Agency RSS feeds](#agency-rss-feeds)). Checkout returns to `{PUBLIC_WEB_URL}/billing/success` or `/billing/cancel`, and the portal to `{PUBLIC_WEB_URL}/billing`. Must be `https` with a live key. |
+
+Billing is the only feature whose bad configuration does not stop the binaries. `config.Load` is shared by `api`, `worker` and `migrate`, and a half-set billing must not block migrations or take the API down, so a problem leaves billing **not configured** (the routes answer 503 `billing_not_configured`, Stripe is never called) and every binary starts. The API logs it once at startup at `error`, `billing is not configured: the Stripe settings are invalid`, with a `problem` naming the variable, never its value. Problems:
+
+- one of `STRIPE_SECRET_KEY` and `STRIPE_PRICE_ID` set without the other;
+- a key that has whitespace inside, does not start with `sk_` or `rk_`, or is a publishable `pk_` key. The check is a deny-list, so Stripe's other secret formats (such as `sk_org_...`) are accepted;
+- a price that does not start with `price_`, or has whitespace;
+- no `PUBLIC_WEB_URL`, or a live key (`_live_` in it) with a `PUBLIC_WEB_URL` that is not `https`.
+
+A malformed `PUBLIC_WEB_URL` still stops the API at startup, as before, because the RSS feed relies on it too.
+
+The key is held in `config.Secret`, which prints as `[redacted]` through `fmt` (every verb, including `%#v`), `slog` (JSON and text handlers, via `LogValue`), `encoding/json` and `MarshalText`; only `Reveal()` returns it, and only `internal/billing` calls that. The other secrets in `config` (`AI_GATEWAY_API_KEY`, `GROQ_API_KEY`, `FIRECRAWL_API_KEY`, `STORAGE_SECRET_ACCESS_KEY`, `POSTHOG_API_KEY`) are still plain strings and would print if a whole config were logged; nothing logs one today. Moving them to `config.Secret` is a separate change across their packages.
+
+#### Turning billing on in production
+
+`.railway/railway.ts` sets `variables: { managed: true }`, so a variable added in the Railway dashboard is reverted by the next apply unless the file declares it. Only `STRIPE_SECRET_KEY` is declared (with `preserve()`, so its value is set in the dashboard and kept). `STRIPE_PRICE_ID` and `PUBLIC_WEB_URL` must be added to the API service in `.railway/railway.ts` as plain values, through a pull request. To never half-configure billing:
+
+1. In the Stripe dashboard, do the steps under [Stripe dashboard](#stripe-dashboard) in the mode you will use.
+2. Merge a change to `.railway/railway.ts` that sets `STRIPE_PRICE_ID` and `PUBLIC_WEB_URL` (`https`) on the API service, and approve its apply. Billing stays off: the key is missing, and the API logs `STRIPE_PRICE_ID is set without STRIPE_SECRET_KEY`.
+3. Set `STRIPE_SECRET_KEY` in the Railway dashboard. The API redeploys and logs `billing configured` with the mode and price.
+4. Only after CIV-37 has shipped, turn on the `billing` flag on both sides (API and web), with `accounts` already on.
+
+To turn billing off, turn the flag off first. A key from the other mode than the stored customers (a live database with a test key, or the reverse) makes Stripe answer `resource_missing`, which clears and replaces customers as below, so never point a live database at a test key.
+
+### Customers
+
+- One Stripe customer per user, created by the user's first checkout, with the user's email when the token carried one and `metadata[civic_scanner_user_id]` set to our user id. It is stored in `users.stripe_customer_id` (migration `00013`, unique, never empty).
+- Concurrent first checkouts: the create request's idempotency key is derived from the user and the create parameters, `civic-scanner-customer-<user id>-<hash>`, where the hash is the first 8 bytes of a SHA-256 of the user id and email. Requests with the same parameters get the same customer from Stripe within its 24-hour idempotency window. A changed email makes a new key, so a retry after the email changed is a new customer, not a permanent `idempotency_error` (Stripe refuses a reused key with other parameters). The store then sets the column only while it is null (`UPDATE ... WHERE stripe_customer_id IS NULL`) and reads it back otherwise, so the database decides: every request uses the one stored customer even when Stripe returned different ones, and the others are left unused in Stripe (they have no subscription). The unique constraint stops two users sharing a customer.
+- A stored customer Stripe no longer knows (deleted in the dashboard, or a key from the other mode) answers `resource_missing` on `customer`. Checkout then logs it at `warn` with the old id, clears the column only if it still holds that id, and creates a fresh customer once in the same request, with the key `civic-scanner-customer-<user id>-<hash>-replaces-<hash of the old id>`, so it can never replay the dead customer and concurrent recoveries share one key. If the new customer fails too, the request is a 502; it is not retried again. The portal also clears the dead id but answers 409 `no_billing_customer` instead of creating a customer, because a new customer would have nothing to manage; the user starts checkout again. A `resource_missing` on any other parameter (a deleted price) is an ordinary 502 and clears nothing.
+- Checkout and portal sessions get a fresh key per call (`civic-scanner-checkout-<user id>-<uuid>`), the same across that call's retries, so a retry never opens a second session and every click gets a new one.
+
+### What CIV-37 can rely on
+
+- Each Checkout Session carries `client_reference_id` and `metadata[civic_scanner_user_id]` set to our user id, and its `customer` is the user's stored customer. The subscription it creates carries the same metadata (`subscription_data.metadata`), so `customer.subscription.*` events map back to a user by metadata or by `users.stripe_customer_id`.
+- `checkout.session.completed`, `customer.subscription.created`, `.updated` and `.deleted`, and `invoice.paid` / `invoice.payment_failed` are the events to handle. Nothing here listens to them.
+
+### Duplicate subscriptions
+
+Before creating a session for a customer that already existed, the API lists the customer's subscriptions and refuses a live one (statuses above; `incomplete` is not counted, so a user whose first payment failed can try again). This can be known without webhooks. It does not cover two Checkout Sessions opened before either is paid: both can complete. Stripe closes most of that gap itself: with the customer portal's login link on and "Limit customers to one subscription" turned on in the Checkout settings, Checkout sends a customer who already has an active subscription to the portal instead of taking a second payment ([Stripe: limit customers to one subscription](https://docs.stripe.com/payments/checkout/limit-subscriptions)). Turn that on in the Stripe dashboard. The gap remains even then (two sessions opened before either is paid, or the setting turned off), so **CIV-37 must handle a second live subscription** for one user, for example by refunding or cancelling it.
+
+There is no per-user rate limit on session creation yet: each click creates a Checkout Session, and a scripted client could create many. Whether to add one is a pending product decision.
+
+### Calls to Stripe
+
+- [`stripe-go`](https://github.com/stripe/stripe-go) v87 through `stripe.NewClient` with its own backend: telemetry off, the SDK's logger silenced, the default HTTP client replaced. The API version is the one the SDK release pins (`stripe.APIVersion`, `2026-10-28.endive` in v87.1.0), sent as `Stripe-Version`; Stripe's typed SDKs cannot target another version ([Stripe: set a version](https://docs.stripe.com/sdks/set-version)). Upgrading the module upgrades the API version, so read Stripe's changelog for the version it pins before merging a major bump.
+- Each attempt has a 4-second timeout, one retry (the SDK retries network errors, 409 and 5xx, and honours `Stripe-Should-Retry`), and the whole operation (up to three Stripe calls) an 8-second deadline, below the web app's 10-second API timeout. A 4xx is not retried.
+- Failures are logged at `warn` as `stripe request failed` with the operation, HTTP status, Stripe error type, code, param and request id. Stripe's message, the key and session URLs are never logged; a successful checkout logs the session and customer ids at `info`.
+
+### Stripe dashboard
+
+Before turning billing on:
+
+- Create the product and its recurring price; copy the price id to `STRIPE_PRICE_ID`.
+- Save the customer portal configuration (Settings, Billing, Customer portal): what customers may do (update payment methods, cancel, switch plans) and the business links (terms, privacy policy). A portal session fails until the configuration is saved, in each mode.
+- Turn on "Limit customers to one subscription" in the Checkout settings, with the portal login link enabled.
+- Choose the payment methods, and whether Stripe Tax applies, in the dashboard. The API sets neither, so the dashboard's defaults apply.
+- Prefer a restricted key with the permissions above.
+
+### Tests
+
+Nothing calls Stripe. `internal/billing/stripetest` is a fake Stripe API on `httptest`, with ids unique to each instance: customers (honouring idempotency keys, refusing a reused key with other parameters as `idempotency_error`, or ignoring keys on request), deletable customers and `resource_missing` for unknown ones, subscription lists, Checkout and portal sessions with a settable URL, queued failures, hanging requests, a barrier that holds concurrent customer creations until all have arrived, and, on request, Stripe's 409 for a second request whose key is still in flight. `billing.WithAPIURL`, `WithHTTPClient` and `WithoutRetryDelay` point the service at it. The tests check the exact form sent, idempotency keys, customer reuse, the duplicate-subscription guard, recovery from a dead customer, changed emails, the in-flight 409, `https`-only redirect URLs, retries, timeouts, generic errors and logs without secrets; the integration tests run concurrent checkouts against Postgres with and without Stripe's idempotency.
+
+Not verified: no Stripe account exists yet (CIV-3), so nothing has run against Stripe, in test or live mode.
+
+### Billing on the web
+
+`web/src/lib/billing/` and `web/src/app/billing/`, behind the `billing` web flag and sign-in (the `accounts` flag and a valid WorkOS configuration). Off, every route below is a 404. The pages are temporary until the dashboard (CIV-26).
+
+| Route | Shows |
+| --- | --- |
+| `/billing` | "Start the paid plan" and "Open the billing portal", each a form posting a server action. Without a session cookie it redirects to `/auth/sign-in?returnTo=%2Fbilling`. An `error` query parameter of `already-subscribed`, `no-subscription` or `unavailable` shows a fixed message; any other value is ignored. |
+| `/billing/success` | Checkout's success URL. Says Stripe has received the payment and that the plan will show once Stripe's confirmation has been processed, with no promise of timing. It reads nothing from the URL and changes nothing. |
+| `/billing/cancel` | Checkout's cancel URL. Says nothing was charged. |
+
+The actions (`startCheckoutAction`, `openBillingPortalAction`) call the API with `callApiAsUser` and redirect: to the returned URL when it is `https` without credentials, to sign-in when signed out, to `/billing?error=already-subscribed` or `?error=no-subscription` on a 409, and to `/billing?error=unavailable` otherwise. The web app never builds a Stripe URL or passes a return URL of its own. Each button is a plain form post, so it works without JavaScript; with JavaScript it is disabled and reads "Opening Stripe…" while the action runs (`useFormStatus`), so a double click sends one request. Without JavaScript the browser can still submit twice, which creates two sessions, not two customers or charges. Opening the account menu focuses its first item, `Billing` when it is shown.
+
 ## Feature flags
 
 Unfinished work ships dark behind a flag. Both sides evaluate flags through [OpenFeature](https://openfeature.dev), with PostHog as the provider when a key is set and an in-memory list otherwise. Each side has its own variables.
@@ -242,7 +347,7 @@ Unfinished work ships dark behind a flag. Both sides evaluate flags through [Ope
 
 The web app evaluates every flag on the server, through `@openfeature/server-sdk`, and hands the results to client components. `web/src/lib/flags/` wraps it. Callers import only from there, never from OpenFeature or PostHog.
 
-- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `agency-pages` turns on `/agencies/{slug}`, `meeting-pages` turns on `/meetings/{id}`, `meeting-transcripts` turns on the transcript section of the meeting page, and `agency-rss-feeds` turns on the agency page's feed link and autodiscovery (see [Turning the pages on](#turning-the-pages-on)). The landing page and `/agencies` have no flag. `test-only-flag` exists only for the module's own tests.
+- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `agency-pages` turns on `/agencies/{slug}`, `meeting-pages` turns on `/meetings/{id}`, `meeting-transcripts` turns on the transcript section of the meeting page, and `agency-rss-feeds` turns on the agency page's feed link and autodiscovery (see [Turning the pages on](#turning-the-pages-on)). `billing` turns on `/billing` and its return pages and the account menu's `Billing` link (see [Billing on the web](#billing-on-the-web)). The landing page and `/agencies` have no flag. `test-only-flag` exists only for the module's own tests.
 - **Server components:** `await isFlagEnabled("flag-key")` from `@/lib/flags/server`.
 - **Routes behind a flag:** `await requireFlag("flag-key")` from `@/lib/flags/server` calls Next's `notFound()` when the flag is off, so a dark route answers 404 exactly like a path that does not exist.
 - **Client components:** `useFlag("flag-key")` from `@/lib/flags/client`. The root layout calls `getFlagsOn()` from `@/lib/flags/server`, which evaluates each registered key with the OpenFeature client, and passes the keys that are on to `FlagsProvider`, a plain React context that supplies `useFlag`. A client component's server-rendered HTML and its first render in the browser therefore already show the right value: a flag that is on does not flash off, and hydration does not mismatch.
@@ -478,6 +583,7 @@ The landing page and `/agencies` are always on. Everything else is behind web fl
 | `agency-pages` | `/agencies/{slug}`, and the links to it from the agency lists and the meeting page's breadcrumb |
 | `meeting-pages` | `/meetings/{id}`, and the links to it from the agency page |
 | `meeting-transcripts` | the recording and transcript section of the meeting page |
+| `billing` | `/billing`, `/billing/success`, `/billing/cancel` and the account menu's `Billing` link; needs `accounts` and sign-in, and the API's `accounts` and `billing` flags (see [Billing on the web](#billing-on-the-web)) |
 | `agency-rss-feeds` | the agency page's "RSS feed" link and feed autodiscovery; turn it on together with the API's flag of the same name, and only once `agency-pages` and `meeting-pages` are on (see [Agency RSS feeds](#agency-rss-feeds)) |
 
 Agency pages link to meeting pages only when both `agency-pages` and `meeting-pages` are on. Each flag can be turned off again at any time: its route answers 404 and the links to it disappear.
@@ -1591,7 +1697,9 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - **Release:** new code that uses them ships behind a flag.
 - **Contract:** a later migration removes the old structures. Mark the file with a `-- migration: contract` line, which permits dropping columns and tables, and confirm the flag is fully on in production before merging.
 
-Number a new file above every migration already on `main`, and renumber a branch's migration when another lands first. Goose refuses to apply a migration numbered below the database's current version, so a lower number would fail `migrate up` at deploy. Gaps are fine: `00005` is unused because recordings (`00007`) was renumbered after meeting events (`00006`) merged, and users (`00009`) skipped `00008`, which another branch held; that branch's recording download state became `00010` when users merged first.
+Number a new file above every migration already on `main`, and renumber a branch's migration when another lands first. Goose refuses to apply a migration numbered below the database's current version, so a lower number would fail `migrate up` at deploy. Gaps are fine: `00005` is unused because recordings (`00007`) was renumbered after meeting events (`00006`) merged, and users (`00009`) skipped `00008`, which another branch held; that branch's recording download state became `00010` when users merged first. The user's Stripe customer is `00013` while `00012` and `00014` are held by other branches.
+
+`00013` adds the column and its `UNIQUE` constraint in one ordinary, transactional `ALTER TABLE`, with `-- squawk-ignore disallowed-unique-constraint` on the constraint line. The rule exists because a unique constraint builds its index under an `ACCESS EXCLUSIVE` lock; here the column is new and all null and `users` is small, so the lock is held for milliseconds, and the `ADD COLUMN` takes the same lock anyway. The concurrent alternative (`CREATE UNIQUE INDEX CONCURRENTLY` in a `NO TRANSACTION` file) is worse here: while the API's and the worker's pre-deploy `migrate up` overlap, the second runner waits on the advisory lock holding a snapshot, the concurrent build waits for that snapshot, and neither finishes until the pre-deploy timeout; and a failed concurrent build leaves an invalid index that `IF NOT EXISTS` skips while goose records the version. Use a transactional file unless a table is large enough for the lock to matter.
 
 `make lint-migrations` runs `.github/scripts/lint-migrations.sh [file...]` (default: every file in `api/migrations/`), which adapts each goose file for Squawk:
 
@@ -1619,6 +1727,7 @@ Merging to `main` deploys both sides.
   - `/app/migrate up` runs as the pre-deploy step, with a 5-minute limit. A failed migration stops the deploy.
   - A deploy goes live only once `/v1/healthz` returns 200 within 60 seconds.
   - `DATABASE_URL` references the database over Railway's private network.
+  - `STRIPE_SECRET_KEY` is declared with `preserve()`; `STRIPE_PRICE_ID`, `PUBLIC_WEB_URL` and the WorkOS variables are not set yet, so billing is off in production (see [Billing](#billing)).
 - **Worker on Railway**, also in `.railway/railway.ts`: the `civic-scanner-worker` service runs the River worker (`api/cmd/worker`) against the same `Postgres` database. It builds `api/Dockerfile.worker` (`build.dockerfilePath`, relative to the `/api` root directory) from the same commit, with the same watch paths and Wait for CI. It has no start command: the image's entrypoint runs `/app/worker` as PID 1 (see [The worker image](#the-worker-image)).
   - `/app/migrate up` runs as its pre-deploy step too, so the worker never starts new code before its schema exists, whichever service deploys first. Both services may run it at once: `migrations.Up` holds a Postgres advisory lock, so the second run waits and then finds nothing to apply.
   - No health check and no public domain: the worker serves no HTTP. A deploy goes live once the container starts; a crash restarts it up to 5 times.
