@@ -15,8 +15,12 @@ import (
 )
 
 func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
-	return newRouter(h, logger, adminOperations, func(r chi.Router) {
-		v1.HandlerWithOptions(v1.NewStrictHandlerWithOptions(h, []v1.StrictMiddlewareFunc{noStore}, v1.StrictHTTPServerOptions{
+	return newRouter(h, logger, adminOperations, apiRoutes(h, logger, adminOperations))
+}
+
+func apiRoutes(h *Handler, logger *slog.Logger, admin map[string]adminRoute) func(chi.Router) {
+	return func(r chi.Router) {
+		v1.HandlerWithOptions(v1.NewStrictHandlerWithOptions(h, []v1.StrictMiddlewareFunc{noStore, h.adminBackstop(admin)}, v1.StrictHTTPServerOptions{
 			RequestErrorHandlerFunc:  invalidBody,
 			ResponseErrorHandlerFunc: responseFailed(logger),
 		}), v1.ChiServerOptions{
@@ -24,7 +28,7 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 			BaseRouter:       r,
 			ErrorHandlerFunc: invalidParameter,
 		})
-	})
+	}
 }
 
 func newRouter(h *Handler, logger *slog.Logger, admin map[string]adminRoute, routes func(chi.Router)) *chi.Mux {
