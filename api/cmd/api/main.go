@@ -40,6 +40,9 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger := config.NewLogger(cfg)
+	if cfg.Stripe.Problem != "" {
+		logger.ErrorContext(ctx, "billing is not configured: the Stripe settings are invalid", "problem", cfg.Stripe.Problem)
+	}
 
 	shutdownFlags, err := featureflags.Init(ctx, cfg.FeatureFlags, logger)
 	if err != nil {
@@ -64,7 +67,7 @@ func run(ctx context.Context) error {
 	db := store.New(pool)
 	biller := billing.New(cfg.Stripe, cfg.Web.PublicURL, db, billing.WithLogger(logger))
 	if biller.Configured() {
-		logger.InfoContext(ctx, "billing configured", "stripe", cfg.Stripe.String())
+		logger.InfoContext(ctx, "billing configured", "stripe_mode", cfg.Stripe.Mode(), "stripe_price", cfg.Stripe.PriceID)
 	}
 
 	srv := &http.Server{

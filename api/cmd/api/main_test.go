@@ -25,15 +25,15 @@ func TestRunInitialisesFeatureFlags(t *testing.T) {
 	}
 }
 
-func TestRunRefusesAMalformedStripeKey(t *testing.T) {
+func TestRunStartsWithAMalformedStripeKey(t *testing.T) {
 	t.Setenv("DATABASE_URL", unreachableDatabaseURL)
 	t.Setenv("LOG_LEVEL", "error")
 	t.Setenv("PUBLIC_WEB_URL", "https://civic.example")
 	t.Setenv("STRIPE_SECRET_KEY", "pk_test_FAKE")
 	t.Setenv("STRIPE_PRICE_ID", "price_FAKE")
 	err := run(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "STRIPE_SECRET_KEY") || strings.Contains(err.Error(), "pk_test_FAKE") {
-		t.Fatalf("run() = %v, want a STRIPE_SECRET_KEY error without the value", err)
+	if err == nil || !strings.Contains(err.Error(), "database") || strings.Contains(err.Error(), "STRIPE") {
+		t.Fatalf("run() = %v, want it to get past the config to the database", err)
 	}
 }
 

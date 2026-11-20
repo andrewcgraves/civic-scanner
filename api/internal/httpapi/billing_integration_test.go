@@ -63,7 +63,7 @@ func newBillingServer(t *testing.T, billingOn bool) billingServer {
 	db := store.New(pool)
 	fake := stripetest.New(t)
 	logger := slog.New(slog.DiscardHandler)
-	biller := billing.New(config.Stripe{SecretKey: stripetest.SecretKey, PriceID: "price_integration"}, "https://civic.example", db, billing.WithAPIURL(fake.URL), billing.WithoutRetryDelay())
+	biller := billing.New(config.Stripe{SecretKey: config.NewSecret(stripetest.SecretKey), PriceID: "price_integration"}, "https://civic.example", db, billing.WithAPIURL(fake.URL), billing.WithoutRetryDelay())
 	flags := func(_ context.Context, flag string) bool {
 		return flag == httpapi.FlagAccounts || (billingOn && flag == httpapi.FlagBilling)
 	}

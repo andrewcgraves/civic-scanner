@@ -1,60 +1,63 @@
 package config
 
 import (
-	"errors"
-	"fmt"
+	"net/url"
 	"os"
-	"regexp"
 	"strings"
-)
-
-var (
-	stripeSecretKeyPattern = regexp.MustCompile(`^(sk|rk)_(test|live)_[A-Za-z0-9]+$`)
-	stripePriceIDPattern   = regexp.MustCompile(`^price_[A-Za-z0-9]+$`)
+	"unicode"
 )
 
 type Stripe struct {
-	SecretKey string
+	SecretKey Secret
 	PriceID   string
+	Problem   string
 }
 
-func (s Stripe) Configured() bool { return s.SecretKey != "" }
+func (s Stripe) Configured() bool { return s.SecretKey.IsSet() && s.Problem == "" }
 
-func (s Stripe) LiveMode() bool {
-	return strings.HasPrefix(s.SecretKey, "sk_live_") || strings.HasPrefix(s.SecretKey, "rk_live_")
-}
+func (s Stripe) LiveMode() bool { return strings.Contains(s.SecretKey.Reveal(), "_live_") }
 
-func (s Stripe) String() string {
-	if !s.Configured() {
-		return "Stripe{not configured}"
-	}
-	mode := "test"
+func (s Stripe) Mode() string {
 	if s.LiveMode() {
-		mode = "live"
+		return "live"
 	}
-	return fmt.Sprintf("Stripe{%s mode, price %s}", mode, s.PriceID)
+	return "test"
 }
 
-func (s Stripe) GoString() string { return s.String() }
+func loadStripe(publicWebURL string) Stripe {
+	key := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	price := strings.TrimSpace(os.Getenv("STRIPE_PRICE_ID"))
+	if problem := stripeProblem(key, price, publicWebURL); problem != "" {
+		return Stripe{Problem: problem}
+	}
+	return Stripe{SecretKey: NewSecret(key), PriceID: price}
+}
 
-func loadStripe() (Stripe, error) {
-	s := Stripe{
-		SecretKey: strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY")),
-		PriceID:   strings.TrimSpace(os.Getenv("STRIPE_PRICE_ID")),
-	}
+func stripeProblem(key, price, publicWebURL string) string {
 	switch {
-	case s.SecretKey == "" && s.PriceID == "":
-		return Stripe{}, nil
-	case s.SecretKey == "":
-		return Stripe{}, errors.New("STRIPE_PRICE_ID is set without STRIPE_SECRET_KEY: set both, or neither to turn billing off")
-	case s.PriceID == "":
-		return Stripe{}, errors.New("STRIPE_SECRET_KEY is set without STRIPE_PRICE_ID: set both, or neither to turn billing off")
-	case strings.HasPrefix(s.SecretKey, "pk_"):
-		return Stripe{}, errors.New("STRIPE_SECRET_KEY: is a publishable key; use a secret (sk_) or restricted (rk_) key")
-	case !stripeSecretKeyPattern.MatchString(s.SecretKey):
-		return Stripe{}, errors.New("STRIPE_SECRET_KEY: must be a Stripe secret or restricted key, sk_ or rk_ followed by test_ or live_")
-	case !stripePriceIDPattern.MatchString(s.PriceID):
-		return Stripe{}, errors.New("STRIPE_PRICE_ID: must be a Stripe price id such as price_1Abc")
+	case key == "" && price == "":
+		return ""
+	case key == "":
+		return "STRIPE_PRICE_ID is set without STRIPE_SECRET_KEY"
+	case price == "":
+		return "STRIPE_SECRET_KEY is set without STRIPE_PRICE_ID"
+	case strings.HasPrefix(key, "pk_"):
+		return "STRIPE_SECRET_KEY is a publishable key (pk_); use a secret (sk_) or restricted (rk_) key"
+	case !strings.HasPrefix(key, "sk_") && !strings.HasPrefix(key, "rk_"), len(key) <= 3, hasSpace(key):
+		return "STRIPE_SECRET_KEY must start with sk_ or rk_ and contain no whitespace"
+	case !strings.HasPrefix(price, "price_") || len(price) <= len("price_") || hasSpace(price):
+		return "STRIPE_PRICE_ID must be a Stripe price id (price_...) without whitespace"
+	case publicWebURL == "":
+		return "PUBLIC_WEB_URL is not set; the checkout and billing portal return links are built from it"
+	case strings.Contains(key, "_live_") && !isHTTPS(publicWebURL):
+		return "PUBLIC_WEB_URL must be an https URL when STRIPE_SECRET_KEY is a live key"
 	}
-	return s, nil
+	return ""
+}
+
+func hasSpace(s string) bool { return strings.IndexFunc(s, unicode.IsSpace) >= 0 }
+
+func isHTTPS(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https"
 }

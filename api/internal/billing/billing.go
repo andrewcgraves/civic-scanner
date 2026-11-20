@@ -2,6 +2,8 @@ package billing
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -47,6 +49,7 @@ var liveStatuses = map[stripe.SubscriptionStatus]bool{
 type CustomerStore interface {
 	StripeCustomerID(ctx context.Context, userID uuid.UUID) (string, error)
 	SetStripeCustomerID(ctx context.Context, userID uuid.UUID, customerID string) (string, error)
+	ClearStripeCustomerID(ctx context.Context, userID uuid.UUID, customerID string) error
 }
 
 type Service struct {
@@ -97,11 +100,20 @@ func New(cfg config.Stripe, webURL string, customers CustomerStore, opts ...Opti
 	if impl, ok := backends.API.(*stripe.BackendImplementation); ok && s.noSleep {
 		impl.SetNetworkRetriesSleep(false)
 	}
-	svc.client = stripe.NewClient(cfg.SecretKey, stripe.WithBackends(backends))
+	svc.client = stripe.NewClient(cfg.SecretKey.Reveal(), stripe.WithBackends(backends))
 	return svc
 }
 
 func (s *Service) Configured() bool { return s != nil && s.client != nil }
+
+type callError struct {
+	op  string
+	err error
+}
+
+func (e *callError) Error() string { return e.op + ": " + e.err.Error() }
+
+func (e *callError) Unwrap() error { return e.err }
 
 func (s *Service) StartCheckout(ctx context.Context, user store.User) (string, error) {
 	if !s.Configured() {
@@ -110,10 +122,77 @@ func (s *Service) StartCheckout(ctx context.Context, user store.User) (string, e
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 
-	customerID, existed, err := s.ensureCustomer(ctx, user)
+	customerID, existed, err := s.ensureCustomer(ctx, user, "")
 	if err != nil {
-		return "", err
+		return "", s.finish(ctx, err)
 	}
+	link, err := s.checkout(ctx, user, customerID, existed)
+	if existed && isMissingCustomer(err) {
+		customerID, err = s.replaceCustomer(ctx, user, customerID, err)
+		if err != nil {
+			return "", s.finish(ctx, err)
+		}
+		link, err = s.checkout(ctx, user, customerID, false)
+	}
+	return link, s.finish(ctx, err)
+}
+
+func (s *Service) OpenPortal(ctx context.Context, user store.User) (string, error) {
+	if !s.Configured() {
+		return "", ErrNotConfigured
+	}
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+
+	customerID, err := s.store.StripeCustomerID(ctx, user.ID)
+	if err != nil {
+		return "", fmt.Errorf("billing portal: %w", err)
+	}
+	if customerID == "" {
+		return "", ErrNoCustomer
+	}
+	params := &stripe.BillingPortalSessionCreateParams{
+		Customer:  stripe.String(customerID),
+		ReturnURL: stripe.String(s.webURL + ReturnPath),
+	}
+	params.SetIdempotencyKey("civic-scanner-portal-" + user.ID.String() + "-" + s.newKey())
+	session, err := s.client.V1BillingPortalSessions.Create(ctx, params)
+	if isMissingCustomer(err) {
+		s.logMissingCustomer(ctx, user, customerID, err)
+		if err := s.store.ClearStripeCustomerID(ctx, user.ID, customerID); err != nil {
+			return "", fmt.Errorf("billing portal: %w", err)
+		}
+		return "", ErrNoCustomer
+	}
+	if err != nil {
+		return "", s.finish(ctx, &callError{op: "create billing portal session", err: err})
+	}
+	link, err := redirectURL("create billing portal session", session.URL)
+	return link, s.finish(ctx, err)
+}
+
+func CustomerIdempotencyKey(user store.User, replaces string) string {
+	email := ""
+	if user.Email != nil {
+		email = *user.Email
+	}
+	key := "civic-scanner-customer-" + user.ID.String() + "-" + shortHash(user.ID.String(), email)
+	if replaces != "" {
+		key += "-replaces-" + shortHash(replaces)
+	}
+	return key
+}
+
+func shortHash(parts ...string) string {
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)[:8])
+}
+
+func (s *Service) checkout(ctx context.Context, user store.User, customerID string, existed bool) (string, error) {
 	if existed {
 		live, err := s.hasLiveSubscription(ctx, customerID)
 		if err != nil {
@@ -142,66 +221,45 @@ func (s *Service) StartCheckout(ctx context.Context, user store.User) (string, e
 	params.SetIdempotencyKey("civic-scanner-checkout-" + userID + "-" + s.newKey())
 	session, err := s.client.V1CheckoutSessions.Create(ctx, params)
 	if err != nil {
-		return "", s.failed(ctx, "create checkout session", err)
+		return "", &callError{op: "create checkout session", err: err}
 	}
-	redirect, err := s.redirectURL(ctx, "create checkout session", session.URL)
+	link, err := redirectURL("create checkout session", session.URL)
 	if err != nil {
 		return "", err
 	}
 	s.logger.InfoContext(ctx, "checkout session created", "user_id", userID, "checkout_session", session.ID, "customer", customerID)
-	return redirect, nil
+	return link, nil
 }
 
-func (s *Service) OpenPortal(ctx context.Context, user store.User) (string, error) {
-	if !s.Configured() {
-		return "", ErrNotConfigured
+func (s *Service) replaceCustomer(ctx context.Context, user store.User, dead string, cause error) (string, error) {
+	s.logMissingCustomer(ctx, user, dead, cause)
+	if err := s.store.ClearStripeCustomerID(ctx, user.ID, dead); err != nil {
+		return "", fmt.Errorf("stripe customer: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
-	defer cancel()
-
-	customerID, err := s.store.StripeCustomerID(ctx, user.ID)
-	if err != nil {
-		return "", fmt.Errorf("billing portal: %w", err)
-	}
-	if customerID == "" {
-		return "", ErrNoCustomer
-	}
-	params := &stripe.BillingPortalSessionCreateParams{
-		Customer:  stripe.String(customerID),
-		ReturnURL: stripe.String(s.webURL + ReturnPath),
-	}
-	params.SetIdempotencyKey("civic-scanner-portal-" + user.ID.String() + "-" + s.newKey())
-	session, err := s.client.V1BillingPortalSessions.Create(ctx, params)
-	if err != nil {
-		return "", s.failed(ctx, "create billing portal session", err)
-	}
-	return s.redirectURL(ctx, "create billing portal session", session.URL)
+	customerID, _, err := s.ensureCustomer(ctx, user, dead)
+	return customerID, err
 }
 
-func CustomerIdempotencyKey(userID uuid.UUID) string {
-	return "civic-scanner-customer-" + userID.String()
-}
-
-func (s *Service) ensureCustomer(ctx context.Context, user store.User) (string, bool, error) {
+func (s *Service) ensureCustomer(ctx context.Context, user store.User, replaces string) (string, bool, error) {
 	stored, err := s.store.StripeCustomerID(ctx, user.ID)
 	if err != nil {
 		return "", false, fmt.Errorf("stripe customer: %w", err)
 	}
-	if stored != "" {
-		return stored, true, nil
+	if stored != "" && stored != replaces {
+		return stored, replaces == "", nil
 	}
 
 	params := &stripe.CustomerCreateParams{Metadata: map[string]string{MetadataUserID: user.ID.String()}}
 	if user.Email != nil {
 		params.Email = stripe.String(*user.Email)
 	}
-	params.SetIdempotencyKey(CustomerIdempotencyKey(user.ID))
+	params.SetIdempotencyKey(CustomerIdempotencyKey(user, replaces))
 	customer, err := s.client.V1Customers.Create(ctx, params)
 	if err != nil {
-		return "", false, s.failed(ctx, "create customer", err)
+		return "", false, &callError{op: "create customer", err: err}
 	}
 	if customer.ID == "" {
-		return "", false, s.failed(ctx, "create customer", errors.New("response has no customer id"))
+		return "", false, &callError{op: "create customer", err: errors.New("response has no customer id")}
 	}
 	stored, err = s.store.SetStripeCustomerID(ctx, user.ID, customer.ID)
 	if err != nil {
@@ -218,7 +276,7 @@ func (s *Service) hasLiveSubscription(ctx context.Context, customerID string) (b
 	params.Limit = stripe.Int64(subscriptionPage)
 	for sub, err := range s.client.V1Subscriptions.List(ctx, params).All(ctx) {
 		if err != nil {
-			return false, s.failed(ctx, "list subscriptions", err)
+			return false, &callError{op: "list subscriptions", err: err}
 		}
 		if liveStatuses[sub.Status] {
 			return true, nil
@@ -227,18 +285,36 @@ func (s *Service) hasLiveSubscription(ctx context.Context, customerID string) (b
 	return false, nil
 }
 
-func (s *Service) redirectURL(ctx context.Context, op, raw string) (string, error) {
+func redirectURL(op, raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
-		return "", s.failed(ctx, op, errors.New("response has no https url"))
+		return "", &callError{op: op, err: errors.New("response has no https url")}
 	}
 	return raw, nil
 }
 
-func (s *Service) failed(ctx context.Context, op string, err error) error {
-	attrs := []any{"op", op}
+func isMissingCustomer(err error) bool {
+	var stripeErr *stripe.Error
+	return errors.As(err, &stripeErr) && stripeErr.Code == stripe.ErrorCodeResourceMissing && stripeErr.Param == "customer"
+}
+
+func (s *Service) logMissingCustomer(ctx context.Context, user store.User, customerID string, err error) {
+	attrs := []any{"user_id", user.ID.String(), "customer", customerID}
 	var stripeErr *stripe.Error
 	if errors.As(err, &stripeErr) {
+		attrs = append(attrs, "request_id", stripeErr.RequestID)
+	}
+	s.logger.WarnContext(ctx, "the stored stripe customer no longer exists; clearing it", attrs...)
+}
+
+func (s *Service) finish(ctx context.Context, err error) error {
+	var call *callError
+	if !errors.As(err, &call) {
+		return err
+	}
+	attrs := []any{"op", call.op}
+	var stripeErr *stripe.Error
+	if errors.As(call.err, &stripeErr) {
 		attrs = append(attrs,
 			"status", stripeErr.HTTPStatusCode,
 			"type", string(stripeErr.Type),
@@ -247,8 +323,8 @@ func (s *Service) failed(ctx context.Context, op string, err error) error {
 			"request_id", stripeErr.RequestID,
 		)
 	} else {
-		attrs = append(attrs, "error", err.Error())
+		attrs = append(attrs, "error", call.err.Error())
 	}
 	s.logger.WarnContext(ctx, "stripe request failed", attrs...)
-	return fmt.Errorf("%s: %w", op, ErrUnavailable)
+	return fmt.Errorf("%s: %w", call.op, ErrUnavailable)
 }

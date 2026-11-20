@@ -27,7 +27,10 @@ describe("billing return pages", () => {
         name: "Confirming your payment",
       }),
     ).toBeVisible();
-    expect(screen.getByText("Your plan is not active yet")).toBeVisible();
+    expect(screen.getByText("Your plan status is not shown yet")).toBeVisible();
+    expect(document.body).not.toHaveTextContent(
+      /turns on|minute|moments|active now/i,
+    );
     expect(
       screen.getByRole("link", { name: "Back to billing" }),
     ).toHaveAttribute("href", "/billing");

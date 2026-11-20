@@ -25,6 +25,7 @@ function SignedInMenu({ email }: { email: string | null }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const signOutRef = useRef<HTMLButtonElement>(null);
+  const billingRef = useRef<HTMLAnchorElement>(null);
   const menuId = useId();
   const billing = useFlag("billing");
 
@@ -32,7 +33,7 @@ function SignedInMenu({ email }: { email: string | null }) {
     if (!open) {
       return;
     }
-    signOutRef.current?.focus();
+    (billingRef.current ?? signOutRef.current)?.focus();
     function closeOnOutsidePointer(event: PointerEvent) {
       if (!containerRef.current?.contains(event.target as Node)) {
         setOpen(false);
@@ -79,7 +80,11 @@ function SignedInMenu({ email }: { email: string | null }) {
       >
         {billing ? (
           <p>
-            <Link href="/billing" className="whitespace-nowrap underline">
+            <Link
+              ref={billingRef}
+              href="/billing"
+              className="whitespace-nowrap underline"
+            >
               Billing
             </Link>
           </p>

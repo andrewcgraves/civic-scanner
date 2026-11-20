@@ -147,7 +147,7 @@ Users (`users`, migration `00009`):
 - One row per WorkOS user, unique on `workos_user_id` (the token's `sub`), with our own `id` (uuid), a nullable `email`, `created_at` and `updated_at`. The WorkOS id is the only identity key; `GET /v1/me` returns our `id`, not the WorkOS id.
 - AuthKit access tokens carry no email. The API reads an optional `email` claim, which the environment's [JWT template](https://workos.com/docs/authkit/jwt-templates) adds with `{"email": {{ user.email }}}`. Without the template `email` stays null; the API does not call the WorkOS user API, so it needs no WorkOS secret. Email is mutable data: it is not unique, a token with a different email updates it, and a token without one leaves it alone.
 - `store.EnsureUser` reads the row first and writes only when the user is new or the email changed. The write is `INSERT ... ON CONFLICT (workos_user_id) DO UPDATE`, so concurrent first requests for one user create exactly one row and all get it back.
-- `stripe_customer_id` (migration `00013`) is the user's Stripe customer, set once by the first checkout (see [Billing](#billing)); nullable and unique. It is not returned by `GET /v1/me`.
+- `stripe_customer_id` (migration `00013`) is the user's Stripe customer, set by the first checkout and cleared only when Stripe no longer knows it (see [Billing](#billing)); nullable and unique. It is not returned by `GET /v1/me`.
 - Role (CIV-25) and plan (CIV-37) are later columns on `users` and later optional fields on `GET /v1/me`.
 
 `.railway/railway.ts` sets no `WORKOS_*` variables yet, so in production signed-in routes answer 503 `auth_not_configured` until the client id is added there.
@@ -214,6 +214,8 @@ Not verified: no WorkOS environment exists yet (CIV-3), so sign-in has not been 
 
 A signed-in user starts the single paid plan in Stripe Checkout and manages it in Stripe's billing portal. The API creates both sessions; the web app only redirects to the URLs it returns. `internal/billing` holds it. Nothing here makes anyone paid: returning from Checkout proves nothing, and the plan will come only from signature-verified Stripe webhooks (CIV-37). No code reads a paid status yet.
 
+**Keep the `billing` flag off in production until CIV-37 ships.** Until then a user can pay and nothing on the site changes: the plan is never recorded, and nothing handles a duplicate or failed subscription.
+
 | Route | Does |
 | --- | --- |
 | `POST /v1/billing/checkout-session` | Finds or creates the user's Stripe customer, refuses a user who already has a live subscription, then creates a Checkout Session in `subscription` mode for `STRIPE_PRICE_ID`, quantity 1, and returns `{"url"}`. |
@@ -222,7 +224,7 @@ A signed-in user starts the single paid plan in Stripe Checkout and manages it i
 Checks, in order: the token (401, or 503 `auth_not_configured` / `auth_unavailable`, as for `GET /v1/me`), then the `accounts` and `billing` flags for that user (404 `not_found`, no user created), then whether billing is configured (503 `billing_not_configured`, no call to Stripe). Then the user is created on first sight, as for `GET /v1/me`. Other answers:
 
 - 409 `already_subscribed` from checkout when the customer has a subscription in `active`, `trialing`, `past_due`, `unpaid` or `paused`. The client should send the user to the portal.
-- 409 `no_billing_customer` from the portal when the user has never started checkout. Stripe is not called.
+- 409 `no_billing_customer` from the portal when the user has never started checkout (Stripe is not called), or when Stripe no longer knows the stored customer (see [Customers](#customers)).
 - 502 `billing_unavailable` when Stripe refuses or does not answer, or answers without an `https` URL. The body never carries Stripe's message.
 - 500 `internal_error` for a database error.
 
@@ -232,16 +234,37 @@ Every response carries `Cache-Control: no-store` (both operations are in `privat
 
 | Variable | Meaning |
 | --- | --- |
-| `STRIPE_SECRET_KEY` | A secret (`sk_test_`, `sk_live_`) or, better, restricted (`rk_test_`, `rk_live_`) key. A secret: set it in Railway, where it is declared with `preserve()`. A restricted key needs at least write access to Customers, Checkout Sessions and the Customer portal, and read access to Subscriptions; confirm in test mode, since this was not checked against Stripe. |
+| `STRIPE_SECRET_KEY` | A secret (`sk_...`) or, better, restricted (`rk_...`) key. A secret: set it in Railway, where it is declared with `preserve()`. A restricted key needs at least write access to Customers, Checkout Sessions and the Customer portal, and read access to Subscriptions; confirm in test mode, since this was not checked against Stripe. |
 | `STRIPE_PRICE_ID` | The recurring price of the paid plan (`price_...`). Not a secret. |
-| `PUBLIC_WEB_URL` | The website's origin, shared with the RSS feed (see [Agency RSS feeds](#agency-rss-feeds)). Checkout returns to `{PUBLIC_WEB_URL}/billing/success` or `/billing/cancel`, and the portal to `{PUBLIC_WEB_URL}/billing`. |
+| `PUBLIC_WEB_URL` | The website's origin, shared with the RSS feed (see [Agency RSS feeds](#agency-rss-feeds)). Checkout returns to `{PUBLIC_WEB_URL}/billing/success` or `/billing/cancel`, and the portal to `{PUBLIC_WEB_URL}/billing`. Must be `https` with a live key. |
 
-Neither Stripe variable set means not configured: the binaries start and the routes answer 503 `billing_not_configured`. One without the other, a publishable (`pk_`) or otherwise malformed key, a value that is not a `price_` id, or the key without `PUBLIC_WEB_URL` stops the binaries at startup with an error that names the variable, never its value. `config.Stripe` prints as `Stripe{test mode, price price_...}`, so logging the config cannot leak the key. A test-mode key against a database whose users hold live-mode customers (or the reverse) fails at Stripe with `resource_missing`: switching modes means clearing `users.stripe_customer_id`.
+Billing is the only feature whose bad configuration does not stop the binaries. `config.Load` is shared by `api`, `worker` and `migrate`, and a half-set billing must not block migrations or take the API down, so a problem leaves billing **not configured** (the routes answer 503 `billing_not_configured`, Stripe is never called) and every binary starts. The API logs it once at startup at `error`, `billing is not configured: the Stripe settings are invalid`, with a `problem` naming the variable, never its value. Problems:
+
+- one of `STRIPE_SECRET_KEY` and `STRIPE_PRICE_ID` set without the other;
+- a key that has whitespace inside, does not start with `sk_` or `rk_`, or is a publishable `pk_` key. The check is a deny-list, so Stripe's other secret formats (such as `sk_org_...`) are accepted;
+- a price that does not start with `price_`, or has whitespace;
+- no `PUBLIC_WEB_URL`, or a live key (`_live_` in it) with a `PUBLIC_WEB_URL` that is not `https`.
+
+A malformed `PUBLIC_WEB_URL` still stops the API at startup, as before, because the RSS feed relies on it too.
+
+The key is held in `config.Secret`, which prints as `[redacted]` through `fmt` (every verb, including `%#v`), `slog` (JSON and text handlers, via `LogValue`), `encoding/json` and `MarshalText`; only `Reveal()` returns it, and only `internal/billing` calls that. The other secrets in `config` (`AI_GATEWAY_API_KEY`, `GROQ_API_KEY`, `FIRECRAWL_API_KEY`, `STORAGE_SECRET_ACCESS_KEY`, `POSTHOG_API_KEY`) are still plain strings and would print if a whole config were logged; nothing logs one today. Moving them to `config.Secret` is a separate change across their packages.
+
+#### Turning billing on in production
+
+`.railway/railway.ts` sets `variables: { managed: true }`, so a variable added in the Railway dashboard is reverted by the next apply unless the file declares it. Only `STRIPE_SECRET_KEY` is declared (with `preserve()`, so its value is set in the dashboard and kept). `STRIPE_PRICE_ID` and `PUBLIC_WEB_URL` must be added to the API service in `.railway/railway.ts` as plain values, through a pull request. To never half-configure billing:
+
+1. In the Stripe dashboard, do the steps under [Stripe dashboard](#stripe-dashboard) in the mode you will use.
+2. Merge a change to `.railway/railway.ts` that sets `STRIPE_PRICE_ID` and `PUBLIC_WEB_URL` (`https`) on the API service, and approve its apply. Billing stays off: the key is missing, and the API logs `STRIPE_PRICE_ID is set without STRIPE_SECRET_KEY`.
+3. Set `STRIPE_SECRET_KEY` in the Railway dashboard. The API redeploys and logs `billing configured` with the mode and price.
+4. Only after CIV-37 has shipped, turn on the `billing` flag on both sides (API and web), with `accounts` already on.
+
+To turn billing off, turn the flag off first. A key from the other mode than the stored customers (a live database with a test key, or the reverse) makes Stripe answer `resource_missing`, which clears and replaces customers as below, so never point a live database at a test key.
 
 ### Customers
 
 - One Stripe customer per user, created by the user's first checkout, with the user's email when the token carried one and `metadata[civic_scanner_user_id]` set to our user id. It is stored in `users.stripe_customer_id` (migration `00013`, unique, never empty).
-- Concurrent first checkouts: the create request's idempotency key is derived from the user, `civic-scanner-customer-<user id>`, so Stripe returns the same customer to every request within its 24-hour idempotency window. The store then sets the column only while it is null (`UPDATE ... WHERE stripe_customer_id IS NULL`) and reads it back otherwise, so every request uses the one stored customer even if Stripe ever returned different ones. The unique index stops two users sharing a customer. A customer created by a request that then failed to store it is reused by the next attempt within 24 hours; after that, it is left unused in Stripe (it has no subscription).
+- Concurrent first checkouts: the create request's idempotency key is derived from the user and the create parameters, `civic-scanner-customer-<user id>-<hash>`, where the hash is the first 8 bytes of a SHA-256 of the user id and email. Requests with the same parameters get the same customer from Stripe within its 24-hour idempotency window. A changed email makes a new key, so a retry after the email changed is a new customer, not a permanent `idempotency_error` (Stripe refuses a reused key with other parameters). The store then sets the column only while it is null (`UPDATE ... WHERE stripe_customer_id IS NULL`) and reads it back otherwise, so the database decides: every request uses the one stored customer even when Stripe returned different ones, and the others are left unused in Stripe (they have no subscription). The unique constraint stops two users sharing a customer.
+- A stored customer Stripe no longer knows (deleted in the dashboard, or a key from the other mode) answers `resource_missing` on `customer`. Checkout then logs it at `warn` with the old id, clears the column only if it still holds that id, and creates a fresh customer once in the same request, with the key `civic-scanner-customer-<user id>-<hash>-replaces-<hash of the old id>`, so it can never replay the dead customer and concurrent recoveries share one key. If the new customer fails too, the request is a 502; it is not retried again. The portal also clears the dead id but answers 409 `no_billing_customer` instead of creating a customer, because a new customer would have nothing to manage; the user starts checkout again. A `resource_missing` on any other parameter (a deleted price) is an ordinary 502 and clears nothing.
 - Checkout and portal sessions get a fresh key per call (`civic-scanner-checkout-<user id>-<uuid>`), the same across that call's retries, so a retry never opens a second session and every click gets a new one.
 
 ### What CIV-37 can rely on
@@ -251,7 +274,9 @@ Neither Stripe variable set means not configured: the binaries start and the rou
 
 ### Duplicate subscriptions
 
-Before creating a session for a customer that already existed, the API lists the customer's subscriptions and refuses a live one (statuses above; `incomplete` is not counted, so a user whose first payment failed can try again). This can be known without webhooks. It does not cover two Checkout Sessions opened before either is paid: both can complete. Stripe closes most of that gap itself: with the customer portal's login link on and "Limit customers to one subscription" turned on in the Checkout settings, Checkout sends a customer who already has an active subscription to the portal instead of taking a second payment ([Stripe: limit customers to one subscription](https://docs.stripe.com/payments/checkout/limit-subscriptions)). Turn that on in the Stripe dashboard. CIV-37 should still treat a second live subscription as possible and handle it.
+Before creating a session for a customer that already existed, the API lists the customer's subscriptions and refuses a live one (statuses above; `incomplete` is not counted, so a user whose first payment failed can try again). This can be known without webhooks. It does not cover two Checkout Sessions opened before either is paid: both can complete. Stripe closes most of that gap itself: with the customer portal's login link on and "Limit customers to one subscription" turned on in the Checkout settings, Checkout sends a customer who already has an active subscription to the portal instead of taking a second payment ([Stripe: limit customers to one subscription](https://docs.stripe.com/payments/checkout/limit-subscriptions)). Turn that on in the Stripe dashboard. The gap remains even then (two sessions opened before either is paid, or the setting turned off), so **CIV-37 must handle a second live subscription** for one user, for example by refunding or cancelling it.
+
+There is no per-user rate limit on session creation yet: each click creates a Checkout Session, and a scripted client could create many. Whether to add one is a pending product decision.
 
 ### Calls to Stripe
 
@@ -271,7 +296,7 @@ Before turning billing on:
 
 ### Tests
 
-Nothing calls Stripe. `internal/billing/stripetest` is a fake Stripe API on `httptest`: customers (honouring idempotency keys, or ignoring them on request), subscription lists, Checkout and portal sessions, queued failures, hanging requests and a barrier that holds concurrent customer creations until all have arrived. `billing.WithAPIURL`, `WithHTTPClient` and `WithoutRetryDelay` point the service at it. The tests check the exact form sent, idempotency keys, customer reuse, the duplicate-subscription guard, retries, timeouts, generic errors and logs without secrets; the integration tests run concurrent checkouts against Postgres with and without Stripe's idempotency.
+Nothing calls Stripe. `internal/billing/stripetest` is a fake Stripe API on `httptest`, with ids unique to each instance: customers (honouring idempotency keys, refusing a reused key with other parameters as `idempotency_error`, or ignoring keys on request), deletable customers and `resource_missing` for unknown ones, subscription lists, Checkout and portal sessions with a settable URL, queued failures, hanging requests, a barrier that holds concurrent customer creations until all have arrived, and, on request, Stripe's 409 for a second request whose key is still in flight. `billing.WithAPIURL`, `WithHTTPClient` and `WithoutRetryDelay` point the service at it. The tests check the exact form sent, idempotency keys, customer reuse, the duplicate-subscription guard, recovery from a dead customer, changed emails, the in-flight 409, `https`-only redirect URLs, retries, timeouts, generic errors and logs without secrets; the integration tests run concurrent checkouts against Postgres with and without Stripe's idempotency.
 
 Not verified: no Stripe account exists yet (CIV-3), so nothing has run against Stripe, in test or live mode.
 
@@ -282,10 +307,10 @@ Not verified: no Stripe account exists yet (CIV-3), so nothing has run against S
 | Route | Shows |
 | --- | --- |
 | `/billing` | "Start the paid plan" and "Open the billing portal", each a form posting a server action. Without a session cookie it redirects to `/auth/sign-in?returnTo=%2Fbilling`. An `error` query parameter of `already-subscribed`, `no-subscription` or `unavailable` shows a fixed message; any other value is ignored. |
-| `/billing/success` | Checkout's success URL. Says the payment is being confirmed and the plan is not active yet. It reads nothing from the URL and changes nothing. |
+| `/billing/success` | Checkout's success URL. Says Stripe has received the payment and that the plan will show once Stripe's confirmation has been processed, with no promise of timing. It reads nothing from the URL and changes nothing. |
 | `/billing/cancel` | Checkout's cancel URL. Says nothing was charged. |
 
-The actions (`startCheckoutAction`, `openBillingPortalAction`) call the API with `callApiAsUser` and redirect: to the returned URL when it is `https` without credentials, to sign-in when signed out, to `/billing?error=already-subscribed` or `?error=no-subscription` on a 409, and to `/billing?error=unavailable` otherwise. The web app never builds a Stripe URL or passes a return URL of its own.
+The actions (`startCheckoutAction`, `openBillingPortalAction`) call the API with `callApiAsUser` and redirect: to the returned URL when it is `https` without credentials, to sign-in when signed out, to `/billing?error=already-subscribed` or `?error=no-subscription` on a 409, and to `/billing?error=unavailable` otherwise. The web app never builds a Stripe URL or passes a return URL of its own. Each button is a plain form post, so it works without JavaScript; with JavaScript it is disabled and reads "Opening Stripe…" while the action runs (`useFormStatus`), so a double click sends one request. Without JavaScript the browser can still submit twice, which creates two sessions, not two customers or charges. Opening the account menu focuses its first item, `Billing` when it is shown.
 
 ## Feature flags
 
@@ -1548,6 +1573,8 @@ Migrations are goose SQL files in `api/migrations/` and follow expand and contra
 - **Contract:** a later migration removes the old structures. Mark the file with a `-- migration: contract` line, which permits dropping columns and tables, and confirm the flag is fully on in production before merging.
 
 Number a new file above every migration already on `main`, and renumber a branch's migration when another lands first. Goose refuses to apply a migration numbered below the database's current version, so a lower number would fail `migrate up` at deploy. Gaps are fine: `00005` is unused because recordings (`00007`) was renumbered after meeting events (`00006`) merged, and users (`00009`) skipped `00008`, which another branch held; that branch's recording download state became `00010` when users merged first. The user's Stripe customer is `00013` while `00012` and `00014` are held by other branches.
+
+`00013` adds the column and its `UNIQUE` constraint in one ordinary, transactional `ALTER TABLE`, with `-- squawk-ignore disallowed-unique-constraint` on the constraint line. The rule exists because a unique constraint builds its index under an `ACCESS EXCLUSIVE` lock; here the column is new and all null and `users` is small, so the lock is held for milliseconds, and the `ADD COLUMN` takes the same lock anyway. The concurrent alternative (`CREATE UNIQUE INDEX CONCURRENTLY` in a `NO TRANSACTION` file) is worse here: while the API's and the worker's pre-deploy `migrate up` overlap, the second runner waits on the advisory lock holding a snapshot, the concurrent build waits for that snapshot, and neither finishes until the pre-deploy timeout; and a failed concurrent build leaves an invalid index that `IF NOT EXISTS` skips while goose records the version. Use a transactional file unless a table is large enough for the lock to matter.
 
 `make lint-migrations` runs `.github/scripts/lint-migrations.sh [file...]` (default: every file in `api/migrations/`), which adapts each goose file for Squawk:
 

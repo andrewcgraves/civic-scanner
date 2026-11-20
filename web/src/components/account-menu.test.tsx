@@ -174,7 +174,13 @@ describe("AccountMenu", () => {
       "href",
       "/billing",
     );
-    expect(screen.getByRole("button", { name: "Sign out" })).toHaveFocus();
+    const billing = screen.getByRole("link", { name: "Billing" });
+    const signOut = screen.getByRole("button", { name: "Sign out" });
+    expect(billing).toHaveFocus();
+    expect(
+      billing.compareDocumentPosition(signOut) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("has no billing link when billing is off", async () => {

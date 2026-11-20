@@ -38,7 +38,7 @@ export default async function BillingPage({
     <>
       <PageHeader
         title="Billing"
-        description="Start the paid plan, or manage your subscription, payment method and invoices in Stripe's billing portal."
+        description="Start the paid plan, or manage it in Stripe's billing portal."
       />
       {error === null ? null : (
         <div className="mb-10">
@@ -55,7 +55,7 @@ export default async function BillingPage({
       </Section>
       <Section
         title="Manage billing"
-        description="Change your payment method, see invoices, or cancel your subscription."
+        description="Stripe's billing portal is where you manage your subscription."
       >
         <ActionButton action={openBillingPortalAction}>
           Open the billing portal

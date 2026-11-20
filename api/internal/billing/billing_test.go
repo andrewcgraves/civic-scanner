@@ -30,7 +30,9 @@ type memoryStore struct {
 	customers map[uuid.UUID]string
 	getErr    error
 	setErr    error
+	clearErr  error
 	sets      int
+	clears    int
 }
 
 func newMemoryStore() *memoryStore { return &memoryStore{customers: map[uuid.UUID]string{}} }
@@ -39,6 +41,19 @@ func (m *memoryStore) StripeCustomerID(_ context.Context, userID uuid.UUID) (str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.customers[userID], m.getErr
+}
+
+func (m *memoryStore) ClearStripeCustomerID(_ context.Context, userID uuid.UUID, customerID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clears++
+	if m.clearErr != nil {
+		return m.clearErr
+	}
+	if m.customers[userID] == customerID {
+		delete(m.customers, userID)
+	}
+	return nil
 }
 
 func (m *memoryStore) SetStripeCustomerID(_ context.Context, userID uuid.UUID, customerID string) (string, error) {
@@ -80,7 +95,7 @@ func newHarness(t *testing.T, opts ...billing.Option) harness {
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(&syncBuffer{buf: logs}, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	all := append([]billing.Option{billing.WithAPIURL(fake.URL), billing.WithoutRetryDelay(), billing.WithLogger(logger)}, opts...)
-	svc := billing.New(config.Stripe{SecretKey: stripetest.SecretKey, PriceID: priceID}, webURL, mem, all...)
+	svc := billing.New(config.Stripe{SecretKey: config.NewSecret(stripetest.SecretKey), PriceID: priceID}, webURL, mem, all...)
 	return harness{stripe: fake, store: mem, svc: svc, logs: logs}
 }
 
@@ -97,8 +112,8 @@ func TestNotConfiguredNeverCallsStripe(t *testing.T) {
 	mem := newMemoryStore()
 	for name, svc := range map[string]*billing.Service{
 		"no key":     billing.New(config.Stripe{}, webURL, mem, billing.WithAPIURL(fake.URL)),
-		"no web url": billing.New(config.Stripe{SecretKey: stripetest.SecretKey, PriceID: priceID}, "", mem, billing.WithAPIURL(fake.URL)),
-		"no store":   billing.New(config.Stripe{SecretKey: stripetest.SecretKey, PriceID: priceID}, webURL, nil, billing.WithAPIURL(fake.URL)),
+		"no web url": billing.New(config.Stripe{SecretKey: config.NewSecret(stripetest.SecretKey), PriceID: priceID}, "", mem, billing.WithAPIURL(fake.URL)),
+		"no store":   billing.New(config.Stripe{SecretKey: config.NewSecret(stripetest.SecretKey), PriceID: priceID}, webURL, nil, billing.WithAPIURL(fake.URL)),
 		"zero":       {},
 		"nil":        nil,
 	} {
@@ -137,7 +152,7 @@ func TestStartCheckoutCreatesTheCustomerThenTheSession(t *testing.T) {
 		t.Fatalf("requests = %+v, want a customer then a checkout session", reqs)
 	}
 	customer := reqs[0]
-	if customer.IdempotencyKey != billing.CustomerIdempotencyKey(user.ID) || customer.IdempotencyKey != "civic-scanner-customer-"+user.ID.String() {
+	if customer.IdempotencyKey != billing.CustomerIdempotencyKey(user, "") || !strings.HasPrefix(customer.IdempotencyKey, "civic-scanner-customer-"+user.ID.String()+"-") {
 		t.Errorf("customer idempotency key = %q", customer.IdempotencyKey)
 	}
 	if got := customer.Form.Get("email"); got != "ada@example.com" {
@@ -442,7 +457,7 @@ func TestACanceledRequestStopsWithoutRetrying(t *testing.T) {
 
 func TestResponsesWithoutAnHTTPSURLOrIDAreFailures(t *testing.T) {
 	h := newHarness(t)
-	h.stripe.ReturnBlankURLs()
+	h.stripe.ReturnSessionURL("")
 	user := testUser("")
 	if _, err := h.svc.StartCheckout(t.Context(), user); !errors.Is(err, billing.ErrUnavailable) {
 		t.Errorf("checkout err = %v, want ErrUnavailable", err)
@@ -519,7 +534,7 @@ func TestConcurrentCheckoutsShareOneCustomer(t *testing.T) {
 		for _, r := range h.stripe.RequestsTo("/v1/customers") {
 			keys[r.IdempotencyKey] = true
 		}
-		if len(keys) != 1 || !keys[billing.CustomerIdempotencyKey(user.ID)] {
+		if len(keys) != 1 || !keys[billing.CustomerIdempotencyKey(user, "")] {
 			t.Errorf("ignore keys %v: customer idempotency keys %v", ignoreKeys, keys)
 		}
 		if !ignoreKeys && len(h.stripe.Customers()) != 1 {

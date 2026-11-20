@@ -15,12 +15,12 @@ export default async function BillingSuccessPage() {
     <>
       <PageHeader
         title="Confirming your payment"
-        description="Thank you. Stripe is confirming your payment."
+        description="Thank you. Stripe has received your payment."
       />
       <div className="space-y-6">
-        <Notice title="Your plan is not active yet">
-          It turns on once Stripe confirms the payment, which usually takes a
-          few moments.
+        <Notice title="Your plan status is not shown yet">
+          Your plan will show on this site once Stripe&apos;s confirmation has
+          been processed.
         </Notice>
         <p>
           <Link href={BILLING_PATH} className="link">

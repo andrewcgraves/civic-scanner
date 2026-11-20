@@ -37,6 +37,22 @@ func TestStripeCustomerIDIsSetOnce(t *testing.T) {
 		t.Errorf("read back: (%q, %v)", got, err)
 	}
 
+	if err := s.ClearStripeCustomerID(ctx, user.ID, "cus_store_not_the_stored_one"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.StripeCustomerID(ctx, user.ID); got != customer {
+		t.Errorf("clearing another id removed the stored one: %q", got)
+	}
+	if err := s.ClearStripeCustomerID(ctx, user.ID, customer); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.StripeCustomerID(ctx, user.ID); err != nil || got != "" {
+		t.Errorf("after clear: (%q, %v), want none", got, err)
+	}
+	if got, err := s.SetStripeCustomerID(ctx, user.ID, customer); err != nil || got != customer {
+		t.Errorf("set after clear: (%q, %v)", got, err)
+	}
+
 	other, _, err := s.EnsureUser(ctx, store.UserInput{WorkOSUserID: workOSUserID(t, pool)})
 	if err != nil {
 		t.Fatal(err)

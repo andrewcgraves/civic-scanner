@@ -16,6 +16,17 @@ func TestUserStripeCustomerIsOptionalUniqueAndNotEmpty(t *testing.T) {
 		_, _ = pool.Exec(context.WithoutCancel(ctx), `DELETE FROM users WHERE workos_user_id LIKE 'user_migration_stripe_%'`)
 	})
 
+	var valid, unique bool
+	if err := pool.QueryRow(ctx, `
+SELECT i.indisvalid, i.indisunique FROM pg_index i
+JOIN pg_class c ON c.oid = i.indexrelid
+WHERE c.relname = 'users_stripe_customer_id_unique' AND i.indrelid = 'users'::regclass`).Scan(&valid, &unique); err != nil {
+		t.Fatalf("users_stripe_customer_id_unique: %v", err)
+	}
+	if !valid || !unique {
+		t.Errorf("users_stripe_customer_id_unique valid = %v, unique = %v, want both", valid, unique)
+	}
+
 	var customer *string
 	if err := pool.QueryRow(ctx, `INSERT INTO users (workos_user_id) VALUES ('user_migration_stripe_a') RETURNING stripe_customer_id`).Scan(&customer); err != nil {
 		t.Fatal(err)
