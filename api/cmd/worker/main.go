@@ -95,6 +95,7 @@ func run(ctx context.Context) error {
 		Fallback:     firecrawl,
 		Extractor:    &extract.Extractor{PDF: pdfExtractor},
 		CheckHourUTC: cfg.Ingest.CheckHourUTC,
+		AgendaGrace:  cfg.Ingest.AgendaRefreshGrace,
 		Storage:      bucket,
 		Audio:        audio,
 		AudioTimeout: cfg.Audio.Timeout,
@@ -119,6 +120,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC,
+		"agenda_refresh_grace", cfg.Ingest.AgendaRefreshGrace.String(),
 		"pdf_extractor", pdfExtractor.Binary, "agenda_summary_tier", cfg.Summary.AgendaTier, "llm_configured", summarizer != nil, "llm_provider", cfg.LLM.Provider,
 		"audio_limit", audio.Tool.Limit, "ffmpeg", audio.Tool.FFmpeg, "yt_dlp", audio.Tool.YTDLP,
 		"storage_configured", cfg.Storage.Configured(), "transcription_configured", transcriber != nil)

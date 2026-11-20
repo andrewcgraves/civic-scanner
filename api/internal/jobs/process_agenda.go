@@ -48,7 +48,7 @@ type EnqueueProcessAgenda struct {
 }
 
 func (e EnqueueProcessAgenda) MeetingUpserted(ctx context.Context, tx pgx.Tx, m UpsertedMeeting) error {
-	if m.AgendaURL == "" {
+	if m.AgendaURL == "" || m.AgendaSettled {
 		return nil
 	}
 	client, err := river.ClientFromContextSafely[pgx.Tx](ctx)

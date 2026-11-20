@@ -41,11 +41,12 @@ func (a CheckAgencyArgs) InsertOpts() river.InsertOpts {
 }
 
 type UpsertedMeeting struct {
-	Meeting      store.Meeting
-	Created      bool
-	AgendaURL    string
-	RecordingURL string
-	Manual       bool
+	Meeting       store.Meeting
+	Created       bool
+	AgendaURL     string
+	AgendaSettled bool
+	RecordingURL  string
+	Manual        bool
 }
 
 type FollowUp interface {
@@ -64,6 +65,7 @@ type CheckAgencyWorker struct {
 	store    *store.Store
 	registry *sources.Registry
 	clock    sources.Clock
+	grace    time.Duration
 	enabled  func(context.Context, string) bool
 	followUp FollowUp
 }
@@ -96,7 +98,8 @@ func (w *CheckAgencyWorker) Work(ctx context.Context, job *river.Job[CheckAgency
 		return err
 	}
 
-	window := checkWindow(w.clock.Now())
+	now := w.clock.Now()
+	window := checkWindow(now)
 	meetings, err := adapter.Meetings(ctx, window)
 	if err != nil {
 		return adapterError(slug, err)
@@ -105,18 +108,52 @@ func (w *CheckAgencyWorker) Work(ctx context.Context, job *river.Job[CheckAgency
 		return river.JobCancel(fmt.Errorf("source adapter %s: %w", slug, err))
 	}
 
-	created, err := w.upsert(ctx, agency.ID, meetings, job.Args.Manual)
+	refresh := agendaRefresh{now: now, grace: w.grace, manual: job.Args.Manual}
+	counts, err := w.upsert(ctx, agency.ID, meetings, refresh)
 	if err != nil {
 		return err
 	}
-	logger.InfoContext(ctx, "agency checked", "meetings", len(meetings), "created", created,
+	logger.InfoContext(ctx, "agency checked", "meetings", len(meetings), "created", counts.created,
+		"agendas_enqueued", counts.agendasEnqueued, "agendas_skipped_cutoff", counts.agendasSkipped,
+		"agenda_cutoff", refresh.mode(), "agenda_refresh_grace", w.grace.String(),
 		"window_from", window.From, "window_to", window.To)
 	return nil
 }
 
-func (w *CheckAgencyWorker) upsert(ctx context.Context, agencyID uuid.UUID, meetings []sources.Meeting, manual bool) (int, error) {
-	created := 0
+type checkCounts struct {
+	created         int
+	agendasEnqueued int
+	agendasSkipped  int
+}
+
+type agendaRefresh struct {
+	now    time.Time
+	grace  time.Duration
+	manual bool
+}
+
+func (r agendaRefresh) settled(startsAt time.Time, agendaURL, storedURL string) bool {
+	if r.manual || agendaURL == "" || storedURL != agendaURL {
+		return false
+	}
+	return !r.now.Before(startsAt.Add(r.grace))
+}
+
+func (r agendaRefresh) mode() string {
+	if r.manual {
+		return "bypassed"
+	}
+	return "applied"
+}
+
+func (w *CheckAgencyWorker) upsert(ctx context.Context, agencyID uuid.UUID, meetings []sources.Meeting, refresh agendaRefresh) (checkCounts, error) {
+	var counts checkCounts
 	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		counts = checkCounts{}
+		storedURLs, err := w.store.LatestAgendaSourceURLsTx(ctx, tx, agencyID, sourceIDs(meetings))
+		if err != nil {
+			return err
+		}
 		for _, m := range meetings {
 			stored, isNew, err := w.store.UpsertMeetingTx(ctx, tx, store.MeetingInput{
 				AgencyID:  agencyID,
@@ -130,21 +167,37 @@ func (w *CheckAgencyWorker) upsert(ctx context.Context, agencyID uuid.UUID, meet
 				return err
 			}
 			if isNew {
-				created++
+				counts.created++
+			}
+			settled := refresh.settled(stored.StartsAt, m.AgendaURL, storedURLs[m.SourceID])
+			switch {
+			case settled:
+				counts.agendasSkipped++
+			case m.AgendaURL != "":
+				counts.agendasEnqueued++
 			}
 			if err := w.followUp.MeetingUpserted(ctx, tx, UpsertedMeeting{
-				Meeting:      stored,
-				Created:      isNew,
-				AgendaURL:    m.AgendaURL,
-				RecordingURL: m.RecordingURL,
-				Manual:       manual,
+				Meeting:       stored,
+				Created:       isNew,
+				AgendaURL:     m.AgendaURL,
+				AgendaSettled: settled,
+				RecordingURL:  m.RecordingURL,
+				Manual:        refresh.manual,
 			}); err != nil {
 				return fmt.Errorf("follow up meeting %s: %w", m.SourceID, err)
 			}
 		}
 		return nil
 	})
-	return created, err
+	return counts, err
+}
+
+func sourceIDs(meetings []sources.Meeting) []string {
+	ids := make([]string, 0, len(meetings))
+	for _, m := range meetings {
+		ids = append(ids, m.SourceID)
+	}
+	return ids
 }
 
 func checkWindow(now time.Time) sources.Window {

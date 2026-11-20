@@ -120,8 +120,10 @@ func addAgendaVersion(ctx context.Context, q querier, in AgendaVersionInput) (Ag
 
 	latest, err := latestAgendaVersion(ctx, q, in.MeetingID)
 	switch {
-	case err == nil && latest.ContentHash == in.ContentHash:
+	case err == nil && latest.ContentHash == in.ContentHash && latest.SourceURL == in.SourceURL:
 		return latest, false, nil
+	case err == nil && latest.ContentHash == in.ContentHash:
+		return moveAgendaVersion(ctx, q, latest.ID, in.SourceURL)
 	case err == nil && in.Equivalent != nil && in.Equivalent(latest.Text):
 		return refreshAgendaVersion(ctx, q, latest.ID, in)
 	case err != nil && !errors.Is(err, ErrNotFound):
@@ -168,6 +170,40 @@ RETURNING `+agendaVersionColumns, versionID, in.Text, in.ContentHash.String(), i
 	}
 	v.RefreshedInPlace = true
 	return v, false, nil
+}
+
+func moveAgendaVersion(ctx context.Context, q querier, versionID uuid.UUID, sourceURL string) (AgendaVersion, bool, error) {
+	v, err := scanAgendaVersion(q.QueryRow(ctx, `
+UPDATE agenda_versions
+SET source_url = $2, updated_at = clock_timestamp()
+WHERE id = $1
+RETURNING `+agendaVersionColumns, versionID, sourceURL))
+	if err != nil {
+		return AgendaVersion{}, false, fmt.Errorf("move agenda version: %w", err)
+	}
+	return v, false, nil
+}
+
+func (s *Store) LatestAgendaSourceURLsTx(ctx context.Context, tx pgx.Tx, agencyID uuid.UUID, sourceIDs []string) (map[string]string, error) {
+	rows, err := tx.Query(ctx, `
+SELECT m.source_id, v.source_url
+FROM meetings m
+JOIN LATERAL (
+    SELECT source_url FROM agenda_versions WHERE meeting_id = m.id ORDER BY version DESC LIMIT 1
+) v ON true
+WHERE m.agency_id = $1 AND m.source_id = ANY($2)`, agencyID, sourceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list latest agenda source urls: %w", err)
+	}
+	urls := map[string]string{}
+	var sourceID, sourceURL string
+	if _, err := pgx.ForEachRow(rows, []any{&sourceID, &sourceURL}, func() error {
+		urls[sourceID] = sourceURL
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("scan latest agenda source urls: %w", err)
+	}
+	return urls, nil
 }
 
 func (s *Store) EarlierPendingAgendaVersions(ctx context.Context, v AgendaVersion) ([]AgendaVersion, error) {

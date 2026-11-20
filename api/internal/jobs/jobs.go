@@ -29,6 +29,7 @@ type Config struct {
 	Extractor      TextExtractor
 	Clock          sources.Clock
 	CheckHourUTC   int
+	AgendaGrace    time.Duration
 	Enabled        func(ctx context.Context, flag string) bool
 	FollowUp       FollowUp
 	AgendaFollowUp AgendaFollowUp
@@ -65,6 +66,9 @@ func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
 			EnqueueProcessAgenda{Queue: c.Queue},
 			EnqueueDownloadAudio{Queue: c.AudioQueue, Store: st, Clock: c.Clock, Enabled: c.Enabled},
 		}
+	}
+	if c.AgendaGrace <= 0 {
+		c.AgendaGrace = config.DefaultAgendaRefreshGrace
 	}
 	if c.AudioTimeout <= 0 {
 		c.AudioTimeout = defaultAudioTimeout
@@ -108,6 +112,7 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		store:    st,
 		registry: cfg.Registry,
 		clock:    cfg.Clock,
+		grace:    cfg.AgendaGrace,
 		enabled:  cfg.Enabled,
 		followUp: cfg.FollowUp,
 	})
