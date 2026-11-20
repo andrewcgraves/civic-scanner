@@ -1343,3 +1343,79 @@ railway config apply    # apply it after reviewing the plan
 ```
 
 `railway config pull` re-imports the project from Railway. Generated Railway domains are not in the file and are left alone.
+
+## Backups and restore
+
+The production database is backed up by Railway's [volume backups](https://docs.railway.com/volumes/backups): incremental copy-on-write snapshots of `postgres-volume`, the volume mounted at `/var/lib/postgresql/data` on the `Postgres` service.
+
+### The schedule
+
+The schedule was set on 2026-11-19 with the Railway CLI:
+
+```sh
+railway postgres pitr schedule set --daily --weekly --service Postgres
+```
+
+| Schedule | When (UTC) | Kept for |
+| --- | --- | --- |
+| Daily | 03:27 every day (cron `27 3 * * *`) | 6 days |
+| Weekly | 20:47 on Saturdays (cron `47 20 * * 6`) | 27 days |
+
+Railway fixes the retention of each schedule; the CLI has no retention option. A single backup can be kept forever with `railway postgres pitr backup lock <id>`.
+
+The schedule is **not** declared in `.railway/railway.ts`. The [IaC reference](https://docs.railway.com/infrastructure-as-code/reference) documents no backup field for databases or volumes, `railway config pull` does not import the schedule, and `railway config plan` ignores it, so an apply leaves it as it is. It lives only in Railway, so manage it with the CLI:
+
+- **See it:** `railway postgres pitr schedule list --service Postgres` (add `--json` for the cron times and retention in seconds).
+- **Change it:** run `schedule set` again with the schedules wanted (`--daily`, `--weekly`, `--monthly`, in any combination). Monthly backups are kept 89 days.
+- **Remove it:** `railway postgres pitr schedule set --none --service Postgres`. Existing backups are kept until they expire.
+- **Re-check it after anything that replaces the volume**, a restore included: a restore mounts a new volume, and whether the schedule carries over to it is not verified (see step 7 of the restore).
+
+### What is backed up
+
+- **What:** the whole Postgres data directory, so every table: agencies, meetings, agenda text and summaries, transcripts, users, the goose and River migration tables and the River job queue.
+- **Where to see backups:** the `Postgres` service's **Backups** tab in the dashboard, or `railway postgres pitr backup list --service Postgres`.
+- **On demand:** `railway postgres pitr backup create --service Postgres --name pre-migration` takes one now, for example before a risky migration. A manual backup is limited to half the volume's size (25 GB of the 50 GB volume).
+- **Size and cost:** the volume holds about 1 GB. Backups are billed at the volume storage rate on the data exclusive to each backup, since they are incremental, so the cost follows how much changes between backups rather than the full 1 GB each time.
+
+What these backups do **not** cover:
+
+- **Losing the project, the account or the volume.** Backups live in the same Railway project as the volume. Wiping the volume deletes all its backups, and a backup can only be restored into the same project and environment. There is no copy outside Railway.
+- **Anything older than the retention window.** Damage noticed after 6 days can only go back to a weekly backup, and after 27 days to none.
+- **The `audio` bucket.** Nothing copies bucket objects. That is acceptable for now: `ingest-download-audio` is off in production, so the bucket holds little or nothing, recordings are public and can be downloaded again from the agencies' sites while they still host them, and objects are meant to be deleted after about six months anyway (see [Object storage](#object-storage)). Transcripts made from the audio live in Postgres and are backed up. Revisit this once audio downloads are on and a recording might no longer be available at its source.
+
+Railway also offers [point-in-time recovery](https://docs.railway.com/volumes/point-in-time-recovery) for Postgres (continuous WAL archiving to a bucket, a window of about 4 weeks). It is off.
+
+### What was verified
+
+Verified against the real `production` environment on 2026-11-19:
+
+- Before the schedule was set there was no schedule, no backup, and PITR was disabled.
+- After `schedule set`, `schedule list --json` shows the two schedules, times and retention in the table above.
+- With `.railway/railway.ts` as on `main`, `railway config plan` reports the configuration up to date, `railway config pull --json` has no backup field, and setting the schedule did not restart `Postgres`.
+
+Not verified, taken from Railway's documentation or inferred: that backups appear at the scheduled times, the whole restore flow below, how the API and the worker behave while `Postgres` restarts, that a redeploy re-runs the migrations a restore rolled back, whether the schedule carries over to the restored volume, and how `railway config plan` treats renamed volumes. Rehearse a restore when there is a safe moment, ideally in a non-production environment, before relying on these steps in an incident.
+
+### Restoring a backup
+
+A restore replaces the database with the backup's contents. Everything written after the backup was taken is lost: new agenda versions, summaries, transcripts, users, finished and queued jobs. Most of it is recreated by the next daily check and the sweeps; users who signed up in between have to sign up again.
+
+1. **Freeze Railway configuration.** `.railway/railway.ts` is authoritative for the whole project: a resource the file does not declare is planned for deletion ("omitting a resource means deleting it", in [Railway's words](https://docs.railway.com/infrastructure-as-code)). After a restore the live data sits on a new volume with a date-stamped name that the file does not declare, while the file still declares `postgres-volume`, now the old one. Any apply before step 8 would plan to destroy the volume holding the live data and mount the old one again. The `Railway config` workflow applies `.railway/` changes once a reviewer approves the run, so until step 8 is done: merge no pull request that touches `.railway/`, reject any `Railway config` apply job waiting for approval, and do not run `railway config apply` by hand.
+2. **Pick the backup.** Note when the damage happened (a deploy, a migration, a job run). In the `Postgres` service's **Backups** tab, or with `railway postgres pitr backup list --service Postgres`, choose the newest backup taken before that time.
+3. **Restore.** In the **Backups** tab, click **Restore** on that backup and wait, from seconds to minutes. Railway stages the change: open **Details** at the top of the project canvas and check that a new volume, named after the backup's date stamp, is mounted at `/var/lib/postgresql/data` and that `postgres-volume` is unmounted. Click **Deploy**. `Postgres` redeploys on the restored volume. The old volume stays in the project, unmounted, with its data and the backups newer than the restored one, so the restore can be reversed by mounting it again.
+   - The CLI equivalent is `railway postgres pitr backup restore <id> --service Postgres`, which Railway describes as an in-place restore for a standalone database. Prefer the dashboard, which shows the staged change before anything happens.
+4. **The API and the worker during the restore.** Leave them running. While `Postgres` redeploys, requests that need the database fail, and running jobs fail and are retried by River. Both should reconnect once `Postgres` is back, without a redeploy. If either keeps logging connection errors after a few minutes, run `railway restart --service civic-scanner` or `railway restart --service civic-scanner-worker`. The job queue goes back to the backup's state: jobs that finished after the backup may run again, and jobs enqueued after it are gone until the next daily check or sweep enqueues them.
+5. **Verify the data.** Open a shell with `railway connect Postgres` (needs `psql` locally) and check:
+   - `SELECT max(version_id) FROM goose_db_version;` is a migration number from `api/migrations/` at or before the newest one.
+   - `SELECT count(*) FROM agencies;`, `meetings`, `agenda_versions` and `users` return plausible counts, not zero.
+   - `SELECT max(created_at) FROM agenda_versions;` is shortly before the backup's time and not after the damage.
+   - The API's `/v1/healthz` returns 200.
+6. **Roll forward migrations.** If the backup predates migrations that the running code needs, the schema is behind the code. Run `railway redeploy --service civic-scanner`: its pre-deploy step, `/app/migrate up`, should apply the missing goose and River migrations before the API restarts. Redeploy `civic-scanner-worker` the same way, then check `goose_db_version` again. If a migration itself caused the damage, revert it on `main` first so it does not run again.
+7. **Check the backup schedule.** Run `railway postgres pitr schedule list --service Postgres`. If the daily and weekly schedules are missing on the restored volume, set them again with the command in [The schedule](#the-schedule).
+8. **Reconcile `.railway/railway.ts`.**
+   1. Rename the volumes so the restored one carries the declared name: `railway volume update --volume postgres-volume --name postgres-volume-replaced-<date>`, then `railway volume update --volume <date-stamp name> --name postgres-volume`.
+   2. The old volume, `postgres-volume-replaced-<date>`, is now undeclared, so a plan would destroy it. Declare it temporarily in `.railway/railway.ts` with a `volume("postgres-volume-replaced-<date>", { ... })` whose settings match the old volume (region `sfo`, its size and alerts), and add it to `resources`.
+   3. Run `railway config plan` and act on what it shows:
+      - Nothing to change, or only `postgres-volume`'s settings (size, alerts) being set back to what the file declares: open a pull request with the temporary declaration, check that its plan comment shows the same, and approve the apply after merging. The freeze ends here.
+      - A destroy of `postgres-volume` or of the replaced volume: a name in the file does not match a volume in Railway. Compare with `railway volume list`, fix the name, and plan again.
+      - A change to which volume `Postgres` mounts, or anything else touching `Postgres`: do not apply. Check in the dashboard that `Postgres` mounts the restored volume, and get a second person to review before going further.
+9. **Clean up later.** Once the restored data has been confirmed for a few days, remove the temporary `volume(...)` declaration in a pull request. Its plan now shows a destroy of `postgres-volume-replaced-<date>`; that is expected, and approving the apply deletes the old volume together with the backups that only it holds.
