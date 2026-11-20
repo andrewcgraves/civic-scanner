@@ -14,7 +14,6 @@ import { isFlagEnabled, requireFlag } from "@/lib/flags/server";
 import { AgendaSection } from "./_components/agenda-section";
 import { TranscriptSection } from "./_components/transcript-section";
 
-const SITE_NAME = "Civic Scanner";
 const AGENCIES_CRUMB: BreadcrumbItem = { label: "Agencies", href: "/agencies" };
 
 interface MeetingPageProps {
@@ -28,12 +27,12 @@ export async function generateMetadata({
   const { id } = await params;
   const meeting = await loadMeeting(id);
   if (!meeting.ok) {
-    return { title: `Meeting | ${SITE_NAME}` };
+    return { title: "Meeting" };
   }
   const { title, agency, startsAt, status } = meeting.data;
   const date = formatMeetingDate(startsAt);
   return {
-    title: `${title} — ${agency.name} | ${SITE_NAME}`,
+    title: `${title} — ${agency.name}`,
     description:
       status === "cancelled"
         ? `${title}, a meeting of ${agency.name} scheduled for ${date}, has been cancelled.`

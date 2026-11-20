@@ -7,7 +7,7 @@ import { loadAgencies } from "@/lib/api/load";
 import { isFlagEnabled } from "@/lib/flags/server";
 
 export const metadata: Metadata = {
-  title: "Agencies | Civic Scanner",
+  title: "Agencies",
   description:
     "The public transit agencies whose board meetings Civic Scanner follows.",
 };

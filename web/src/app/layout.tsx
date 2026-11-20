@@ -15,7 +15,7 @@ import "./globals.css";
 const SITE_NAME = "Civic Scanner";
 
 export const metadata: Metadata = {
-  title: SITE_NAME,
+  title: { default: SITE_NAME, template: `%s | ${SITE_NAME}` },
   description: "Track public agency meetings, agendas, and transcripts.",
 };
 

@@ -23,9 +23,8 @@ export function ExternalLink({
   }
   return (
     <a href={href} rel="external noopener noreferrer" className="link">
-      {children}
-      <span aria-hidden="true">{" ↗"}</span>
-      <span className="sr-only"> {EXTERNAL_LINK_NOTE}</span>
+      {children} <span aria-hidden="true">{"↗"}</span>
+      <span className="sr-only">{EXTERNAL_LINK_NOTE}</span>
     </a>
   );
 }

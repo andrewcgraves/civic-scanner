@@ -104,7 +104,10 @@ describe("RootLayout", () => {
   it("sets the site title", async () => {
     const { metadata } = await import("./layout");
 
-    expect(metadata.title).toBe("Civic Scanner");
+    expect(metadata.title).toEqual({
+      default: "Civic Scanner",
+      template: "%s | Civic Scanner",
+    });
   });
 
   describe("analytics", () => {

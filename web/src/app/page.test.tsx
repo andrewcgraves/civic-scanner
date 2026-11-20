@@ -53,7 +53,7 @@ describe("HomePage", () => {
   it("has a title and description", async () => {
     const { metadata } = await import("./page");
 
-    expect(metadata.title).toBe("Civic Scanner");
+    expect(metadata.title).toBeUndefined();
     expect(metadata.description).toMatch(/board meetings/);
   });
 

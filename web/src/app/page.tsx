@@ -8,7 +8,6 @@ import { loadAgencies } from "@/lib/api/load";
 import { isFlagEnabled } from "@/lib/flags/server";
 
 export const metadata: Metadata = {
-  title: "Civic Scanner",
   description:
     "Civic Scanner follows the board meetings of public transit agencies: their agendas, short AI-written summaries and what changed when an agenda is revised, always with a link to the agency's own documents.",
 };

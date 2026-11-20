@@ -33,13 +33,6 @@ export const COPY = {
     "Made automatically from the recording's audio. It can mishear words, especially names and numbers, and it does not say who is speaking. Times are from the start of the recording. The recording is the authority on what was said.",
 } as const;
 
-function SubHeading({ level, children }: { level: 3 | 4; children: string }) {
-  const Heading = level === 3 ? "h3" : "h4";
-  return (
-    <Heading className="mt-8 mb-3 text-lg font-semibold">{children}</Heading>
-  );
-}
-
 function RecordingLink({ href }: { href: string }) {
   if (!isWebUrl(href)) {
     return <p className="text-ink-muted">{COPY.recordingNotWeb}</p>;
@@ -72,21 +65,24 @@ function RecordingBody({
         </div>
       ) : (
         <>
-          <SubHeading level={headingLevel}>Summary</SubHeading>
-          {transcript.summary === null || transcript.summary.trim() === "" ? (
-            <Notice>{COPY.summaryNotReady}</Notice>
-          ) : (
-            <AiSummary text={transcript.summary} note={COPY.summaryNote} />
-          )}
-          <SubHeading level={headingLevel}>Transcript</SubHeading>
-          <p className="mb-4 max-w-[65ch] text-sm text-ink-muted">
-            {COPY.transcriptNote}
-          </p>
-          <TranscriptText
-            segments={transcript.segments}
-            anchorPrefix={transcriptAnchorPrefix(recordingNumber)}
-            recordingLabel={recordingLabel}
-          />
+          <Section level={headingLevel} title="Summary">
+            {transcript.summary === null || transcript.summary.trim() === "" ? (
+              <Notice>{COPY.summaryNotReady}</Notice>
+            ) : (
+              <AiSummary text={transcript.summary} note={COPY.summaryNote} />
+            )}
+          </Section>
+          <Section
+            level={headingLevel}
+            title="Transcript"
+            description={COPY.transcriptNote}
+          >
+            <TranscriptText
+              segments={transcript.segments}
+              anchorPrefix={transcriptAnchorPrefix(recordingNumber)}
+              recordingLabel={recordingLabel}
+            />
+          </Section>
         </>
       )}
     </>

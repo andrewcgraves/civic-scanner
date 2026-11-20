@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MeetingDetail } from "@/lib/api/client";
 
 const next = vi.hoisted(() => ({
+  flagsOn: new Set<string>(),
   notFound: vi.fn(() => {
     throw new Error("NEXT_NOT_FOUND");
   }),
@@ -15,6 +16,15 @@ const next = vi.hoisted(() => ({
 
 vi.mock("next/server", () => ({ connection: () => Promise.resolve() }));
 vi.mock("next/navigation", () => ({ notFound: next.notFound }));
+vi.mock("@/lib/flags/server", () => ({
+  isFlagEnabled: (flag: string) => Promise.resolve(next.flagsOn.has(flag)),
+  requireFlag: (flag: string) => {
+    if (!next.flagsOn.has(flag)) {
+      next.notFound();
+    }
+    return Promise.resolve();
+  },
+}));
 vi.mock("./_components/transcript-section", () => ({
   TranscriptSection: next.transcriptSection,
 }));
@@ -50,7 +60,7 @@ function respondWith(body: unknown, status = 200) {
 }
 
 async function loadPage(flags: string, fetchImpl: typeof fetch) {
-  vi.stubEnv("NEXT_PUBLIC_FEATURE_FLAGS", flags);
+  next.flagsOn = new Set(flags.split(","));
   const fetchMock = vi.fn(fetchImpl);
   vi.stubGlobal("fetch", fetchMock);
   vi.resetModules();
@@ -73,10 +83,7 @@ async function renderPage(
 }
 
 describe("MeetingPage", () => {
-  afterEach(async () => {
-    const { OpenFeature } = await import("@openfeature/server-sdk");
-    await OpenFeature.clearProviders();
-    vi.unstubAllEnvs();
+  afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     next.transcriptSection.mockClear();
@@ -220,10 +227,7 @@ describe("MeetingPage", () => {
 });
 
 describe("generateMetadata", () => {
-  afterEach(async () => {
-    const { OpenFeature } = await import("@openfeature/server-sdk");
-    await OpenFeature.clearProviders();
-    vi.unstubAllEnvs();
+  afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -235,7 +239,7 @@ describe("generateMetadata", () => {
     );
 
     expect(await generateMetadata({ params })).toEqual({
-      title: "Regular Board Meeting — LA Metro | Civic Scanner",
+      title: "Regular Board Meeting — LA Metro",
       description:
         "Regular Board Meeting, a meeting of LA Metro on Wednesday, January 20, 2027.",
     });
@@ -260,7 +264,7 @@ describe("generateMetadata", () => {
     );
 
     expect(await generateMetadata({ params })).toEqual({
-      title: "Meeting | Civic Scanner",
+      title: "Meeting",
     });
   });
 

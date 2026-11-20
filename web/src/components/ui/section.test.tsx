@@ -41,4 +41,19 @@ describe("Section", () => {
     expect(screen.getByText("What was said.")).toBeVisible();
     expect(screen.getByRole("link", { name: "Top" })).toBeVisible();
   });
+
+  it("renders a level-four heading", () => {
+    render(
+      <Section title="Summary" level={4}>
+        <p>body</p>
+      </Section>,
+    );
+
+    expect(
+      screen.getByRole("heading", { level: 4, name: "Summary" }),
+    ).toBeVisible();
+    expect(screen.getByRole("region", { name: "Summary" })).toContainElement(
+      screen.getByText("body"),
+    );
+  });
 });

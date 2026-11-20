@@ -30,4 +30,27 @@ describe("LinkList", () => {
       "/meetings/2",
     );
   });
+
+  it("renders an item without an href as a plain row", () => {
+    render(
+      <LinkList label="Meetings">
+        <LinkListItem
+          title="Board meeting"
+          meta="Wed, Jan 20, 2027"
+          aside={<span>Held</span>}
+          description={<a href="https://example.com">Agency page</a>}
+        />
+      </LinkList>,
+    );
+
+    const item = screen.getByRole("listitem");
+    expect(item).toHaveTextContent(
+      "Board meetingHeldWed, Jan 20, 2027Agency page",
+    );
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Agency page" })).toHaveAttribute(
+      "href",
+      "https://example.com",
+    );
+  });
 });

@@ -12,7 +12,7 @@ describe("ExternalLink", () => {
     );
 
     const link = screen.getByRole("link", {
-      name: /^Agenda\s*\(leaves Civic Scanner\)$/,
+      name: "Agenda (leaves Civic Scanner)",
     });
     expect(link).toHaveAttribute("href", "https://www.metro.net/agenda.pdf");
     expect(link).toHaveAttribute("rel", "external noopener noreferrer");

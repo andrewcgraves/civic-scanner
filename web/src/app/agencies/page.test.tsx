@@ -51,7 +51,7 @@ describe("AgenciesPage", () => {
   it("has a title and description", async () => {
     const { metadata } = await import("./page");
 
-    expect(metadata.title).toBe("Agencies | Civic Scanner");
+    expect(metadata.title).toBe("Agencies");
     expect(metadata.description).toMatch(/transit agencies/);
   });
 

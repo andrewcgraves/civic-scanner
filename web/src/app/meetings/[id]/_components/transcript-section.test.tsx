@@ -103,7 +103,7 @@ describe("TranscriptSection", () => {
     await show(meeting("held", [{ sourceUrl: VIDEO, transcript: null }]));
 
     const link = screen.getByRole("link", {
-      name: /^Watch or listen on the agency's site\s*\(leaves Civic Scanner\)$/,
+      name: "Watch or listen on the agency's site (leaves Civic Scanner)",
     });
     expect(link).toHaveAttribute("href", VIDEO);
     expect(screen.getByText(COPY.transcriptNotReady)).toBeVisible();
