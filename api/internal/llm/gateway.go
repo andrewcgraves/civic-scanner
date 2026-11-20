@@ -23,6 +23,9 @@ type gateway struct {
 }
 
 func New(cfg config.LLM) Client {
+	if cfg.Provider == config.LLMAnthropic {
+		return newAnthropic(cfg)
+	}
 	return &gateway{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout}}
 }
 
@@ -61,15 +64,19 @@ func statusError(resp *http.Response, raw []byte) *Error {
 	if json.Unmarshal(raw, &parsed) == nil && parsed.Error.Message != "" {
 		message = parsed.Error.Message
 	}
-	e := &Error{
+	return &Error{
 		StatusCode: resp.StatusCode,
 		Retryable:  retryableStatus(resp.StatusCode),
+		RetryAfter: retryAfter(resp.Header),
 		Err:        fmt.Errorf("gateway returned %d: %s", resp.StatusCode, message),
 	}
-	if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds > 0 {
-		e.RetryAfter = time.Duration(seconds) * time.Second
+}
+
+func retryAfter(h http.Header) time.Duration {
+	if seconds, err := strconv.Atoi(h.Get("Retry-After")); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
 	}
-	return e
+	return 0
 }
 
 func retryableStatus(code int) bool {
@@ -80,12 +87,12 @@ func retryableStatus(code int) bool {
 	return code >= http.StatusInternalServerError
 }
 
-func (g *gateway) model(tier Tier) (string, error) {
+func modelFor(cfg config.LLM, tier Tier) (string, error) {
 	switch tier {
 	case TierRoutine:
-		return g.cfg.RoutineModel, nil
+		return cfg.RoutineModel, nil
 	case TierStrong:
-		return g.cfg.StrongModel, nil
+		return cfg.StrongModel, nil
 	default:
 		return "", fmt.Errorf("%w %q", ErrUnknownTier, tier)
 	}
@@ -95,7 +102,7 @@ func (g *gateway) Complete(ctx context.Context, req Request) (Response, error) {
 	if g.cfg.APIKey == "" {
 		return Response{}, ErrNotConfigured
 	}
-	model, err := g.model(req.Tier)
+	model, err := modelFor(g.cfg, req.Tier)
 	if err != nil {
 		return Response{}, err
 	}
