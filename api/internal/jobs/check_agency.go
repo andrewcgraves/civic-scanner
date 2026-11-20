@@ -25,11 +25,15 @@ const (
 
 type CheckAgencyArgs struct {
 	AgencySlug string `json:"agency_slug"`
+	Manual     bool   `json:"manual,omitempty"`
 }
 
 func (CheckAgencyArgs) Kind() string { return "check_agency" }
 
-func (CheckAgencyArgs) InsertOpts() river.InsertOpts {
+func (a CheckAgencyArgs) InsertOpts() river.InsertOpts {
+	if a.Manual {
+		return river.InsertOpts{MaxAttempts: checkMaxAttempts, UniqueOpts: manualUniqueOpts()}
+	}
 	return river.InsertOpts{
 		MaxAttempts: checkMaxAttempts,
 		UniqueOpts:  river.UniqueOpts{ByArgs: true, ByPeriod: 24 * time.Hour, ByQueue: true},
@@ -41,6 +45,7 @@ type UpsertedMeeting struct {
 	Created      bool
 	AgendaURL    string
 	RecordingURL string
+	Manual       bool
 }
 
 type FollowUp interface {
@@ -69,7 +74,10 @@ func (w *CheckAgencyWorker) Timeout(*river.Job[CheckAgencyArgs]) time.Duration {
 
 func (w *CheckAgencyWorker) Work(ctx context.Context, job *river.Job[CheckAgencyArgs]) error {
 	slug := job.Args.AgencySlug
-	logger := w.logger.With("agency_slug", slug, "job_id", job.ID)
+	logger := w.logger.With("agency_slug", slug, "job_id", job.ID, "trigger", trigger(job.Args.Manual))
+	if job.Args.Manual {
+		logger.InfoContext(ctx, "agency check triggered manually", "attempt", job.Attempt)
+	}
 	if !w.enabled(ctx, FlagCheckAgencies) {
 		logger.InfoContext(ctx, "check agency skipped: flag off", "flag", FlagCheckAgencies)
 		return nil
@@ -97,7 +105,7 @@ func (w *CheckAgencyWorker) Work(ctx context.Context, job *river.Job[CheckAgency
 		return river.JobCancel(fmt.Errorf("source adapter %s: %w", slug, err))
 	}
 
-	created, err := w.upsert(ctx, agency.ID, meetings)
+	created, err := w.upsert(ctx, agency.ID, meetings, job.Args.Manual)
 	if err != nil {
 		return err
 	}
@@ -106,7 +114,7 @@ func (w *CheckAgencyWorker) Work(ctx context.Context, job *river.Job[CheckAgency
 	return nil
 }
 
-func (w *CheckAgencyWorker) upsert(ctx context.Context, agencyID uuid.UUID, meetings []sources.Meeting) (int, error) {
+func (w *CheckAgencyWorker) upsert(ctx context.Context, agencyID uuid.UUID, meetings []sources.Meeting, manual bool) (int, error) {
 	created := 0
 	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{}, func(tx pgx.Tx) error {
 		for _, m := range meetings {
@@ -129,6 +137,7 @@ func (w *CheckAgencyWorker) upsert(ctx context.Context, agencyID uuid.UUID, meet
 				Created:      isNew,
 				AgendaURL:    m.AgendaURL,
 				RecordingURL: m.RecordingURL,
+				Manual:       manual,
 			}); err != nil {
 				return fmt.Errorf("follow up meeting %s: %w", m.SourceID, err)
 			}
