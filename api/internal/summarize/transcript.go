@@ -38,9 +38,7 @@ Write the summary:
 - in at most 250 words;
 - starting with one sentence on which body met, if the transcript says so;
 - then what was decided, approved or rejected, with votes and amounts when stated, the main topics discussed, and what members of the public raised;
-- using only facts stated in the transcript, and naming no person, item or decision it does not contain; when a word or name looks misheard, leave it out rather than guess.
-
-If the user message says the transcript was cut short, summarize only the part you were given.`
+- using only facts stated in the transcript, and naming no person, item or decision it does not contain; when a word or name looks misheard, leave it out rather than guess.`
 
 const partSystemPrompt = `You take notes on one part of a long public meeting. A later step combines the notes of every part into one plain-language summary for residents of Southern California who follow their transportation agencies.
 
@@ -146,9 +144,6 @@ func transcriptUnits(segments []TranscriptSegment, fullText string) []unit {
 				piece = piece[:space]
 			}
 		}
-		if piece == "" {
-			piece = rest
-		}
 		units = append(units, unit{text: strings.TrimSpace(piece)})
 		rest = strings.TrimSpace(rest[len(piece):])
 	}
@@ -241,12 +236,7 @@ func (r *TranscriptResult) complete(ctx context.Context, client llm.Client, req 
 }
 
 func singleRequest(tier llm.Tier, p TranscriptPart, random io.Reader) (llm.Request, error) {
-	var b strings.Builder
-	b.WriteString(transcriptSummaryInstruction)
-	if p.Truncated {
-		fmt.Fprintf(&b, " The transcript was cut short: only its first %d bytes are included.", len(p.Text))
-	}
-	return blockRequest(tier, transcriptSystemPrompt, transcriptBlock, b.String(), p.Text, MaxOutputTokens, random)
+	return blockRequest(tier, transcriptSystemPrompt, transcriptBlock, transcriptSummaryInstruction, p.Text, MaxOutputTokens, random)
 }
 
 func partRequest(tier llm.Tier, p TranscriptPart, i, n int, random io.Reader) (llm.Request, error) {
