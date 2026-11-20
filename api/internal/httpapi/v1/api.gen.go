@@ -1653,7 +1653,7 @@ func (response CreateAgencySubmission503JSONResponse) VisitCreateAgencySubmissio
 }
 
 type CreateAgencySubmissiondefaultJSONResponse struct {
-	Body       interface{}
+	Body       Error
 	StatusCode int
 }
 
