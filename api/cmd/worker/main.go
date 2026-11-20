@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/riverqueue/river"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 	"github.com/andrewcgraves/civic-scanner/api/internal/extract"
@@ -25,11 +28,22 @@ const shutdownTimeout = 25 * time.Second
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	err := run(ctx)
+	err := dispatch(ctx, os.Args[1:], os.Stdout)
 	stop()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "worker:", err)
 		os.Exit(1)
+	}
+}
+
+func dispatch(ctx context.Context, args []string, stdout io.Writer) error {
+	switch {
+	case len(args) == 0:
+		return run(ctx)
+	case args[0] == checkAgencyCommand:
+		return checkAgency(ctx, args[1:], stdout, river.QueueDefault)
+	default:
+		return errWorkerUsage
 	}
 }
 
