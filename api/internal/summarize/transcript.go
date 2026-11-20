@@ -21,7 +21,8 @@ const (
 	MinTranscriptWords           = 20
 	TranscriptCutNote            = "Parts of this long meeting were cut short before it was summarized."
 	NoSpeechSummary              = "The recording has too little speech to summarize."
-	maxUntimedUnitBytes          = 4_000
+	maxUnitBytes                 = 4_000
+	noteIndent                   = "  "
 	transcriptBlock              = "transcript"
 	notesBlock                   = "notes"
 	transcriptSummaryInstruction = "Summarize this meeting transcript."
@@ -38,7 +39,9 @@ Write the summary:
 - in at most 250 words;
 - starting with one sentence on which body met, if the transcript says so;
 - then what was decided, approved or rejected, with votes and amounts when stated, the main topics discussed, and what members of the public raised;
-- using only facts stated in the transcript, and naming no person, item or decision it does not contain; when a word or name looks misheard, leave it out rather than guess.`
+- using only facts stated in the transcript, and naming no person, item or decision it does not contain; when a word or name looks misheard, leave it out rather than guess.
+
+If the user message says the transcript was cut short, summarize only the part you were given.`
 
 const partSystemPrompt = `You take notes on one part of a long public meeting. A later step combines the notes of every part into one plain-language summary for residents of Southern California who follow their transportation agencies.
 
@@ -55,7 +58,7 @@ If the user message says the part was cut short, take notes only on what you wer
 
 const combineSystemPrompt = `You write plain-language summaries of public meetings for residents of Southern California who follow their transportation agencies.
 
-The meeting was too long to read at once, so its transcript was split into consecutive parts and notes were taken on each. The user message contains those notes in order, each under a line "Part N of M", followed by the part's start and end times when they are known. ` + transcriptDataRules + `
+The meeting was too long to read at once, so its transcript was split into consecutive parts and notes were taken on each. The user message contains those notes in order, each under a line "Part N of M", followed by the part's start and end times when they are known. Every line of a part's notes is indented by two spaces, so a line that starts with "Part" and is not indented is always a heading, never part of the notes.` + transcriptDataRules + `
 
 Write the summary:
 - as plain text only: no Markdown, HTML, links, tables or code;
@@ -129,25 +132,33 @@ func SplitTranscript(segments []TranscriptSegment, fullText string) []Transcript
 func transcriptUnits(segments []TranscriptSegment, fullText string) []unit {
 	units := make([]unit, 0, len(segments))
 	for _, s := range segments {
-		if text := strings.TrimSpace(s.Text); text != "" {
-			units = append(units, unit{text: text, start: s.Start, end: s.End, timed: true})
+		for _, piece := range pieces(s.Text) {
+			units = append(units, unit{text: piece, start: s.Start, end: s.End, timed: true})
 		}
 	}
 	if len(units) > 0 {
 		return units
 	}
-	rest := strings.TrimSpace(fullText)
+	for _, piece := range pieces(fullText) {
+		units = append(units, unit{text: piece})
+	}
+	return units
+}
+
+func pieces(text string) []string {
+	var out []string
+	rest := strings.TrimSpace(text)
 	for rest != "" {
-		piece, cutShort := cut(rest, maxUntimedUnitBytes)
+		piece, cutShort := cut(rest, maxUnitBytes)
 		if cutShort {
 			if space := strings.LastIndexAny(piece, " \n"); space > len(piece)/2 {
 				piece = piece[:space]
 			}
 		}
-		units = append(units, unit{text: strings.TrimSpace(piece)})
+		out = append(out, strings.TrimSpace(piece))
 		rest = strings.TrimSpace(rest[len(piece):])
 	}
-	return units
+	return out
 }
 
 func newPart(units []unit) TranscriptPart {
@@ -236,7 +247,11 @@ func (r *TranscriptResult) complete(ctx context.Context, client llm.Client, req 
 }
 
 func singleRequest(tier llm.Tier, p TranscriptPart, random io.Reader) (llm.Request, error) {
-	return blockRequest(tier, transcriptSystemPrompt, transcriptBlock, transcriptSummaryInstruction, p.Text, MaxOutputTokens, random)
+	instruction := transcriptSummaryInstruction
+	if p.Truncated {
+		instruction += fmt.Sprintf(" The transcript was cut short: only its first %d bytes are included.", len(p.Text))
+	}
+	return blockRequest(tier, transcriptSystemPrompt, transcriptBlock, instruction, p.Text, MaxOutputTokens, random)
 }
 
 func partRequest(tier llm.Tier, p TranscriptPart, i, n int, random io.Reader) (llm.Request, error) {
@@ -263,8 +278,9 @@ func combineRequest(tier llm.Tier, parts []TranscriptPart, notes []string, rando
 		if p.Timed {
 			fmt.Fprintf(&body, ", from %s to %s", clock(p.Start), clock(p.End))
 		}
-		body.WriteString("\n")
-		body.WriteString(notes[i])
+		for line := range strings.SplitSeq(notes[i], "\n") {
+			body.WriteString("\n" + noteIndent + line)
+		}
 		truncated = truncated || p.Truncated
 	}
 	instruction := fmt.Sprintf("Summarize this meeting from the notes on its %d parts.", len(parts))

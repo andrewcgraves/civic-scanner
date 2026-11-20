@@ -42,6 +42,10 @@ func TestATranscriptRequestWithoutADelimiterCallsNoModel(t *testing.T) {
 	if _, err := combineRequest(llm.TierRoutine, parts, make([]string, len(parts)), bytes.NewReader(nil)); err == nil {
 		t.Error("combine request without a delimiter: err = nil")
 	}
+	cut, err := singleRequest(llm.TierRoutine, TranscriptPart{Text: "head of a long meeting", Truncated: true}, randomSource)
+	if err != nil || !strings.Contains(cut.User, "The transcript was cut short: only its first 22 bytes are included.") {
+		t.Errorf("cut one-call request = (%.120q, %v)", cut.User, err)
+	}
 	if got := clock(-time.Second); got != "0:00:00" {
 		t.Errorf("clock(-1s) = %q", got)
 	}

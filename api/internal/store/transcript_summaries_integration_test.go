@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,6 +50,92 @@ func TestRecordTranscriptSummaryWritesTheSummaryAndItsEventOnce(t *testing.T) {
 	var payload store.TranscriptEventPayload
 	if err := json.Unmarshal(events[0].Payload, &payload); err != nil || payload.TranscriptID != tr.ID || payload.RecordingID != r.ID {
 		t.Errorf("payload = %s (%v)", events[0].Payload, err)
+	}
+}
+
+func TestASummaryWhoseEventFailsIsRolledBack(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	r := seedRecording(t, pool, "store-test-transcript-ready-rollback")
+	tr := savedTranscript(t, pool, r, "The board approves the budget.")
+	fn := "fail_transcript_event_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	bg := context.WithoutCancel(ctx)
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION `+fn+`() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.meeting_id = '`+r.MeetingID.String()+`' THEN
+    RAISE EXCEPTION 'transcript event refused by test trigger';
+  END IF;
+  RETURN NEW;
+END $$`); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(bg, `DROP FUNCTION IF EXISTS `+fn+`() CASCADE`) })
+	if _, err := pool.Exec(ctx, `CREATE TRIGGER `+fn+` BEFORE INSERT ON meeting_events FOR EACH ROW EXECUTE FUNCTION `+fn+`()`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, recorded, err := s.RecordTranscriptSummary(ctx, tr.ID, store.HashContent(tr.Text), "Summary."); err == nil || recorded {
+		t.Fatalf("RecordTranscriptSummary = (%v, %v), want the event's failure", recorded, err)
+	}
+	if got, err := s.GetTranscriptByID(ctx, tr.ID); err != nil || got.Summary != nil {
+		t.Errorf("transcript = (%v, %v), want the summary rolled back with its event", got.Summary, err)
+	}
+
+	if _, err := pool.Exec(ctx, `DROP FUNCTION `+fn+`() CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, recorded, err := s.RecordTranscriptSummary(ctx, tr.ID, store.HashContent(tr.Text), "Summary."); err != nil || !recorded {
+		t.Errorf("after the trigger is gone = (%v, %v), want the summary and its event", recorded, err)
+	}
+	if events, _ := s.ListMeetingEvents(ctx, r.MeetingID); len(events) != 1 {
+		t.Errorf("events = %d, want 1", len(events))
+	}
+}
+
+func TestRecordTranscriptSummaryHashesUnicodeTextLikeGo(t *testing.T) {
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	for i, text := range []string{"Café décision 日本語 🚌 e\u0301 \u200b tab\tend", "trailing space  ", "\r\nCRLF\r\n"} {
+		r := seedRecording(t, pool, "store-test-transcript-hash-"+uuid.NewString()[:8])
+		tr := savedTranscript(t, pool, r, text)
+		if _, ok, err := s.RecordTranscriptSummary(t.Context(), tr.ID, store.HashContent(tr.Text), "s"); err != nil || !ok {
+			t.Errorf("text %d: (%v, %v)", i, ok, err)
+		}
+	}
+}
+
+func TestRecordTranscriptSummaryRacingANewTextLeavesNoStaleSummary(t *testing.T) {
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	for i := range 30 {
+		r := seedRecording(t, pool, "store-test-transcript-race-save-"+uuid.NewString()[:8])
+		tr := savedTranscript(t, pool, r, "Old text.")
+		var (
+			wg       sync.WaitGroup
+			recErr   error
+			recorded bool
+		)
+		wg.Go(func() {
+			_, recorded, recErr = s.RecordTranscriptSummary(t.Context(), tr.ID, store.HashContent("Old text."), "old summary")
+		})
+		wg.Go(func() {
+			if _, _, err := s.SaveTranscript(t.Context(), transcriptInput(r.ID, "New text.")); err != nil {
+				t.Error(err)
+			}
+		})
+		wg.Wait()
+		got, _ := s.GetTranscriptByID(t.Context(), tr.ID)
+		events, _ := s.ListMeetingEvents(t.Context(), r.MeetingID)
+		if got.Summary != nil {
+			t.Errorf("iteration %d: stale summary %q on the new text", i, *got.Summary)
+		}
+		if recErr != nil && !errors.Is(recErr, store.ErrTranscriptChanged) {
+			t.Errorf("iteration %d: err %v", i, recErr)
+		}
+		if recorded != (len(events) == 1) {
+			t.Errorf("iteration %d: recorded %v, events %d", i, recorded, len(events))
+		}
 	}
 }
 

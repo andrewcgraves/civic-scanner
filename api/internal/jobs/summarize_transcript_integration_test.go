@@ -225,6 +225,47 @@ func TestALongTranscriptIsSummarizedInPartsAndAFailedPartStoresNothing(t *testin
 	}
 }
 
+func TestATranscriptCommitsWhenItsSummaryInsertFailsInTheDatabase(t *testing.T) {
+	pool := testdb.Pool(t)
+	bucket := storagetest.New()
+	rec := recordingWithAudio(t, pool, bucket, "summary-hook-fail")
+	fake := llmtest.Returning("never")
+	h := start(t, pool, jobs.Config{
+		Storage:       bucket,
+		LLM:           fake,
+		Transcription: jobs.Transcription{Client: transcribetest.Returning(spokenMeeting)},
+	})
+	fn := "fail_transcript_summary_insert_" + h.queue
+	ctx := context.WithoutCancel(t.Context())
+	if _, err := pool.Exec(ctx, `CREATE FUNCTION `+fn+`() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.queue = '`+h.queue+`' AND NEW.kind = 'summarize_transcript' THEN
+    RAISE EXCEPTION 'transcript summary insert refused by test trigger';
+  END IF;
+  RETURN NEW;
+END $$`); err != nil {
+		t.Fatalf("create function: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DROP FUNCTION IF EXISTS `+fn+`() CASCADE`) })
+	if _, err := pool.Exec(ctx, `CREATE TRIGGER `+fn+` BEFORE INSERT ON river_job FOR EACH ROW EXECUTE FUNCTION `+fn+`()`); err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	id := h.transcribe(rec.ID)
+	testdb.WaitForJobState(t, pool, id, "completed")
+
+	if _, ok := transcriptOf(t, pool, rec.ID); !ok {
+		t.Fatal("the transcript was rolled back by a failed summary insert")
+	}
+	if msg := lastError(t, h, id); msg != "" {
+		t.Errorf("transcribe job recorded an error %q, want it to succeed on its first attempt", msg)
+	}
+	h.transcriptSummaryJobs(0)
+	if len(fake.Calls()) != 0 || len(transcriptEvents(t, pool, rec.MeetingID)) != 0 {
+		t.Errorf("calls %d, events %d, want none until the sweep", len(fake.Calls()), len(transcriptEvents(t, pool, rec.MeetingID)))
+	}
+}
+
 func TestEachRecordingOfAMeetingIsMarkedReadyOnce(t *testing.T) {
 	pool := testdb.Pool(t)
 	bucket := storagetest.New()
