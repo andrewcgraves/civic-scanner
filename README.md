@@ -77,7 +77,8 @@ Every route is under `/v1`. All are public except `GET /v1/me`, which needs a Wo
 
 - **Flag and configuration.** The route answers only when the `agency-rss-feeds` flag is on and `PUBLIC_WEB_URL` is set. Otherwise it returns the same 404 as an unknown agency, before touching the cache or the database. The JSON reads have no flag; the feed has one because the story asks for it and because subscribers keep a feed URL for good.
 - **The flag is evaluated anonymously.** The `authenticate` middleware puts a signed-in user's id in the flag targeting context of every request. The feed handler drops it (`featureflags.Anonymous`) before checking `agency-rss-feeds`, so the answer is the same with or without a token. The 200 is `Cache-Control: public`, and a per-user answer could let a shared cache hand a staff-only feed to everyone. Nothing in the response depends on request headers other than `If-None-Match`, so there is no `Vary`.
-- **Keep the flag off until the pages exist.** Item links point at `{PUBLIC_WEB_URL}/meetings/{id}` and the channel link at `{PUBLIC_WEB_URL}/agencies/{slug}`. Those pages do not exist yet: CIV-43 adds the meeting page and CIV-36 the agency page. Until both have shipped every link in the feed is a 404, so `agency-rss-feeds` should stay off. Autodiscovery (a `<link rel="alternate" type="application/rss+xml">` on the agency page) is not included for the same reason: there is no agency page to put it on.
+- **Turn the website's pages on first.** Item links point at `{PUBLIC_WEB_URL}/meetings/{id}` and the channel link at `{PUBLIC_WEB_URL}/agencies/{slug}`. On the website those pages answer only while its `meeting-pages` and `agency-pages` flags are on (see [Web pages](#web-pages)); with either off, those links are 404s. Turn both on before the API's `agency-rss-feeds`.
+- **Autodiscovery.** The website has its own `agency-rss-feeds` flag. With it on, the agency page carries `<link rel="alternate" type="application/rss+xml" title="{agency} meetings" href="/agencies/{slug}/feed.xml">` and shows an "RSS feed" link. The website cannot see the API's flag, so turn the two on together: with only the website's on, the link leads to a 404; with only the API's on, the feed works but is not advertised.
 - **`PUBLIC_WEB_URL`.** The origin of the public website, such as `https://civicscanner.org`, optionally with a path prefix. The API reads it at startup and refuses to start when it is not an absolute `http` or `https` URL with a host, a port (if any) from 1 to 65535, and no user info, query or fragment. A trailing `/` is dropped. The Atom `rel="self"` link is `{PUBLIC_WEB_URL}/agencies/{slug}/feed.xml`, the website's address for the feed, so subscriptions do not depend on the API version or host.
 - **Items.** One per event, newest first by `sequence`, from the agency's 50 newest events (`store.MaxFeedItems`). Each event type has its own case: `agenda_published` is `Agenda posted: `, `agenda_changed` is `Agenda updated: `, `transcript_ready` is `Transcript ready: `, each followed by the meeting title and its date. An event of any other type is left out. The `guid` is the event's uuid with `isPermaLink="false"`, so it never changes and never repeats. `pubDate` is the event's `occurred_at` in RFC 1123 form with a numeric zone, in UTC, which for `agenda_changed` is when the change was found; the channel's `lastBuildDate` is the latest `pubDate` among the items (not necessarily the first item's, since a change found earlier can be recorded later), so an unchanged feed renders byte for byte the same. Items stay in `sequence` order. Descriptions say which agency did what for which meeting and when, then the change note (`agenda_changed`) and the summary of the version the event names (both agenda types). Meeting times are shown in `America/Los_Angeles`, since every tracked agency is in Southern California; an agency elsewhere needs a time zone on the agency. A transcript item says only that the transcript is ready: the event payload is not read, so nothing a job puts in it is exposed. A meeting split into several recordings gets one transcript item per recording (see [Transcript summaries](#transcript-summaries)). Nothing else leaves the database: no agency, version or recording ids, storage keys, document URLs or agenda text.
 - **Agenda items before their summary.** An agenda event is published as soon as it is in the outbox. Its summary is written by a separate job afterwards, so readers who poll first see `A summary is not available yet.`; the description fills in once the summary exists and the cached feed expires, but most readers do not show an item again after they first fetch it. Holding an agenda item back until it has a summary or a grace period has passed is the constant `agendaSummaryGrace` in `internal/httpapi/rss.go` (currently 0, no hold); the renderer already applies it, and `TestRendererCanHoldAgendaItemsUntilTheirSummary` covers it. With a hold, the 50-event window shows fewer items while summaries are pending.
@@ -214,8 +215,9 @@ Unfinished work ships dark behind a flag. Both sides evaluate flags through [Ope
 
 The web app evaluates every flag on the server, through `@openfeature/server-sdk`, and hands the results to client components. `web/src/lib/flags/` wraps it. Callers import only from there, never from OpenFeature or PostHog.
 
-- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `test-only-flag` exists only for the module's own tests.
+- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `agency-pages` turns on `/agencies/{slug}`, `meeting-pages` turns on `/meetings/{id}`, `meeting-transcripts` turns on the transcript section of the meeting page, and `agency-rss-feeds` turns on the agency page's feed link and autodiscovery (see [Turning the pages on](#turning-the-pages-on)). The landing page and `/agencies` have no flag. `test-only-flag` exists only for the module's own tests.
 - **Server components:** `await isFlagEnabled("flag-key")` from `@/lib/flags/server`.
+- **Routes behind a flag:** `await requireFlag("flag-key")` from `@/lib/flags/server` calls Next's `notFound()` when the flag is off, so a dark route answers 404 exactly like a path that does not exist.
 - **Client components:** `useFlag("flag-key")` from `@/lib/flags/client`. The root layout calls `getFlagsOn()` from `@/lib/flags/server`, which evaluates each registered key with the OpenFeature client, and passes the keys that are on to `FlagsProvider`, a plain React context that supplies `useFlag`. A client component's server-rendered HTML and its first render in the browser therefore already show the right value: a flag that is on does not flash off, and hydration does not mismatch.
 
 Every flag is a boolean and defaults to off. An unregistered or unknown flag, a multivariate PostHog flag, a PostHog error, a slow or unreachable PostHog, a provider that fails to start, and a client component outside `FlagsProvider` all evaluate to off.
@@ -321,6 +323,137 @@ Search params: `ALLOWED_SEARCH_PARAMS` in `payload.ts` is the list of search par
 - Content-Security-Policy: the app sets none. If one is added, `connect-src` must allow `NEXT_PUBLIC_POSTHOG_HOST`; no `script-src` entry is needed, since the PostHog code is served from our own origin.
 - Reverse proxy: ad blockers commonly block `*.posthog.com`, which loses those visitors' events. A first-party proxy (PostHog's managed proxy, or Next or Vercel rewrites) avoids that; point `NEXT_PUBLIC_POSTHOG_HOST` at it. The server-side flags use the same host, so the proxy must forward `/flags/` as well as `/e/`. Not set up yet.
 - Tests: `client.test.ts` and `analytics.test.tsx` mock `posthog-js/dist/module.slim.no-external`, `next/navigation` and `next/web-vitals`. `real-posthog.test.ts` runs the real PostHog client under jsdom with `fetch`, `XMLHttpRequest` and `sendBeacon` stubbed, and checks the decoded payloads: the exact property set of each event, no search params, hash or referrer anywhere, `/e/` as the only endpoint, no script element, no cookie and nothing left in storage. `client.ts` keeps its state in the module, so each test calls `vi.resetModules()` and imports it again.
+
+## Web pages
+
+The public pages share one shell, one set of primitives and one way of loading data. Follow these conventions in every page.
+
+### Shell
+
+`web/src/app/layout.tsx` renders the skip link, the header (site name linking home, the primary navigation from `NAV_ITEMS` in `web/src/components/site-nav.tsx`, the account menu when sign-in is on), `<main id="main">` and the footer. A page renders only its content: never its own `<main>`, `<header>` for the site, footer or outer width container. The layout sets the width (`max-w-4xl` with side padding) and the vertical padding. `not-found.tsx` and `error.tsx` at the app root cover every route; add a route-level one only when a route needs different words. There is deliberately no `loading.tsx`: it wraps the page in a Suspense boundary, so the response starts with status 200 before the page can call `notFound()`, and every not-found page would answer 200. A future loading state must sit below the point where a page decides it exists.
+
+Titles: the root layout's `metadata.title` is `{ default: "Civic Scanner", template: "%s | Civic Scanner" }`. A page gives only its own part (`title: "Agencies"`, or the agency's name from `generateMetadata`) and the template adds the site name. The landing page sets no title and gets the default. `not-found.tsx` is titled "Page not found".
+
+### Design tokens
+
+`web/src/app/globals.css` defines the colours as Tailwind 4 `@theme` variables and redefines them under `prefers-color-scheme: dark`, so a utility such as `bg-surface` or `text-ink-muted` is right in both schemes. Use these tokens, not Tailwind's palette (`gray-500`, `blue-700`) or hex values:
+
+| Token | Use |
+| --- | --- |
+| `canvas`, `surface`, `surface-muted` | page background, cards and the header, hover and quiet fills |
+| `ink`, `ink-muted` | body text, secondary text |
+| `line`, `line-strong` | borders and dividers |
+| `accent`, `accent-strong` | links and their hover; `focus` is the focus ring |
+| `scheduled-*`, `held-*`, `cancelled-*`, `ai-*`, `error-*` | `-surface`, `-ink` (and `-line`) for status badges, the AI label and error notices |
+
+Base styles give every focusable element a visible `:focus-visible` outline and every element with an `id` a scroll margin, so in-page links (transcript timestamps) do not land under the edge. Two classes cover text: `link` for an inline link, `prose` for long text (70 characters wide, 1.75 line height, spaced paragraphs). Type is the system font stack: `h1` comes from `PageHeader`, `h2` to `h4` from `Section`. Long words (URLs read out in a transcript, long titles) wrap rather than overflow: `body` has `overflow-wrap: break-word`, and text inside a grid or flex cell needs `wrap-anywhere` or `min-w-0` as well, since `break-word` does not shrink a cell's minimum width.
+
+### Primitives
+
+`web/src/components/ui/`, one component per file, imported by path (there is no index file). Each is a server component unless noted and works at phone width.
+
+| Import | Use it for |
+| --- | --- |
+| `PageHeader` from `@/components/ui/page-header` | the top of every page: the only `h1`, with optional `breadcrumb`, `eyebrow`, `description` and children for a meta line (status badge, date) |
+| `Breadcrumb` from `@/components/ui/breadcrumb` | the trail above the title; pass it through `PageHeader`'s `breadcrumb` rather than rendering it yourself |
+| `Section` from `@/components/ui/section` | each titled part of a page; a `<section>` labelled by its `h2` (`level={3}` or `level={4}` for nested parts), with optional `id`, `description` and `actions` |
+| `LinkList`, `LinkListItem` from `@/components/ui/link-list` | a list of agencies or meetings; with `href` the whole row is one link to a page of this site, without it the row is plain (for when the target page is behind a flag that is off) and its `description` can hold an external link |
+| `MeetingStatusBadge` from `@/components/ui/meeting-status-badge` | a meeting's `status`; `Badge` from `@/components/ui/badge` for other short labels |
+| `ExternalLink` from `@/components/ui/external-link` | every link to an agency's site, document or recording; same tab, `rel="external noopener noreferrer"`, a visible arrow and "(leaves Civic Scanner)" for screen readers; a URL that is not `http` or `https` renders as plain text |
+| `AiSummary` from `@/components/ui/ai-summary` | any AI-written text (agenda summary, change note, transcript summary): the "AI-generated" label, the text as paragraphs, and a note that the agency's original is the record (pass `note` to link that original) |
+| `EmptyState` from `@/components/ui/empty-state` | a list or section that is legitimately empty |
+| `Notice`, `UnavailableNotice` from `@/components/ui/notice` | `Notice` for an inline note (`tone="info"`, the default) or error (`tone="error"`, `role="alert"`); `UnavailableNotice what="Meetings are"` when a loader returns unavailable |
+| `MeetingTime`, `Offset` from `@/components/ui/date-time` | every date and time a page shows (see below) |
+
+Components used by one route only go in `web/src/app/<route>/_components/`, with their tests beside them. Move one into `web/src/components/ui/` only when a second route needs it.
+
+### Loading data
+
+Pages load API data through the loaders in `web/src/lib/api/load.ts`, never by calling `api` from `@/lib/api/client` directly: `loadAgencies()`, `loadAgency(slug)`, `loadAgencyMeetings(slug, cursor?, limit?)` and `loadMeeting(id)`. Each returns `{ ok: true, data }` or `{ ok: false }`:
+
+- **Not found.** A 404 or 400 from the API, a slug that is not lowercase letters and digits in hyphen-separated groups (at most 100 characters) and a meeting id that is not a lowercase UUID all call Next's `notFound()`, which renders the root `not-found.tsx` with status 404. The last two make no request.
+- **Unavailable.** A network error, a timeout (10 seconds per request, `REQUEST_TIMEOUT_MS`), any other non-2xx status, or a response that does not have the shape the pages rely on returns `{ ok: false }` and logs `API request failed: <route>` on the server. The page renders the rest of itself with an `UnavailableNotice` where the data would be; it never throws for this.
+- **Shape checks.** `web/src/lib/api/guards.ts` checks each response at run time before a page sees it: required strings are strings, dates parse, lists are lists, and nullable fields are null or the right type. A meeting's `status` may be any string, and a transcript segment only has to be an object, because the pages handle an unknown status and a malformed segment themselves. Anything else that fails the check makes the whole response unavailable rather than half-rendering it.
+- **Deadline.** `loadAgencyMeetings` takes an optional `AbortSignal` that is combined with the per-request timeout, so several requests can share one deadline.
+- **Caching.** Every loader calls `connection()` and fetches with `cache: "no-store"`, so pages that load data are rendered per request and always show the API's current state. Data changes on its own schedule (agendas, summaries and transcripts arrive at any time), the meeting response can be over Next's 2 MB data-cache limit once a transcript is attached, and in PostHog mode every page is rendered per request already (see [Feature flags](#web)). To cache later, change `settle` in `load.ts`; it is the only place.
+- **Deduplication.** The loaders are wrapped in React's `cache`, so `generateMetadata` and the page calling the same loader with the same arguments make one request.
+
+The types pages need are exported from `@/lib/api/client`: `Agency`, `MeetingStatus`, `MeetingSummary`, `MeetingList`, `MeetingDetail`, `Agenda`, `Recording`, `Transcript`, `TranscriptSegment`.
+
+### Dates and times
+
+All meeting dates are shown in `America/Los_Angeles` with the zone abbreviation, whatever the visitor's zone, through `web/src/lib/datetime.ts`. The functions assemble their output from `Intl` parts with plain spaces, so the same instant gives the same string on the server, in the browser and in tests on any machine.
+
+| Function | Example |
+| --- | --- |
+| `formatMeetingDateTime` (`MeetingTime` default) | `Wednesday, January 20, 2027 at 9:00 AM PST` |
+| `formatMeetingDate` (`format="date"`) | `Wednesday, January 20, 2027` |
+| `formatMeetingTime` (`format="time"`) | `9:00 AM PST` |
+| `formatShortDate` (`format="short-date"`) | `Wed, Jan 20, 2027` |
+| `formatShortDateTime` (`format="short-datetime"`) | `Wed, Jan 20, 2027, 9:00 AM PST` |
+| `formatOffset` (`Offset`) | `1:02:03` from `3723000` ms, `2:03` under an hour |
+
+A string that is not a date formats as "Date unknown" and is never upcoming; the formatters never throw. Tests run with `TZ=UTC` (set in `vitest.config.ts`), so a formatter that forgot `America/Los_Angeles` fails on any machine.
+
+Render dates with `<MeetingTime value={iso} format="..." />`, which wraps the text in `<time dateTime>`; `<Offset ms={...} />` does the same for transcript offsets with an ISO 8601 duration. `isUpcoming(iso, now)` takes `now` as an argument: read the clock once per render in the page and pass it down, and pass a fixed date in tests.
+
+### Flags
+
+Each new page starts dark. A route behind a flag calls `await requireFlag("agency-pages")` (or `"meeting-pages"`) first in the page and in `generateMetadata`. A section behind a flag checks `await isFlagEnabled("meeting-transcripts")` and renders nothing when it is off. The page flags are already registered; add a new key to `registry.ts` only for a new flag.
+
+### Tests
+
+Every page, `_components` file and helper gets a Vitest test beside it, and coverage of new files stays at 100%. Pages are async server components: render `await Page({ params: Promise.resolve({ slug: "la-metro" }) })` with Testing Library. Stub `fetch` with `vi.stubGlobal`, then `vi.resetModules()` and import the page, since the API client keeps the `fetch` it was created with; mock `next/server` (`connection`) and `next/navigation` (`notFound` throwing a recognisable error); mock `@/lib/flags/server` with an `isFlagEnabled` and a `requireFlag` that read a set of flags the test controls (`requireFlag` calls the mocked `notFound` when its flag is missing); and silence `console.error` in unavailable cases. Only the flags module's own tests and the root layout's set `NEXT_PUBLIC_FEATURE_FLAGS`. Cover found, not found, unavailable, empty, and the flag off. No network, no real clock: pass `now` explicitly. `web/src/lib/api/load.test.ts` and `web/src/app/agencies/[slug]/page.test.tsx` show the pattern.
+
+### Landing and agencies list
+
+`/` (`web/src/app/page.tsx`) explains the service in fixed copy (what it does, what to keep in mind) and lists every agency the API returns. `/agencies` lists the same agencies under its own heading. Neither has a flag. Each agency row shows its name and its website's host name. With `agency-pages` on, the whole row links to `/agencies/{slug}`; with it off, the row is plain and the host name links to the agency's own site. No agencies gives an empty state; an unavailable API gives an `UnavailableNotice` in place of the list, and the rest of the page still renders.
+
+An agency with no meetings yet is marked "Coming soon", with a line above the list saying such agencies are not connected yet; it still links to its page when `agency-pages` is on. `findComingSoon` in `web/src/lib/api/coming-soon.ts` decides this from data: it asks the API for one meeting per agency (`limit=1`), all in parallel under one shared 10-second deadline, so both list pages make at most one extra request per agency. With more than 25 agencies (`MAX_COMING_SOON_LOOKUPS`) it skips the lookups and marks none. A lookup that fails, times out or returns a malformed response leaves that agency unmarked; it never blocks the list or shows the unavailable notice.
+
+### Agency page
+
+`/agencies/{slug}` (`web/src/app/agencies/[slug]/`), behind `agency-pages`. The header has the agency's name, a link to its website and, with `agency-rss-feeds` on, an "RSS feed" link (see [Agency RSS feeds](#agency-rss-feeds)). An unknown slug is a 404; an unavailable agency keeps the page with the title "Agency" and a notice, and the meetings still load.
+
+- **Upcoming and past.** A meeting is upcoming when it is not `held` and starts at or after the moment of the request; everything else is past. So a scheduled or cancelled meeting stays upcoming until its start time, and a meeting the agency already marks `held` is past even if its listed time is later. Upcoming meetings are listed soonest first, past ones most recent first. A cancelled meeting stays in its list with a "Cancelled" badge.
+- **Pagination.** The API returns meetings newest first, 50 per page, with a cursor. The first page must show the soonest upcoming meetings, which are at the end of the API's order, so while the last meeting received is still upcoming and there is a next cursor, the page asks for the next API page, at most 4 requests in all (`MAX_FIRST_PAGE_REQUESTS`). All of them share one 10-second deadline, so the page answers in about one timeout however many follow-ups it makes. When the cap is reached with upcoming meetings still to come (an agency with more than 200 future meetings), the upcoming list says that it shows the furthest-ahead meetings and that more, including sooner ones, continue on the next page, and the past list is left out instead of claiming there are no past meetings. If a follow-up request fails or runs out of time, the meetings already loaded are shown with a notice that the list may be incomplete, and "Older meetings" continues from the page that failed. "Older meetings" links to `?cursor=…` and an older page links back to the newest. On an older page the past list is headed "Older meetings", and its upcoming list appears only if upcoming meetings spill onto it. A cursor that is not 1 to 512 letters, digits, `_` or `-`, or that the API rejects, is a 404.
+- **States.** No meetings at all on the first page: "Meetings for this agency are not tracked yet." No upcoming or no past meetings: an empty state in that list. Meetings unavailable: a notice in their place.
+- **Links.** With `meeting-pages` on, each meeting row links to `/meetings/{id}`; with it off, rows are plain and link to the meeting on the agency's site when the API gives a web address for it. Slugs and ids from the API are passed through `encodeURIComponent` in every internal link (lists, breadcrumb, pagination, feed link).
+- **Statuses.** `scheduled`, `held` and `cancelled` get their own badges. Any other status gets a neutral badge: the status itself in sentence case when it is plain lower-case letters and underscores (`postponed` becomes "Postponed"), otherwise "Status unknown". Whether such a meeting is upcoming is decided by its date alone.
+
+### Meeting page
+
+`/meetings/{id}` (`web/src/app/meetings/[id]/`), behind `meeting-pages`. An id that is not a UUID, or that the API does not know, is a 404. Ids are lowercase: an uppercase or mixed-case form of a valid id is a 404 too, without a request, so each meeting has exactly one URL. The header shows the agency, the title, a status badge, the date and time in Pacific time, and a link to the meeting on the agency's site when its address is a web link (otherwise the link is left out, as is the agency page's "Agency website"). The breadcrumb links the agency's page only when `agency-pages` is on. A cancelled meeting gets a notice saying so. An unavailable API gives a generic "Meeting" heading and a notice.
+
+The agenda section shows one of these:
+
+- **No agenda.** "No agenda yet", saying a link and summary will appear when the agency publishes one; for a cancelled meeting, "No agenda", saying none was found before it was cancelled.
+- **An agenda.** A prominent link to the agency's original document (plain text if the address is not `http` or `https`), the version number when it is above 1, and when the version was found. Then, when there is a change note, "What changed in version N" with the note, labelled AI-generated. Then the summary, labelled AI-generated with a link to the original, or a note that the summary has not been written yet.
+- **A later version without a change note.** The section still says the agency revised the agenda and that no description of what changed is available. A null note on version 2 or later does not mean nothing changed: versions are only created for real changes, and the note is missing while the change is waiting for its note (see "Pending window" under [Agenda changes](#agenda-changes)), when the version was stored while the agenda-changes flag was off, or when it predates notes.
+
+### Transcripts
+
+The meeting page's recording and transcript section (`web/src/app/meetings/[id]/_components/transcript-section.tsx` and `transcript-text.tsx`) is behind `meeting-transcripts`; with it off the section is not rendered at all.
+
+- **No recording.** A scheduled meeting says a recording may follow; a held one says none has been found and that agencies post recordings after a meeting, if at all. A cancelled meeting without a recording has no section.
+- **One recording.** A link to the recording on the agency's site, then either a note that the transcript is not ready, or a "Summary" (the AI summary, or a note that it is not written yet) and the "Transcript".
+- **Several recordings.** "This meeting has N recordings" with links to `#recording-1`, `#recording-2` and so on, then one sub-section per recording ("Recording 1 of 2"), each as above with its own headings one level down.
+- **Layout.** The whole transcript is in the page, with no pagination or lazy loading, so find-in-page and printing see every word. Segments are sorted by start time and grouped into blocks of one minute: a block starts at its first segment and takes every segment that starts within 60 seconds of it. Each block shows its start offset (`1:02:03`, from the start of the recording) as a link to itself, with the id `transcript-{recording}-{seconds}`, so any minute can be linked to. Above the transcript, a "Jump to" list links the first block of each quarter hour; it is left out when the transcript spans under two quarter hours. Speakers are not identified.
+- **Guards.** Blank segments are dropped. A segment whose start is negative, not a number or over 24 hours goes, in order, into a final "No usable time" block. A transcript with no text at all says so.
+- **Size.** Block markup costs little next to the text: a 3,000-segment transcript's HTML stays under 1.3 times its text (a test checks it). The page as served is larger, because Next also embeds the rendered content in its RSC payload: a 2,500-segment, three-and-a-half-hour transcript came to about 700 KB of HTML, about 100 KB gzipped, with about 1,400 DOM elements.
+
+### Turning the pages on
+
+The landing page and `/agencies` are always on. Everything else is behind web flags (see [Feature flags](#web)): in PostHog mode, create each flag as a boolean flag released to everyone; without PostHog, list them in `NEXT_PUBLIC_FEATURE_FLAGS`, for example `NEXT_PUBLIC_FEATURE_FLAGS=agency-pages,meeting-pages,meeting-transcripts,agency-rss-feeds`, which needs a new build.
+
+| Flag | Turns on |
+| --- | --- |
+| `agency-pages` | `/agencies/{slug}`, and the links to it from the agency lists and the meeting page's breadcrumb |
+| `meeting-pages` | `/meetings/{id}`, and the links to it from the agency page |
+| `meeting-transcripts` | the recording and transcript section of the meeting page |
+| `agency-rss-feeds` | the agency page's "RSS feed" link and feed autodiscovery; turn it on together with the API's flag of the same name, and only once `agency-pages` and `meeting-pages` are on (see [Agency RSS feeds](#agency-rss-feeds)) |
+
+Agency pages link to meeting pages only when both `agency-pages` and `meeting-pages` are on. Each flag can be turned off again at any time: its route answers 404 and the links to it disappear.
 
 ## CI
 

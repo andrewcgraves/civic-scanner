@@ -72,7 +72,7 @@ function SignedInMenu({ email }: { email: string | null }) {
       <div
         id={menuId}
         hidden={!open}
-        className="absolute right-0 z-10 mt-2 rounded border border-gray-300 bg-white p-3 shadow"
+        className="absolute right-0 z-10 mt-2 rounded-md border border-line bg-surface p-3 shadow"
       >
         <form action={signOutAction}>
           <button

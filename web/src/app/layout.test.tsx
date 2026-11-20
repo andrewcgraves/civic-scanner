@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/server", () => ({ connection: () => Promise.resolve() }));
+vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
 vi.mock("@/components/account-menu", () => ({
   AccountMenu: (props: Record<string, unknown>) => (
     <b data-props={JSON.stringify(props)}>account menu</b>
@@ -47,21 +48,66 @@ describe("RootLayout", () => {
     vi.restoreAllMocks();
   });
 
-  it("wraps the page in an English document", async () => {
+  async function renderShell() {
     const { default: RootLayout } = await import("./layout");
-    const doc = new DOMParser().parseFromString(
+    return new DOMParser().parseFromString(
       renderToStaticMarkup(await RootLayout({ children: <p>page content</p> })),
       "text/html",
     );
+  }
+
+  it("wraps the page in an English document", async () => {
+    const doc = await renderShell();
 
     expect(doc.documentElement.getAttribute("lang")).toBe("en");
-    expect(doc.body.innerHTML).toBe("<p>page content</p>");
+  });
+
+  it("puts the page alone inside the one main landmark", async () => {
+    const doc = await renderShell();
+
+    const mains = doc.querySelectorAll("main");
+    expect(mains).toHaveLength(1);
+    expect(mains[0]?.id).toBe("main");
+    expect(mains[0]?.getAttribute("tabindex")).toBe("-1");
+    expect(mains[0]?.innerHTML).toBe("<p>page content</p>");
+  });
+
+  it("starts with a skip link to the main content", async () => {
+    const doc = await renderShell();
+
+    const skip = doc.body.querySelector("a");
+    expect(skip?.textContent).toBe("Skip to main content");
+    expect(skip?.getAttribute("href")).toBe("#main");
+  });
+
+  it("has a header with the site name linking home and the primary navigation", async () => {
+    const doc = await renderShell();
+
+    const header = doc.querySelector("body > header");
+    const home = header?.querySelector('a[href="/"]');
+    expect(home?.textContent).toBe("Civic Scanner");
+    const nav = header?.querySelector('nav[aria-label="Primary"]');
+    expect(nav?.querySelector('a[href="/agencies"]')?.textContent).toBe(
+      "Agencies",
+    );
+  });
+
+  it("has a footer saying what the service is and that summaries are AI-written", async () => {
+    const doc = await renderShell();
+
+    const footer = doc.querySelector("body > footer")?.textContent ?? "";
+    expect(footer).toContain("public meetings of Southern California");
+    expect(footer).toContain("Summaries are written by AI");
+    expect(footer).toContain("official record");
   });
 
   it("sets the site title", async () => {
     const { metadata } = await import("./layout");
 
-    expect(metadata.title).toBe("Civic Scanner");
+    expect(metadata.title).toEqual({
+      default: "Civic Scanner",
+      template: "%s | Civic Scanner",
+    });
   });
 
   describe("analytics", () => {
@@ -115,21 +161,21 @@ describe("RootLayout", () => {
         NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
       });
 
-      expect(doc.querySelector("header")).toBeNull();
-      expect(doc.body.innerHTML).toBe("<p>off</p>");
+      expect(doc.querySelector("header b")).toBeNull();
+      expect(doc.querySelector("main")?.innerHTML).toBe("<p>off</p>");
     });
 
-    it("has no header when the accounts flag is off", async () => {
+    it("has no account menu when the accounts flag is off", async () => {
       const doc = await renderLayoutWithFlags({
         ...WORKOS,
         NEXT_PUBLIC_POSTHOG_KEY: undefined,
         NEXT_PUBLIC_FEATURE_FLAGS: undefined,
       });
 
-      expect(doc.querySelector("header")).toBeNull();
+      expect(doc.querySelector("header b")).toBeNull();
     });
 
-    it("has no header when the public redirect URI is not valid", async () => {
+    it("has no account menu when the public redirect URI is not valid", async () => {
       const doc = await renderLayoutWithFlags({
         ...WORKOS,
         NEXT_PUBLIC_WORKOS_REDIRECT_URI: "http://civic.example/auth/callback",
@@ -137,7 +183,7 @@ describe("RootLayout", () => {
         NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
       });
 
-      expect(doc.querySelector("header")).toBeNull();
+      expect(doc.querySelector("header b")).toBeNull();
     });
 
     it("reserves the header without the server secrets, so a build without them still offers sign-in", async () => {
@@ -151,14 +197,14 @@ describe("RootLayout", () => {
       expect(doc.querySelector("header b")?.textContent).toBe("account menu");
     });
 
-    it("reserves one line of height for the header in every state", async () => {
+    it("reserves one line of height for the account menu in every state", async () => {
       const doc = await renderLayoutWithFlags({
         ...WORKOS,
         NEXT_PUBLIC_POSTHOG_KEY: undefined,
         NEXT_PUBLIC_FEATURE_FLAGS: "accounts",
       });
 
-      const classes = doc.querySelector("header")?.classList;
+      const classes = doc.querySelector("header b")?.parentElement?.classList;
       expect(classes?.contains("h-6")).toBe(true);
       expect(classes?.contains("items-center")).toBe(true);
     });
@@ -184,7 +230,7 @@ describe("RootLayout", () => {
       NEXT_PUBLIC_FEATURE_FLAGS: "test-only-flag",
     });
 
-    expect(doc.body.innerHTML).toBe("<p>on</p>");
+    expect(doc.querySelector("main")?.innerHTML).toBe("<p>on</p>");
   });
 
   it("gives client components the flags the server got from PostHog", async () => {
@@ -212,6 +258,6 @@ describe("RootLayout", () => {
       NEXT_PUBLIC_FEATURE_FLAGS: undefined,
     });
 
-    expect(doc.body.innerHTML).toBe("<p>on</p>");
+    expect(doc.querySelector("main")?.innerHTML).toBe("<p>on</p>");
   });
 });

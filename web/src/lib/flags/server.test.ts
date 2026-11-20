@@ -16,6 +16,12 @@ const nextServer = vi.hoisted(() => ({
 
 vi.mock("next/server", () => ({ connection: nextServer.connection }));
 
+vi.mock("next/navigation", () => ({
+  notFound: () => {
+    throw new Error("NEXT_NOT_FOUND");
+  },
+}));
+
 vi.mock("./registry", () => ({
   FLAG_KEYS: ["new-search", "meeting-alerts"],
 }));
@@ -138,6 +144,26 @@ describe("server flags in memory", () => {
       "Feature flag provider failed to start",
       failure,
     );
+  });
+});
+
+describe("requireFlag", () => {
+  it("lets the route render when the flag is on", async () => {
+    const { requireFlag } = await loadServerFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
+    });
+
+    await expect(requireFlag(NEW_SEARCH)).resolves.toBeUndefined();
+  });
+
+  it("calls notFound when the flag is off", async () => {
+    const { requireFlag } = await loadServerFlags({
+      NEXT_PUBLIC_POSTHOG_KEY: undefined,
+      NEXT_PUBLIC_FEATURE_FLAGS: "new-search",
+    });
+
+    await expect(requireFlag(MEETING_ALERTS)).rejects.toThrow("NEXT_NOT_FOUND");
   });
 });
 

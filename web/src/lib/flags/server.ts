@@ -1,6 +1,7 @@
 import "server-only";
 
 import { OpenFeature, type Provider } from "@openfeature/server-sdk";
+import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { cache } from "react";
 
@@ -49,4 +50,10 @@ export const getFlagsOn = cache(async (): Promise<readonly FlagKey[]> => {
 
 export async function isFlagEnabled(flag: FlagKey): Promise<boolean> {
   return (await getFlagsOn()).includes(flag);
+}
+
+export async function requireFlag(flag: FlagKey): Promise<void> {
+  if (!(await isFlagEnabled(flag))) {
+    notFound();
+  }
 }
