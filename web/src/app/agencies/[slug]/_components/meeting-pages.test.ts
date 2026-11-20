@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("next/navigation", () => ({ notFound: mocks.notFound }));
 vi.mock("@/lib/api/load", () => ({
   loadAgencyMeetings: mocks.loadAgencyMeetings,
+  REQUEST_TIMEOUT_MS: 10_000,
 }));
 
 import {
@@ -66,19 +67,42 @@ describe("agencyPageHref", () => {
       "/agencies/la-metro?cursor=abc_-1",
     );
   });
+
+  it("encodes the slug", () => {
+    expect(agencyPageHref("../x?y#z")).toBe("/agencies/..%2Fx%3Fy%23z");
+  });
 });
+
+const result = (
+  meetings: unknown[],
+  nextCursor: string | null,
+  { incomplete = false, moreUpcoming = false } = {},
+) => ({
+  ok: true,
+  data: { meetings, nextCursor, incomplete, moreUpcoming },
+});
+
+function cursorsRequested() {
+  return mocks.loadAgencyMeetings.mock.calls.map((call) => call[1] as unknown);
+}
 
 describe("loadMeetingPage", () => {
   it("loads only the requested page for a cursor", async () => {
+    mocks.loadAgencyMeetings.mockResolvedValue(page([PAST], "c2"));
+
+    expect(await loadMeetingPage("la-metro", "c1", NOW)).toEqual(
+      result([PAST], "c2"),
+    );
+    expect(cursorsRequested()).toEqual(["c1"]);
+  });
+
+  it("says when an older page ends with upcoming meetings and has more", async () => {
     mocks.loadAgencyMeetings.mockResolvedValue(page([upcoming(1)], "c2"));
 
     expect(await loadMeetingPage("la-metro", "c1", NOW)).toEqual(
-      page([upcoming(1)], "c2"),
+      result([upcoming(1)], "c2", { moreUpcoming: true }),
     );
-    expect(mocks.loadAgencyMeetings).toHaveBeenCalledExactlyOnceWith(
-      "la-metro",
-      "c1",
-    );
+    expect(mocks.loadAgencyMeetings).toHaveBeenCalledOnce();
   });
 
   it("passes on an unavailable first page", async () => {
@@ -93,29 +117,73 @@ describe("loadMeetingPage", () => {
     mocks.loadAgencyMeetings.mockResolvedValue(page([upcoming(1), PAST], "c"));
 
     expect(await loadMeetingPage("la-metro", undefined, NOW)).toEqual(
-      page([upcoming(1), PAST], "c"),
+      result([upcoming(1), PAST], "c"),
     );
     expect(mocks.loadAgencyMeetings).toHaveBeenCalledOnce();
   });
 
-  it("follows pages of upcoming meetings up to the cap", async () => {
+  it("follows pages of upcoming meetings up to the cap and says more remain", async () => {
     for (let n = 1; n <= MAX_FIRST_PAGE_REQUESTS; n++) {
       mocks.loadAgencyMeetings.mockResolvedValueOnce(
         page([upcoming(n)], `c${String(n)}`),
       );
     }
 
-    const result = await loadMeetingPage("la-metro", undefined, NOW);
-
-    expect(result).toEqual(
-      page([1, 2, 3, 4].map(upcoming), `c${String(MAX_FIRST_PAGE_REQUESTS)}`),
+    expect(await loadMeetingPage("la-metro", undefined, NOW)).toEqual(
+      result(
+        [1, 2, 3, 4].map(upcoming),
+        `c${String(MAX_FIRST_PAGE_REQUESTS)}`,
+        {
+          moreUpcoming: true,
+        },
+      ),
     );
+    expect(cursorsRequested()).toEqual([undefined, "c1", "c2", "c3"]);
+  });
+
+  it("shares one deadline across every request of the first page", async () => {
+    const deadline = new AbortController().signal;
+    mocks.loadAgencyMeetings
+      .mockResolvedValueOnce(page([upcoming(1)], "c1"))
+      .mockResolvedValueOnce(page([PAST], null));
+
+    await loadMeetingPage("la-metro", undefined, NOW, deadline);
+
     expect(mocks.loadAgencyMeetings.mock.calls).toEqual([
-      ["la-metro", undefined],
-      ["la-metro", "c1"],
-      ["la-metro", "c2"],
-      ["la-metro", "c3"],
+      ["la-metro", undefined, undefined, deadline],
+      ["la-metro", "c1", undefined, deadline],
     ]);
+  });
+
+  it("starts its own deadline when none is given", async () => {
+    mocks.loadAgencyMeetings
+      .mockResolvedValueOnce(page([upcoming(1)], "c1"))
+      .mockResolvedValueOnce(page([PAST], null));
+
+    await loadMeetingPage("la-metro", undefined, NOW);
+
+    const [first, second] = mocks.loadAgencyMeetings.mock.calls.map(
+      (call) => call[3] as unknown,
+    );
+    expect(first).toBeInstanceOf(AbortSignal);
+    expect(second).toBe(first);
+  });
+
+  it("keeps what loaded when the deadline cuts off a further page", async () => {
+    const controller = new AbortController();
+    mocks.loadAgencyMeetings
+      .mockResolvedValueOnce(page([upcoming(1)], "c1"))
+      .mockImplementationOnce(() => {
+        controller.abort();
+        return Promise.resolve({ ok: false });
+      });
+
+    expect(
+      await loadMeetingPage("la-metro", undefined, NOW, controller.signal),
+    ).toEqual(
+      result([upcoming(1)], "c1", { incomplete: true, moreUpcoming: true }),
+    );
+    expect(mocks.loadAgencyMeetings).toHaveBeenCalledTimes(2);
   });
 
   it("stops at the last page", async () => {
@@ -124,25 +192,15 @@ describe("loadMeetingPage", () => {
       .mockResolvedValueOnce(page([upcoming(2)], null));
 
     expect(await loadMeetingPage("la-metro", undefined, NOW)).toEqual(
-      page([upcoming(1), upcoming(2)], null),
+      result([upcoming(1), upcoming(2)], null),
     );
-  });
-
-  it("is unavailable when a further page is", async () => {
-    mocks.loadAgencyMeetings
-      .mockResolvedValueOnce(page([upcoming(1)], "c1"))
-      .mockResolvedValueOnce({ ok: false });
-
-    expect(await loadMeetingPage("la-metro", undefined, NOW)).toEqual({
-      ok: false,
-    });
   });
 
   it("stops on an empty first page", async () => {
     mocks.loadAgencyMeetings.mockResolvedValue(page([], "c1"));
 
     expect(await loadMeetingPage("la-metro", undefined, NOW)).toEqual(
-      page([], "c1"),
+      result([], "c1"),
     );
     expect(mocks.loadAgencyMeetings).toHaveBeenCalledOnce();
   });

@@ -1,7 +1,11 @@
 import { notFound } from "next/navigation";
 
 import type { MeetingList } from "@/lib/api/client";
-import { loadAgencyMeetings, type Loaded } from "@/lib/api/load";
+import {
+  loadAgencyMeetings,
+  REQUEST_TIMEOUT_MS,
+  type Loaded,
+} from "@/lib/api/load";
 
 import { isUpcomingMeeting } from "./meeting-split";
 
@@ -22,7 +26,7 @@ export function parseCursor(
 }
 
 export function agencyPageHref(slug: string, cursor?: string): string {
-  const path = `/agencies/${slug}`;
+  const path = `/agencies/${encodeURIComponent(slug)}`;
   return cursor === undefined
     ? path
     : `${path}?${new URLSearchParams({ cursor }).toString()}`;
@@ -33,30 +37,52 @@ function endsUpcoming(meetings: MeetingList["meetings"], now: Date): boolean {
   return last !== undefined && isUpcomingMeeting(last, now);
 }
 
+export interface MeetingPage extends MeetingList {
+  incomplete: boolean;
+  moreUpcoming: boolean;
+}
+
 export async function loadMeetingPage(
   slug: string,
   cursor: string | undefined,
   now: Date,
-): Promise<Loaded<MeetingList>> {
-  const first = await loadAgencyMeetings(slug, cursor);
-  if (!first.ok || cursor !== undefined) {
+  deadline: AbortSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+): Promise<Loaded<MeetingPage>> {
+  const first = await loadAgencyMeetings(slug, cursor, undefined, deadline);
+  if (!first.ok) {
     return first;
   }
   const meetings = [...first.data.meetings];
   let nextCursor = first.data.nextCursor;
+  let incomplete = false;
   for (
     let requests = 1;
+    cursor === undefined &&
     requests < MAX_FIRST_PAGE_REQUESTS &&
     nextCursor !== null &&
     endsUpcoming(meetings, now);
     requests++
   ) {
-    const more = await loadAgencyMeetings(slug, nextCursor);
+    const more = await loadAgencyMeetings(
+      slug,
+      nextCursor,
+      undefined,
+      deadline,
+    );
     if (!more.ok) {
-      return more;
+      incomplete = true;
+      break;
     }
     meetings.push(...more.data.meetings);
     nextCursor = more.data.nextCursor;
   }
-  return { ok: true, data: { meetings, nextCursor } };
+  return {
+    ok: true,
+    data: {
+      meetings,
+      nextCursor,
+      incomplete,
+      moreUpcoming: nextCursor !== null && endsUpcoming(meetings, now),
+    },
+  };
 }

@@ -1,13 +1,12 @@
 import Link from "next/link";
 
 import { EmptyState } from "@/components/ui/empty-state";
-import { UnavailableNotice } from "@/components/ui/notice";
+import { Notice, UnavailableNotice } from "@/components/ui/notice";
 import { Section } from "@/components/ui/section";
-import type { MeetingList } from "@/lib/api/client";
 import type { Loaded } from "@/lib/api/load";
 
 import { AgencyMeetingList } from "./agency-meeting-list";
-import { agencyPageHref } from "./meeting-pages";
+import { agencyPageHref, type MeetingPage } from "./meeting-pages";
 import { splitMeetings } from "./meeting-split";
 
 function MeetingPagination({
@@ -43,6 +42,13 @@ function MeetingPagination({
   );
 }
 
+function upcomingDescription(laterPage: boolean, moreUpcoming: boolean) {
+  if (moreUpcoming) {
+    return "Soonest first among those shown. More upcoming meetings, including sooner ones, continue on the next page.";
+  }
+  return laterPage ? "Continued from the newer pages." : "Soonest first.";
+}
+
 export function AgencyMeetings({
   slug,
   page,
@@ -51,7 +57,7 @@ export function AgencyMeetings({
   linkToMeetings,
 }: {
   slug: string;
-  page: Loaded<MeetingList>;
+  page: Loaded<MeetingPage>;
   laterPage: boolean;
   now: Date;
   linkToMeetings: boolean;
@@ -64,7 +70,7 @@ export function AgencyMeetings({
     );
   }
 
-  const { meetings, nextCursor } = page.data;
+  const { meetings, nextCursor, incomplete, moreUpcoming } = page.data;
   if (!laterPage && meetings.length === 0) {
     return (
       <Section title="Meetings">
@@ -77,17 +83,24 @@ export function AgencyMeetings({
   }
 
   const { upcoming, past } = splitMeetings(meetings, now);
+  const pastTitle = laterPage ? "Older meetings" : "Past meetings";
   return (
     <>
+      {incomplete ? (
+        <div className="mb-10">
+          <Notice tone="error">
+            Some meetings could not be loaded, so this list may be incomplete.
+            Please try again later.
+          </Notice>
+        </div>
+      ) : null}
       {laterPage && upcoming.length === 0 ? null : (
         <Section
           title="Upcoming meetings"
-          description={
-            laterPage ? "Continued from the newer pages." : "Soonest first."
-          }
+          description={upcomingDescription(laterPage, moreUpcoming)}
         >
           {upcoming.length === 0 ? (
-            <EmptyState title="No upcoming meetings are posted.">
+            <EmptyState title="No upcoming meetings on record.">
               Civic Scanner has no future meetings on record for this agency
               right now.
             </EmptyState>
@@ -100,31 +113,30 @@ export function AgencyMeetings({
           )}
         </Section>
       )}
-      <Section
-        title={laterPage ? "Older meetings" : "Past meetings"}
-        description="Most recent first."
-      >
-        {past.length === 0 ? (
-          <EmptyState
-            title={
-              laterPage
-                ? "There are no older meetings."
-                : "No past meetings are on record yet."
-            }
-          />
-        ) : (
-          <AgencyMeetingList
-            label={laterPage ? "Older meetings" : "Past meetings"}
-            meetings={past}
-            linkToMeetings={linkToMeetings}
-          />
-        )}
-        <MeetingPagination
-          slug={slug}
-          laterPage={laterPage}
-          nextCursor={nextCursor}
-        />
-      </Section>
+      {past.length === 0 && nextCursor !== null ? null : (
+        <Section title={pastTitle} description="Most recent first.">
+          {past.length === 0 ? (
+            <EmptyState
+              title={
+                laterPage
+                  ? "There are no older meetings."
+                  : "No past meetings are on record yet."
+              }
+            />
+          ) : (
+            <AgencyMeetingList
+              label={pastTitle}
+              meetings={past}
+              linkToMeetings={linkToMeetings}
+            />
+          )}
+        </Section>
+      )}
+      <MeetingPagination
+        slug={slug}
+        laterPage={laterPage}
+        nextCursor={nextCursor}
+      />
     </>
   );
 }
