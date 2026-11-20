@@ -33,3 +33,7 @@ type Response struct {
 type Client interface {
 	Complete(ctx context.Context, req Request) (Response, error)
 }
+
+type Router interface {
+	Route(tier Tier) (provider, model string)
+}
