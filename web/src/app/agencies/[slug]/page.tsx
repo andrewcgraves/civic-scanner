@@ -15,20 +15,41 @@ interface AgencyPageProps {
 }
 
 const SITE_NAME = "Civic Scanner";
+const RSS_TYPE = "application/rss+xml";
+
+function feedHref(slug: string): string {
+  return `/agencies/${slug}/feed.xml`;
+}
 
 export async function generateMetadata({
   params,
 }: Pick<AgencyPageProps, "params">): Promise<Metadata> {
   await requireFlag("agency-pages");
   const { slug } = await params;
-  const agency = await loadAgency(slug);
-  if (!agency.ok) {
-    return { title: `Agency | ${SITE_NAME}` };
+  const [agency, feedOn] = await Promise.all([
+    loadAgency(slug),
+    isFlagEnabled("agency-rss-feeds"),
+  ]);
+  const name = agency.ok ? agency.data.name : undefined;
+  const alternates: Metadata["alternates"] = feedOn
+    ? {
+        types: {
+          [RSS_TYPE]: [
+            {
+              url: feedHref(slug),
+              title: `${name ?? "Agency"} meetings`,
+            },
+          ],
+        },
+      }
+    : undefined;
+  if (name === undefined) {
+    return { title: "Agency", alternates };
   }
-  const { name } = agency.data;
   return {
-    title: `${name} | ${SITE_NAME}`,
+    title: name,
     description: `Upcoming and past public meetings of ${name}, tracked by ${SITE_NAME}.`,
+    alternates,
   };
 }
 
@@ -41,10 +62,11 @@ export default async function AgencyPage({
   const cursor = parseCursor((await searchParams).cursor);
   const now = new Date();
 
-  const [agency, page, linkToMeetings] = await Promise.all([
+  const [agency, page, linkToMeetings, feedOn] = await Promise.all([
     loadAgency(slug),
     loadMeetingPage(slug, cursor, now),
     isFlagEnabled("meeting-pages"),
+    isFlagEnabled("agency-rss-feeds"),
   ]);
 
   const name = agency.ok ? agency.data.name : "Agency";
@@ -55,8 +77,19 @@ export default async function AgencyPage({
         title={name}
         breadcrumb={[{ label: "Agencies", href: "/agencies" }, { label: name }]}
       >
-        {agency.ok ? (
-          <ExternalLink href={agency.data.website}>Agency website</ExternalLink>
+        {agency.ok || feedOn ? (
+          <>
+            {agency.ok ? (
+              <ExternalLink href={agency.data.website}>
+                Agency website
+              </ExternalLink>
+            ) : null}
+            {feedOn ? (
+              <a href={feedHref(slug)} type={RSS_TYPE} className="link">
+                RSS feed
+              </a>
+            ) : null}
+          </>
         ) : undefined}
       </PageHeader>
       {agency.ok ? null : (

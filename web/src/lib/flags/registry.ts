@@ -1,6 +1,7 @@
 export const FLAG_KEYS = [
   "accounts",
   "agency-pages",
+  "agency-rss-feeds",
   "meeting-pages",
   "meeting-transcripts",
   "test-only-flag",

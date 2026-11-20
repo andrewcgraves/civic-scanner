@@ -137,6 +137,9 @@ describe("AgencyPage", () => {
     expect(
       screen.getByRole("link", { name: /Agency website/ }),
     ).toHaveAttribute("href", "https://www.metro.net");
+    expect(
+      screen.queryByRole("link", { name: "RSS feed" }),
+    ).not.toBeInTheDocument();
 
     expect(rowTitles("Upcoming meetings")).toEqual([
       "Meeting 3",
@@ -248,6 +251,27 @@ describe("AgencyPage", () => {
       screen.queryByRole("link", { name: /Agency website/ }),
     ).not.toBeInTheDocument();
     expect(rowTitles("Past meetings")).toEqual(["Meeting 6"]);
+  });
+
+  it("links the RSS feed when feeds are on", async () => {
+    mocks.flagsOn = new Set(["agency-pages", "agency-rss-feeds"]);
+    await renderPage(routes({}));
+
+    expect(screen.getByRole("link", { name: "RSS feed" })).toHaveAttribute(
+      "href",
+      "/agencies/la-metro/feed.xml",
+    );
+  });
+
+  it("links the RSS feed even when the agency is unavailable", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.flagsOn = new Set(["agency-pages", "agency-rss-feeds"]);
+    await renderPage(() => apiError(503));
+
+    expect(
+      screen.queryByRole("link", { name: /Agency website/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "RSS feed" })).toBeVisible();
   });
 
   it("shows the agency when its meetings are unavailable", async () => {
@@ -418,16 +442,45 @@ describe("generateMetadata", () => {
 
   it("names the agency", async () => {
     expect(await metadataWith(() => json(AGENCY))).toEqual({
-      title: "LA Metro | Civic Scanner",
+      title: "LA Metro",
       description:
         "Upcoming and past public meetings of LA Metro, tracked by Civic Scanner.",
+    });
+  });
+
+  it("advertises the agency's RSS feed when feeds are on", async () => {
+    mocks.flagsOn = new Set(["agency-pages", "agency-rss-feeds"]);
+    expect(await metadataWith(() => json(AGENCY))).toMatchObject({
+      title: "LA Metro",
+      alternates: {
+        types: {
+          "application/rss+xml": [
+            { url: "/agencies/la-metro/feed.xml", title: "LA Metro meetings" },
+          ],
+        },
+      },
+    });
+  });
+
+  it("advertises the feed with a generic title when the agency is unavailable", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.flagsOn = new Set(["agency-pages", "agency-rss-feeds"]);
+    expect(await metadataWith(() => apiError(500))).toEqual({
+      title: "Agency",
+      alternates: {
+        types: {
+          "application/rss+xml": [
+            { url: "/agencies/la-metro/feed.xml", title: "Agency meetings" },
+          ],
+        },
+      },
     });
   });
 
   it("falls back to a generic title when the agency is unavailable", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     expect(await metadataWith(() => apiError(500))).toEqual({
-      title: "Agency | Civic Scanner",
+      title: "Agency",
     });
   });
 
