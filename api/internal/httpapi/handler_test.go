@@ -30,6 +30,21 @@ type fakeStore struct {
 	feedErr     error
 	feedCalls   *int
 	users       *userCalls
+	submissions *submissionCalls
+}
+
+type submissionCalls struct {
+	inputs []store.AgencySubmissionInput
+	result store.AgencySubmission
+	err    error
+}
+
+func (f fakeStore) CreateAgencySubmission(_ context.Context, in store.AgencySubmissionInput) (store.AgencySubmission, error) {
+	if f.submissions == nil {
+		return store.AgencySubmission{}, errors.New("unexpected CreateAgencySubmission")
+	}
+	f.submissions.inputs = append(f.submissions.inputs, in)
+	return f.submissions.result, f.submissions.err
 }
 
 type userCalls struct {

@@ -44,7 +44,7 @@ Generated files are committed and never edited by hand. CI regenerates them and 
 
 ## API
 
-Every route is under `/v1`. All are public except `GET /v1/me`, which needs a WorkOS access token (see [Authentication](#authentication)). `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
+Every route is under `/v1`. All are public except `GET /v1/me` and `POST /v1/agency-submissions`, which need a WorkOS access token (see [Authentication](#authentication)). `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
 
 | Route | Returns |
 | --- | --- |
@@ -55,6 +55,7 @@ Every route is under `/v1`. All are public except `GET /v1/me`, which needs a Wo
 | `GET /v1/meetings/{id}` | one meeting of a live agency, with its agency, latest agenda version and recordings with their transcripts |
 | `GET`, `HEAD /v1/agencies/{slug}/feed.xml` | an RSS 2.0 feed of a live agency's latest meeting events, behind a flag (see "Agency RSS feeds"); the website serves it at `/agencies/{slug}/feed.xml` |
 | `GET /v1/me` | the signed-in user (`id`, `email`, `createdAt`), creating it on first sight; behind the `accounts` flag |
+| `POST /v1/agency-submissions` | submits an agency for review as the signed-in user and returns the pending agency; behind the `accounts` and `agency-submissions` flags (see [Agency submissions](#agency-submissions)) |
 
 - **Not live is not found:** an unknown slug and a pending or rejected agency get the same 404 (`not_found`), so a caller cannot tell whether an unpublished agency exists. A live agency with no meetings returns an empty list.
 - **Meeting items** carry `id`, `title`, `startsAt` (UTC), `status` (`scheduled`, `held`, `cancelled`) and `sourceUrl`, the agency's page for the meeting, left out when the source gave none. New optional fields, such as agenda or summary links, can be added later without breaking clients, which must ignore fields they do not know.
@@ -137,7 +138,7 @@ Requests:
 - Signed-in handlers call `h.requireUser(ctx)`, which returns the `store.User`, creating it on first sight, or an error to map: `ErrNoCredentials` and `auth.ErrInvalidToken` to 401, `auth.ErrNotConfigured` and `auth.ErrUnavailable` to 503. `httpapi.IdentityFrom(ctx)` returns the verified identity without touching the database.
 - 401 is always `{"code":"unauthorized","message":"a valid bearer token is required"}` with `WWW-Authenticate: Bearer`, whatever the reason; the reason is logged at `debug`. 503 means the token could not be checked, not that it is bad, so a client must not sign the user out on it. Tokens are never logged.
 - `GET /v1/me` checks the token before the flag: no token or an invalid one is a 401, and a token that cannot be checked a 503, whether the flag is on or off, so a client can always tell "refresh the token" from "feature off". Only a verified user is checked against the `accounts` flag, evaluated for that user; with the flag off for them it answers 404 `not_found` and creates no user.
-- Every response of a signed-in route (`GET /v1/me`, all statuses) carries `Cache-Control: no-store`. The `noStore` strict middleware sets it for the operations listed in `privateOperations`; add new signed-in operations there.
+- Every response of a signed-in route (`GET /v1/me`, `POST /v1/agency-submissions`, all statuses) carries `Cache-Control: no-store`. The `noStore` strict middleware sets it for the operations listed in `privateOperations`; add new signed-in operations there.
 - The API has no CORS handling, so a browser on another origin cannot call it with a bearer token. The web app makes signed-in calls from its server (`callApiAsUser`, below); a browser never holds the token.
 
 Users (`users`, migration `00009`):
@@ -185,7 +186,7 @@ Sign-out is the server action `signOutAction` (`web/src/lib/auth/actions.ts`), a
 
 Return paths: `returnTo` goes through `safeReturnPath` (`return-path.ts`) before it is sealed into the state. The value is checked, normalised with the URL parser (dot segments resolved, the fragment dropped), and the normalised path and query are checked again, so `/.//host` and `/x/..//host`, which normalise to `//host`, are refused. A path is kept only if it starts with a single `/`, has no backslash, space or control character, is at most 2,048 characters, and, once percent-decoded, does not start with `//`, contain a backslash or a `.` or `..` segment, or lie under `/auth` in any letter case; anything else, including absolute and `javascript:` URLs, becomes `/`. The callback also builds the final URL on the redirect URI's origin from only the path and query, so a return path cannot leave the site either way.
 
-The proxy (`web/src/proxy.ts`) runs only for `/auth/session` (`matcher: ["/auth/session"]`), and returns at once unless WorkOS is configured and the request has a session cookie. Then AuthKit's `authkit()` verifies the access token against the WorkOS key set (fetched once and cached by `jose`), refreshes it when it expires within 60 seconds, and passes the session to the route in request headers that never reach the browser; the configured redirect URI is passed explicitly, and client-sent `x-workos-*`, `x-redirect-uri` and `x-civic-session-state` headers are dropped. The proxy also tells the route, in `x-civic-session-state`, whether it refreshed the session in this request (`refreshed`) or kept a cookie whose session it could not verify (`unverified`). It never sets a sign-in verifier cookie on this route. Pages, the RSS route and static assets never go through it, so the route table is unchanged: `/` stays static and `/agencies` and the feed stay dynamic as before.
+The proxy (`web/src/proxy.ts`) runs only for `/auth/session` and `/submit-agency` (`matcher: ["/auth/session", "/submit-agency"]`), and returns at once unless WorkOS is configured and the request has a session cookie. Then AuthKit's `authkit()` verifies the access token against the WorkOS key set (fetched once and cached by `jose`), refreshes it when it expires within 60 seconds, and passes the session to the route in request headers that never reach the browser; the configured redirect URI is passed explicitly, and client-sent `x-workos-*`, `x-redirect-uri` and `x-civic-session-state` headers are dropped. The proxy also tells the route, in `x-civic-session-state`, whether it refreshed the session in this request (`refreshed`) or kept a cookie whose session it could not verify (`unverified`). It never sets a sign-in verifier cookie on this route. Other pages, the RSS route and static assets never go through it, so the route table is unchanged: `/` stays static and `/agencies` and the feed stay dynamic as before. `/submit-agency` goes through it because the page reads the session and its server action calls the API as the user (see [Agency submissions](#agency-submissions)).
 
 The header (`web/src/components/account-menu.tsx`) is rendered by the root layout only when the header is reserved as above. Without it the visible HTML is unchanged; the page payload still references the account menu's client chunk and carries a null child where the header would be. The header is one line high (`h-6`) in every state, so nothing on the page moves when the session arrives. It is a client component with no props: after hydration it fetches `/auth/session` and shows nothing until the answer arrives (and nothing if the request fails), so static pages stay static and nobody sees a flash of the wrong control. Signed out, it is a `Sign in` link (a plain `<a>`, so nothing prefetches it and starts a flow) with the current path and query as `returnTo`. Signed in, it is a button labelled with the email, or `Account` without one, that discloses a panel with a `Sign out` button (`aria-expanded` and `aria-controls`; opening it moves focus to `Sign out`; Escape closes it and returns focus to the button; focus leaving it or a pointer down outside closes it). It uses the page's underline link style; there is no mockup, and no account, dashboard or billing page. Cost: about 1.3 KB gzipped of first-load JavaScript on every page even with sign-in off, and with sign-in on one `/auth/session` request per full page load, which for a signed-in user also calls `GET /v1/me`.
 
@@ -196,7 +197,7 @@ const me = await callApiAsUser((api) => api.GET("/me"));
 ```
 
 - `api` is the generated `openapi-fetch` client on `NEXT_PUBLIC_API_BASE_URL` with `Authorization: Bearer <access token>` from the session. Its fetch refuses any URL outside that origin and path, so the token cannot go to another host, and it uses `redirect: "manual"` (a redirect is a failure, never followed), `cache: "no-store"` and a 10-second timeout.
-- The result is `ok` with the data, `signed-out` (no session; or a 401, a refresh with `refreshSession`, and a second 401; or a refresh token WorkOS rejects; or a 401 for a token the proxy refreshed in this same request, in which case it does not refresh again, since `refreshSession` reads the request's cookie and would replay the refresh token the proxy has just spent), `unavailable` (a 503 from the API, or a refresh that failed for a transient reason; the user stays signed in), `not-found` (a 404: accounts are off for this user) or `failed` (anything else, including an unreachable API). On `signed-out` after its own refresh, the session cookie is deleted; after a proxy refresh it is left alone, so the response carries one session `Set-Cookie`, the proxy's. A call that throws or ends in an unexpected status is logged once at `warn` with the error name or status only, never the token or URL.
+- The result is `ok` with the data, `rejected` with the status and the parsed error body for a 400, 409, 413, 422 or 429 (the request was understood and refused, so it is not logged), `signed-out` (no session; or a 401, a refresh with `refreshSession`, and a second 401; or a refresh token WorkOS rejects; or a 401 for a token the proxy refreshed in this same request, in which case it does not refresh again, since `refreshSession` reads the request's cookie and would replay the refresh token the proxy has just spent), `unavailable` (a 503 from the API, or a refresh that failed for a transient reason; the user stays signed in), `not-found` (a 404: accounts are off for this user) or `failed` (anything else, including an unreachable API). On `signed-out` after its own refresh, the session cookie is deleted; after a proxy refresh it is left alone, so the response carries one session `Set-Cookie`, the proxy's. A call that throws or ends in an unexpected status is logged once at `warn` with the error name or status only, never the token or URL.
 - It needs the AuthKit proxy on the route (add the path to the matcher) and a context that can write cookies, a route handler or a server action, because a refresh rotates the refresh token and must store the new one. Do not call it while rendering a server component.
 
 What the browser stores (privacy):
@@ -207,6 +208,110 @@ What the browser stores (privacy):
 
 Not verified: no WorkOS environment exists yet (CIV-3), so sign-in has not been run end to end against WorkOS. Most tests mock the SDK; `web/src/lib/auth/sdk.test.ts` runs the real SDK through the sign-in and callback routes against a local stub of the WorkOS API (`WORKOS_API_HOSTNAME`, `WORKOS_API_HTTPS`, `WORKOS_API_PORT`) that serves a key set and the code exchange, and checks the authorization URL, the ignored `x-redirect-uri`, the verifier and session cookie attributes, the sealed return path round trip with hostile values, and that a mismatched or missing verifier is refused without contacting WorkOS. `vitest.config.ts` inlines the SDK so its `next/headers` import can be mocked.
 
+## Agency submissions
+
+A signed-in user can suggest an agency by name and website. The suggestion becomes an agency with status `pending`, recorded as submitted by that user and when. Nothing reviews it yet: approving or rejecting is CIV-48, screening the site is CIV-47.
+
+### The endpoint
+
+`POST /v1/agency-submissions` with `{"name": "...", "website": "..."}` (`internal/httpapi/agency_submissions.go`). It is a collection of its own rather than `POST /v1/agencies` because `/v1/agencies` is the public, read-only list of live agencies; a submission is a private write whose result is never readable there, and a later admin story can list `/v1/agency-submissions` without touching the public routes.
+
+Checks, in order, each before the next:
+
+1. **Token.** No token or an invalid one is a 401 (`unauthorized`), a token that cannot be checked a 503, exactly as `GET /v1/me`. This holds even when the body is malformed or too large: the strict handler decodes the body before the operation runs, so its decode-error handler (`requestBodyError`) applies the same checks first.
+2. **Flags,** evaluated for that user: `accounts` and `agency-submissions` must both be on, or it is a 404 (`not_found`) and no user row is created.
+3. **Body.** A body that is not a JSON object with string `name` and `website` is a 400 `invalid_body` without `fields`; a body over 16 KiB (`maxRequestBodyBytes`, enforced for every request by the router's `limitBody` middleware) is a 413 `body_too_large`.
+4. **Fields** (`internal/submission`). Each invalid field gets one entry in `fields` (`field`, `code`, `message`) of a 400 `invalid_submission`; the codes are listed on `FieldError` in `openapi/v1.yaml` and the messages are written to be shown next to the field. Nothing is written for an invalid submission.
+5. **The user** is created on first sight, as for `GET /v1/me`.
+6. **Store.** A website already on file is a 409 `already_on_file` that says nothing about the agency on file; a user at the limit gets a 429 `submission_limit_reached`. Otherwise 201 with `id`, `name` and `website` as stored, `status: "pending"` and `submittedAt`.
+
+The response never includes the pending agency's slug or the WorkOS user id. Every response carries `Cache-Control: no-store`.
+
+### Name
+
+Plain text: invalid UTF-8, control characters, Unicode format characters (category Cf: bidi controls, zero-width characters, byte order marks, the tag block), private-use and unassigned code points (including the noncharacters) are refused (`invalid_characters`). Runs of whitespace (any Unicode space, tabs and line breaks) become one space and the ends are trimmed. Then it must be 2 to 200 characters (code points) and contain at least one letter or digit. Markup characters such as `<` are allowed and stored as typed: every page renders names as text. Refusing Cf also refuses the zero-width joiners some scripts and emoji sequences use. The name is not unique and is not compared with live agencies' names; it is only a label for the reviewer.
+
+### Website
+
+The website must be an `http` or `https` URL on a public host name:
+
+- Surrounding whitespace is trimmed; whitespace or control characters inside, invalid UTF-8, or more than 2,048 bytes (before or after normalising) are refused.
+- Without `://`, `https://` is assumed (`metro.net`, `metro.net:443/board`). A value with another scheme, or one that looks like a scheme without `//` (`javascript:`, `mailto:`, `data:`, `http:/x`), is `unsupported_scheme`.
+- No user name or password (`credentials`).
+- No IP literals of any form (`ip_address`): IPv4, bracketed IPv6, and the numeric forms some resolvers accept (`127.1`, `2130706433`, `0x7f000001`), which all end in a numeric label.
+- The host is converted to its ASCII (punycode) form with IDNA lookup rules, which also lower-cases it; a trailing dot is dropped. It needs at least two labels, each 1 to 63 letters, digits or hyphens, not starting or ending with a hyphen, at most 253 bytes, ending in an alphabetic top-level domain of at least two letters or an `xn--` one (`invalid_host`). Underscores are refused.
+- `localhost` and the special-use and private top-level domains `localhost`, `local`, `localdomain`, `internal`, `intranet`, `lan`, `home`, `corp`, `private`, `test`, `example`, `invalid`, `onion`, `arpa` (so `home.arpa`) and `alt` are `not_public`.
+- A port is allowed only when it is the scheme's default (`http` 80, `https` 443) and is dropped; any other port is refused (`port`).
+
+The stored website is `scheme://host` plus the path with dot segments resolved and trailing slashes removed, without the query, the fragment or the default port: `HTTP://WWW.Metro.NET/about/?utm=x#top` is stored as `http://www.metro.net/about`. The scheme is kept as submitted.
+
+**Same website.** Two websites are the same when they name the same site, and an agency's site is its host name: the scheme, letter case, a leading `www.`, a trailing dot, a default port, the path, the query and the fragment do not count. The comparison key is the ASCII host with one leading `www.` removed (unless only one label would remain, so `www.com` stays `www.com`). So these are all the same site, `metro.net`:
+
+| Submitted | Key |
+| --- | --- |
+| `https://www.metro.net` | `metro.net` |
+| `metro.net` | `metro.net` |
+| `HTTP://WWW.Metro.NET:80/` | `metro.net` |
+| `https://metro.net/about/board?ref=1` | `metro.net` |
+| `https://metro.net.` | `metro.net` |
+
+and these are different sites: `boards.metro.net`, `www2.metro.net`, `metro.org`. `münchen.de` and `xn--mnchen-3ya.de` are the same. Treating the host as the site means two agencies that live under one domain (a city's site with a page per agency) cannot both be submitted; the second gets `already_on_file`.
+
+The key is compared with every agency on file, whatever its status: live, pending or rejected. A rejected agency's site cannot be submitted again.
+
+### Storage
+
+Migration `00014` adds two tables and changes none:
+
+- `agency_websites (agency_id, site_key)`: one row per agency with a website, `site_key` unique (`agency_websites_site_key_unique`) and not empty. The migration backfills it from every existing agency's `website` with the same rule in SQL (lower-case, the scheme and a leading `www.` removed when another dot follows, everything from the first `/`, `:`, `?` or `#` cut), oldest agency first, skipping a key already taken, so the six seeded agencies get `metrolinktrains.com`, `metro.net`, `goventura.org`, `rctc.org`, `gosbcta.com` and `octa.net`.
+- `agency_submissions (agency_id, submitted_by, submitted_at)`: who submitted the agency and when. `submitted_by` references `users` with no cascade, so deleting a user who submitted agencies fails until their submissions are dealt with; `agency_id` cascades with the agency. Indexed by `submitted_by` for the limit.
+
+`store.CreateAgencySubmission` runs in one transaction: it locks the user's row (`SELECT ... FOR UPDATE`), counts that user's submissions that are still `pending`, and inserts the agency, its `agency_websites` row and its `agency_submissions` row. The unique constraint is what rejects a duplicate site, so two concurrent submissions of one site cannot both succeed: the second waits for the first's transaction and then fails with a unique violation, which becomes `ErrWebsiteOnFile` and rolls back its agency row. The row lock serialises one user's submissions, so concurrent requests cannot overshoot the limit. Tests run twelve concurrent submissions of one site (one succeeds) and fifteen concurrent submissions by one user (five succeed).
+
+**Anything else that creates an agency must insert its `agency_websites` row too**, in the same transaction; an agency without one is not protected against duplicates. Today only the seeds and this endpoint create agencies. Approving a submission (CIV-48) only changes its status and keeps the row.
+
+**Slug.** A pending agency gets the slug `submitted-` followed by the 32 hex digits of its id. The slug is never derived from the submitted name, so a submission cannot take, shadow or squat the slug of a live agency or one a source adapter is registered for, and a pending agency's slug cannot be guessed. CIV-48 should give an approved agency a real slug when it goes live.
+
+### Limits
+
+- At most 5 submissions awaiting review per user (`store.MaxPendingSubmissionsPerUser`). Only `pending` submissions count: once one is approved or rejected, the user can submit another. There is no time window, so waiting does not help, and the 429 has no `Retry-After`.
+- Request bodies of at most 16 KiB on every route.
+- A duplicate (409) or an invalid submission writes nothing and does not count toward the limit, so it is not limited either: a signed-in user can ask whether any number of sites are on file, one request at a time. The answer is one bit per site and never names the agency.
+- No CAPTCHA and no rate limit per IP.
+
+### Not fetched
+
+The submitted website is never fetched, resolved or linked to by this story: it is stored as text and shown back to its submitter as text. Fetching it is CIV-47's screening job, and that is where the SSRF risk lies: the validation here refuses IP literals and private names, but a public host name can still resolve to a private, loopback, link-local or cloud metadata address (`1.2.3.4.nip.io`, or DNS that changes between check and use), and a public site can redirect to one. The screener must check the resolved address of every connection, including after redirects, and must not rely on this validation.
+
+### Never public
+
+A pending (or rejected) agency appears nowhere public. Every read of agencies filters on `status = 'live'`, and meetings only exist for agencies `check_agency` has checked, which it does only for live ones:
+
+| Path | How it is kept out | Tested with a real submission in |
+| --- | --- | --- |
+| `GET /v1/agencies` | `store.ListAgencies` lists live agencies only | `internal/store`, `internal/httpapi` (integration) |
+| `GET /v1/agencies/{slug}`, `/meetings` | `store.GetLiveAgency` is live only; the meetings route looks the agency up first | same |
+| `GET`, `HEAD /v1/agencies/{slug}/feed.xml` | `store.GetLiveAgencyFeed` is live only | same |
+| `GET /v1/meetings/{id}` | `store.GetLiveMeetingDetail` joins the live agency | same, with a meeting inserted for the pending agency |
+| Web `/`, `/agencies`, the coming-soon lookup | built from `GET /v1/agencies`; the lookup asks only about agencies in that list | the web reads only the API |
+| Web `/agencies/{slug}`, `/meetings/{id}`, the website's feed route | read the routes above | as above |
+| Daily check (`enqueue_agency_checks`) | `store.ListAgencies` | `internal/jobs` (`TestSubmittedAgencyIsNeverChecked`) |
+| `check_agency` | skips an agency that is not live, even one with an adapter for its slug | same |
+| `worker check-agency <slug>` and `--all` | refuses a slug that is not live; `--all` lists live agencies | `cmd/worker` |
+| Hourly sweeps (agenda summaries, transcriptions, transcript summaries) | join the live agency, and need meetings a pending agency cannot have | existing tests for agencies that are not live |
+
+There is no sitemap. The 404 for a pending agency's slug or meeting is the same as for an unknown one, with or without a token.
+
+### The web page
+
+`/submit-agency` (`web/src/app/submit-agency/`), behind the web's `agency-submissions` flag and sign-in (`accounts` and a valid WorkOS configuration); with either off it is a 404. It is not under `/agencies/` so that no agency slug can collide with it. The page calls `connection()` first, so the answer is decided per request, not at build time.
+
+- **Signed out.** No session cookie, or a session the proxy rejected, redirects to `/auth/sign-in?returnTo=%2Fsubmit-agency`, which comes back to the page after sign-in. A session the proxy kept but could not verify (WorkOS unreachable) gets a notice instead of the form, without signing the user out.
+- **The form** (`_components/submission-form.tsx`) has two labelled text inputs, each with a hint and, when invalid, an error tied to it with `aria-describedby` and `aria-invalid`, plus an error summary (`role="alert"`) linking to each field. The inputs are `required` with the API's maximum lengths, as a convenience; the website is `type="text"` with `inputMode="url"` so `metro.net` is accepted. It is a client component using `useActionState` with the server action `submitAgency` (`actions.ts`); a form whose action is a server action also posts without JavaScript, and the page then renders with the action's result.
+- **The action** checks the flag and sign-in again, checks that both fields are filled in and within the maximum lengths (counted as the API counts them), and calls `POST /v1/agency-submissions` through `callApiAsUser`, so the token stays on the server. Success shows the stored name and website with a note that the agency appears only if approved, and a link to suggest another. A 400 shows the API's message for each field (or a general one when the body could not be read, and for a 413); a 409 says the website is already on file; a 429 says the user has reached the limit for now; a 404 from the API says suggestions are not open; anything else says the suggestion could not be sent. A session that ends meanwhile redirects to sign-in. The form keeps what was typed in every case but success.
+- **The link.** `/agencies` shows "Suggest an agency" in its header, a plain `<a>` so following it is a full page load (a client-side navigation would fetch the page's sign-in redirect and then WorkOS's authorization URL with `fetch`, which fails on CORS before falling back to a full load), when the redirect URI is a valid callback URL and the `accounts` and `agency-submissions` flags are on, the same rule that shows the sign-in header, so a signed-out visitor sees it and is sent to sign in.
+- **Turning it on.** Turn on the API's `agency-submissions` together with the web's, after `accounts` works on both sides. With only the web's on, the form says suggestions are not open.
+
 ## Feature flags
 
 Unfinished work ships dark behind a flag. Both sides evaluate flags through [OpenFeature](https://openfeature.dev), with PostHog as the provider when a key is set and an in-memory list otherwise. Each side has its own variables.
@@ -215,7 +320,7 @@ Unfinished work ships dark behind a flag. Both sides evaluate flags through [Ope
 
 The web app evaluates every flag on the server, through `@openfeature/server-sdk`, and hands the results to client components. `web/src/lib/flags/` wraps it. Callers import only from there, never from OpenFeature or PostHog.
 
-- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `agency-pages` turns on `/agencies/{slug}`, `meeting-pages` turns on `/meetings/{id}`, `meeting-transcripts` turns on the transcript section of the meeting page, and `agency-rss-feeds` turns on the agency page's feed link and autodiscovery (see [Turning the pages on](#turning-the-pages-on)). The landing page and `/agencies` have no flag. `test-only-flag` exists only for the module's own tests.
+- **Registry:** every flag is declared in `web/src/lib/flags/registry.ts`. `FLAG_KEYS` lists the keys and `FlagKey` is their union type, so checking a flag that is not registered is a type error. At run time an unregistered flag is off. Add the key there before using it. `accounts` turns on sign-in (see [Sign-in on the web](#sign-in-on-the-web)). `agency-pages` turns on `/agencies/{slug}`, `meeting-pages` turns on `/meetings/{id}`, `meeting-transcripts` turns on the transcript section of the meeting page, `agency-rss-feeds` turns on the agency page's feed link and autodiscovery (see [Turning the pages on](#turning-the-pages-on)), and `agency-submissions` turns on `/submit-agency` (see [Agency submissions](#agency-submissions)). The landing page and `/agencies` have no flag. `test-only-flag` exists only for the module's own tests.
 - **Server components:** `await isFlagEnabled("flag-key")` from `@/lib/flags/server`.
 - **Routes behind a flag:** `await requireFlag("flag-key")` from `@/lib/flags/server` calls Next's `notFound()` when the flag is off, so a dark route answers 404 exactly like a path that does not exist.
 - **Client components:** `useFlag("flag-key")` from `@/lib/flags/client`. The root layout calls `getFlagsOn()` from `@/lib/flags/server`, which evaluates each registered key with the OpenFeature client, and passes the keys that are on to `FlagsProvider`, a plain React context that supplies `useFlag`. A client component's server-rendered HTML and its first render in the browser therefore already show the right value: a flag that is on does not flash off, and hydration does not mismatch.
@@ -452,6 +557,7 @@ The landing page and `/agencies` are always on. Everything else is behind web fl
 | `meeting-pages` | `/meetings/{id}`, and the links to it from the agency page |
 | `meeting-transcripts` | the recording and transcript section of the meeting page |
 | `agency-rss-feeds` | the agency page's "RSS feed" link and feed autodiscovery; turn it on together with the API's flag of the same name, and only once `agency-pages` and `meeting-pages` are on (see [Agency RSS feeds](#agency-rss-feeds)) |
+| `agency-submissions` | `/submit-agency` and the "Suggest an agency" link on `/agencies`; needs sign-in (`accounts` and WorkOS) and the API's flag of the same name (see [Agency submissions](#agency-submissions)) |
 
 Agency pages link to meeting pages only when both `agency-pages` and `meeting-pages` are on. Each flag can be turned off again at any time: its route answers 404 and the links to it disappear.
 

@@ -24,6 +24,7 @@ type Store interface {
 	GetLiveMeetingDetail(ctx context.Context, id uuid.UUID) (store.MeetingDetail, error)
 	GetLiveAgencyFeed(ctx context.Context, slug string) (store.AgencyFeed, error)
 	EnsureUser(ctx context.Context, in store.UserInput) (store.User, bool, error)
+	CreateAgencySubmission(ctx context.Context, in store.AgencySubmissionInput) (store.AgencySubmission, error)
 }
 
 type Handler struct {

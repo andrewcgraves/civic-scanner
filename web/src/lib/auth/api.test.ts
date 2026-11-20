@@ -266,6 +266,23 @@ describe("callApiAsUser", () => {
     });
   });
 
+  it.each([400, 409, 413, 422, 429])(
+    "reports a %i as rejected with its error body",
+    async (status) => {
+      const { callApiAsUser } = await load([
+        apiResponse(status, { code: "nope", message: "x" }),
+      ]);
+
+      expect(await callApiAsUser((api) => api.GET("/me"))).toEqual({
+        status: "rejected",
+        httpStatus: status,
+        error: { code: "nope", message: "x" },
+      });
+      expect(mocks.refreshSession).not.toHaveBeenCalled();
+      expect(console.warn).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ["a server error", apiResponse(500, { code: "internal", message: "x" })],
     ["a redirect", apiResponse(302)],
