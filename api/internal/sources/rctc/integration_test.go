@@ -149,16 +149,16 @@ func TestRescheduledAndCancelledMeetingUpdatesOneRow(t *testing.T) {
 	}}
 	h := newHarness(t, fetcher, jobs.NoFollowUp{})
 
-	h.check(time.Date(2026, 11, 20, 13, 0, 0, 0, time.UTC))
+	h.check(time.Date(2026, 11, 1, 13, 0, 0, 0, time.UTC))
 	before, ok := h.meetings()["commission-meeting/2026-12"]
 	if !ok || before.Status != "scheduled" {
 		t.Fatalf("upcoming meeting = %+v", before)
 	}
 
 	set(page(commission("DECEMBER 16, 2026 &#8211; 1:30 PM", "december2026agenda")))
-	h.check(time.Date(2026, 11, 21, 13, 0, 0, 0, time.UTC))
+	h.check(time.Date(2026, 11, 2, 13, 0, 0, 0, time.UTC))
 	set(page(listed{"DECEMBER 16, 2026 &#8211; 1:30 PM", `<a href="https://www.rctc.org/december2026agenda">COMMISSION MEETING-CANCELED</a>`}))
-	h.check(time.Date(2026, 11, 22, 13, 0, 0, 0, time.UTC))
+	h.check(time.Date(2026, 11, 3, 13, 0, 0, 0, time.UTC))
 
 	stored := h.meetings()
 	after := stored["commission-meeting/2026-12"]
