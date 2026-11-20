@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
@@ -37,6 +39,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/media"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
+	"github.com/andrewcgraves/civic-scanner/api/internal/storage"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 	"github.com/andrewcgraves/civic-scanner/api/internal/testbin"
 	"github.com/andrewcgraves/civic-scanner/api/internal/testdb"
@@ -277,6 +280,7 @@ func (h *harness) settle() map[string]int {
 		if waiting == 0 {
 			break
 		}
+		h.failFastOnFailedJobs("the pipeline to settle")
 		if time.Now().After(deadline) {
 			h.t.Fatalf("%d jobs still waiting or running after %s: %s", waiting, pipelineSettleTimeout, h.describeJobsIn(queues))
 		}
@@ -339,16 +343,71 @@ func (h *harness) rerunCheck(slug string) {
 	}
 }
 
-func waitForEvent(t *testing.T, pool *pgxpool.Pool, meetingID func() (uuid.UUID, bool), want store.EventType) {
-	t.Helper()
+func (h *harness) countJobs(kinds []string, states ...string) int {
+	h.t.Helper()
+	var n int
+	if err := h.pool.QueryRow(h.t.Context(),
+		`SELECT count(*) FROM river_job WHERE queue = ANY($1) AND ($2::text[] IS NULL OR kind = ANY($2)) AND state::text = ANY($3)`,
+		[]string{h.queue, h.audioQueue}, kinds, states).Scan(&n); err != nil {
+		h.t.Fatalf("count jobs: %v", err)
+	}
+	return n
+}
+
+func (h *harness) failFastOnFailedJobs(waitingFor string) {
+	h.t.Helper()
+	if n := h.countJobs(nil, "retryable", "cancelled", "discarded"); n > 0 {
+		h.t.Fatalf("waiting for %s: %d jobs failed: %s", waitingFor, n, h.describeJobsIn([]string{h.queue, h.audioQueue}))
+	}
+}
+
+func (h *harness) waitForEvent(meetingID func() (uuid.UUID, bool), want store.EventType, producer string) {
+	h.t.Helper()
 	deadline := time.Now().Add(pipelineSettleTimeout)
-	for time.Now().Before(deadline) {
-		if id, ok := meetingID(); ok && slices.Contains(eventTypesOf(t, pool, id), want) {
+	for {
+		h.failFastOnFailedJobs(string(want))
+		producerDone := h.countJobs([]string{producer}, "completed") > 0
+		if id, ok := meetingID(); ok && slices.Contains(eventTypesOf(h.t, h.pool, id), want) {
 			return
+		}
+		if producerDone {
+			h.t.Fatalf("%s completed without the %s event: %s", producer, want, h.describeJobsIn([]string{h.queue, h.audioQueue}))
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("no %s event after %s: %s", want, pipelineSettleTimeout, h.describeJobsIn([]string{h.queue, h.audioQueue}))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("no %s event after %s", want, pipelineSettleTimeout)
+}
+
+func (h *harness) forgetCompletedDownloads() {
+	h.t.Helper()
+	if _, err := h.pool.Exec(h.t.Context(),
+		`DELETE FROM river_job WHERE queue = $1 AND kind = $2 AND state = 'completed'`,
+		h.audioQueue, jobs.DownloadAudioArgs{}.Kind()); err != nil {
+		h.t.Fatalf("forget completed downloads: %v", err)
+	}
+}
+
+func cleanUpAgencyAudio(t *testing.T, pool *pgxpool.Pool, bucket storage.Store, agencyID uuid.UUID) {
+	t.Helper()
+	t.Cleanup(func() {
+		ctx := context.WithoutCancel(t.Context())
+		rows, err := pool.Query(ctx,
+			`SELECT r.id FROM recordings r JOIN meetings m ON m.id = r.meeting_id WHERE m.agency_id = $1`, agencyID)
+		if err != nil {
+			t.Errorf("list recordings for cleanup: %v", err)
+			return
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+		if err != nil {
+			t.Errorf("list recordings for cleanup: %v", err)
+			return
+		}
+		for _, id := range ids {
+			_ = bucket.Delete(ctx, jobs.AudioKey(id))
+		}
+	})
 }
 
 func publicAPI(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
@@ -437,6 +496,33 @@ func pipelineMeeting(edge *agencyEdge) sources.Meeting {
 	return m
 }
 
+type wantFeedItem struct {
+	title       string
+	description string
+	exact       bool
+}
+
+func feedTitle(prefix string, m sources.Meeting) string {
+	return prefix + m.Title + " (" + m.StartsAt.In(feedZone).Format("Jan 2, 2006") + ")"
+}
+
+func transcriptReadyItem(m sources.Meeting) wantFeedItem {
+	when := m.StartsAt.In(feedZone).Format("Monday, January 2, 2006 at 3:04 PM MST")
+	return wantFeedItem{
+		title:       feedTitle("Transcript ready: ", m),
+		description: "<p>" + html.EscapeString("A transcript of "+m.Title+", "+when+", is ready.") + "</p>",
+		exact:       true,
+	}
+}
+
+var feedZone = func() *time.Location {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		panic(err)
+	}
+	return loc
+}()
+
 func feedTitles(items []feedItem) []string {
 	titles := make([]string, 0, len(items))
 	for _, it := range items {
@@ -445,15 +531,15 @@ func feedTitles(items []feedItem) []string {
 	return titles
 }
 
-func checkFeed(t *testing.T, items []feedItem, meetingID uuid.UUID, wantPrefixes []string, wantInDescription []string) {
+func checkFeed(t *testing.T, items []feedItem, meetingID uuid.UUID, want ...wantFeedItem) {
 	t.Helper()
-	if len(items) != len(wantPrefixes) {
-		t.Fatalf("feed items = %q, want %d items starting %q", feedTitles(items), len(wantPrefixes), wantPrefixes)
+	if len(items) != len(want) {
+		t.Fatalf("feed items = %q, want %d items", feedTitles(items), len(want))
 	}
 	guids := map[string]bool{}
 	for i, it := range items {
-		if !strings.HasPrefix(it.Title, wantPrefixes[i]+"Board of Directors e2e") {
-			t.Errorf("feed item %d title = %q, want %q followed by the meeting title", i, it.Title, wantPrefixes[i])
+		if it.Title != want[i].title {
+			t.Errorf("feed item %d title = %q, want %q", i, it.Title, want[i].title)
 		}
 		if want := pipelinePublicWebURL + "/meetings/" + meetingID.String(); it.Link != want {
 			t.Errorf("feed item %d link = %q, want %q", i, it.Link, want)
@@ -462,8 +548,11 @@ func checkFeed(t *testing.T, items []feedItem, meetingID uuid.UUID, wantPrefixes
 			t.Errorf("feed item %d repeats guid %s", i, it.GUID)
 		}
 		guids[it.GUID] = true
-		if !strings.Contains(it.Description, wantInDescription[i]) {
-			t.Errorf("feed item %d description = %q, want it to contain %q", i, it.Description, wantInDescription[i])
+		switch {
+		case want[i].exact && it.Description != want[i].description:
+			t.Errorf("feed item %d description = %q, want %q", i, it.Description, want[i].description)
+		case !want[i].exact && !strings.Contains(it.Description, want[i].description):
+			t.Errorf("feed item %d description = %q, want it to contain %q", i, it.Description, want[i].description)
 		}
 	}
 }
@@ -492,13 +581,15 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 		SummaryTier:   llm.TierRoutine,
 		Transcription: jobs.Transcription{Client: transcriber, Model: "fake/transcriber"},
 	})
+	cleanUpAgencyAudio(t, pool, bucket, agencyID)
+	t.Cleanup(edge.releaseRecordings)
 	meetingID := func() (uuid.UUID, bool) {
 		m, ok := meetingsOf(t, pool, agencyID)["e2e"]
 		return m.ID, ok
 	}
 
 	h.check(slug, day(0))
-	waitForEvent(t, pool, meetingID, store.EventAgendaPublished)
+	h.waitForEvent(meetingID, store.EventAgendaPublished, jobs.ProcessAgendaArgs{}.Kind())
 	edge.releaseRecordings()
 	jobsRun := h.settle()
 
@@ -507,10 +598,6 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 		t.Fatal("meeting not stored")
 	}
 	recs := recordingsOf(t, pool, meeting.ID)
-	if len(recs) == 1 && recs[0].Audio != nil {
-		key := recs[0].Audio.Key
-		t.Cleanup(func() { _ = bucket.Delete(context.WithoutCancel(t.Context()), key) })
-	}
 
 	t.Run("first check", func(t *testing.T) {
 		if meeting.Title != source.Title || !meeting.StartsAt.Equal(source.StartsAt) || meeting.Status != "held" || meeting.SourceURL != source.PageURL {
@@ -603,13 +690,15 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 		}
 
 		checkFeed(t, agencyFeedItems(t, pool, slug), meeting.ID,
-			[]string{"Transcript ready: ", "Agenda posted: "},
-			[]string{"transcript", pipelineAgendaSummary})
+			transcriptReadyItem(source),
+			wantFeedItem{title: feedTitle("Agenda posted: ", source), description: "Summary: " + pipelineAgendaSummary})
 	})
 	if t.Failed() {
 		return
 	}
 
+	firstHits := edge.hits()
+	h.forgetCompletedDownloads()
 	edge.publish(agendaV2)
 	h.rerunCheck(slug)
 	jobsRun = h.settle()
@@ -617,7 +706,7 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 	t.Run("second check with a revised agenda", func(t *testing.T) {
 		wantJobs := map[string]int{
 			"check_agency": 2, "process_agenda": 2, "describe_agenda_change": 1, "summarize_agenda": 2,
-			"download_audio": 1, "transcribe_audio": 1, "summarize_transcript": 1,
+			"transcribe_audio": 1, "summarize_transcript": 1,
 		}
 		if !mapsEqual(jobsRun, wantJobs) {
 			t.Errorf("jobs = %v, want %v", jobsRun, wantJobs)
@@ -652,8 +741,8 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 		if n := len(transcriber.Calls()); n != 1 {
 			t.Errorf("transcriber calls = %d, want still 1", n)
 		}
-		if hits := edge.hits(); hits.agenda != 2 || hits.player != 1 {
-			t.Errorf("agency edge hits = %+v, want a second agenda fetch and no second recording fetch", hits)
+		if hits := edge.hits(); hits != (edgeHits{agenda: 2, player: 1, media: firstHits.media}) {
+			t.Errorf("agency edge hits = %+v after %+v, want a second agenda fetch and no second player page or media request", hits, firstHits)
 		}
 		recs := recordingsOf(t, pool, meeting.ID)
 		if len(recs) != 1 || countTranscripts(t, pool, recs[0].ID) != 1 {
@@ -669,8 +758,9 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 		}
 
 		checkFeed(t, agencyFeedItems(t, pool, slug), meeting.ID,
-			[]string{"Agenda updated: ", "Transcript ready: ", "Agenda posted: "},
-			[]string{pipelineChangeNote, "transcript", pipelineAgendaSummary})
+			wantFeedItem{title: feedTitle("Agenda updated: ", source), description: "What changed: " + pipelineChangeNote},
+			transcriptReadyItem(source),
+			wantFeedItem{title: feedTitle("Agenda posted: ", source), description: "Summary: " + pipelineAgendaSummary})
 	})
 	if t.Failed() {
 		return
@@ -685,7 +775,7 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 	t.Run("third check with nothing changed", func(t *testing.T) {
 		wantJobs := map[string]int{
 			"check_agency": 3, "process_agenda": 3, "describe_agenda_change": 1, "summarize_agenda": 2,
-			"download_audio": 1, "transcribe_audio": 1, "summarize_transcript": 1,
+			"transcribe_audio": 1, "summarize_transcript": 1,
 		}
 		if !mapsEqual(jobsRun, wantJobs) {
 			t.Errorf("jobs = %v, want %v", jobsRun, wantJobs)
@@ -702,8 +792,8 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 		if n := len(transcriber.Calls()); n != 1 {
 			t.Errorf("transcriber calls = %d, want still 1", n)
 		}
-		if hits := edge.hits(); hits.agenda != 3 || hits.player != 1 {
-			t.Errorf("agency edge hits = %+v, want a third agenda fetch and no recording fetch", hits)
+		if hits := edge.hits(); hits != (edgeHits{agenda: 3, player: 1, media: firstHits.media}) {
+			t.Errorf("agency edge hits = %+v after %+v, want a third agenda fetch and no player page or media request", hits, firstHits)
 		}
 		if n := len(agencyFeedItems(t, pool, slug)); n != 3 {
 			t.Errorf("feed items = %d, want still 3", n)
