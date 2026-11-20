@@ -484,7 +484,7 @@ The worker checks every live agency once a day for board meetings, records them,
 ### Jobs
 
 - `enqueue_agency_checks` is a River periodic job. It runs every day at `INGEST_CHECK_HOUR_UTC`:00 UTC, and also when the worker starts, so a run missed while the worker was down happens on the next start. Its args carry the slot it belongs to: the latest scheduled time at or before now. It is unique by slot, so a restart, a deploy or a new River leader inserts it at most once per day. It inserts one `check_agency` job per live agency (`store.ListAgencies`); pending and rejected agencies get none.
-- `check_agency` checks one agency. It is unique by agency slug, queue and UTC day (River `UniqueOpts` `ByArgs`, `ByQueue`, `ByPeriod` of 24 hours), and the enqueuer sets its scheduled time to the slot, so a second enqueue in the same day is skipped as a duplicate. River keeps completed jobs for 24 hours, which is what lets a completed check block a duplicate. The job has a 10 minute timeout, for slow agency sites, and at most 5 attempts.
+- `check_agency` checks one agency. It is unique by agency slug, queue and UTC day (River `UniqueOpts` `ByArgs`, `ByQueue`, `ByPeriod` of 24 hours), and the enqueuer sets its scheduled time to the slot, so a second enqueue in the same day is skipped as a duplicate; a check run by hand is not (see [Running a check by hand](#running-a-check-by-hand)). River keeps completed jobs for 24 hours, which is what lets a completed check block a duplicate. The job has a 10 minute timeout, for slow agency sites, and at most 5 attempts.
 
 `check_agency` does this, in order:
 
@@ -519,6 +519,37 @@ Errors of `process_agenda`, classified the same way:
 - Permanent, cancelled with `river.JobCancel`: other fetch errors (404 and other 4xx, `fetch.ErrTooLarge`), `extract.ErrUnsupported`, `extract.ErrMalformed`, `extract.ErrNoText`, `extract.ErrLimitExceeded`, `extract.ErrUnavailable` (the PDF extractor binary is missing), and a meeting that no longer exists (`store.ErrNotFound`). The next day's check enqueues the agenda again.
 
 Meeting status: `held` is final. Once a meeting is `held`, the upsert keeps it `held` whatever a source reports later, so a source that misreports a past meeting as `scheduled` cannot undo it. Other changes follow the source: `scheduled` to `cancelled`, `cancelled` back to `scheduled` (reinstated), and either to `held`. The rule lives in the upsert's SQL, so every caller gets it.
+
+### Running a check by hand
+
+After a fix or a config change, an operator can run the check now instead of waiting for the next day's slot. The worker binary has a subcommand that only inserts jobs:
+
+```sh
+railway ssh --service civic-scanner-worker -- /app/worker check-agency la-metro
+railway ssh --service civic-scanner-worker -- /app/worker check-agency --all
+```
+
+It runs inside the worker's container, because Postgres has no public address, and uses the service's own `DATABASE_URL` and `FEATURE_FLAGS`. It connects (with a 10 second connect timeout, or the URL's `connect_timeout` if shorter, so an unreachable database fails fast), validates, inserts one `check_agency` job per agency through a River client that works no jobs, prints each job id and exits. It needs no `ffmpeg`, bucket or API keys, and the running worker picks the jobs up within seconds. `/app/worker --help` and `/app/worker check-agency --help` print the usage and exit 0. Locally, `DATABASE_URL=... FEATURE_FLAGS=ingest-check-agencies api/bin/worker check-agency octa` does the same after `make run-worker` has built the binaries.
+
+Before running it:
+
+- **The worker must be deployed with this command.** An older image's `/app/worker` ignores its arguments, so `railway ssh ... /app/worker check-agency ...` would start a second full worker inside the SSH session instead of enqueueing anything. Check that the deploy containing the command is live first.
+- **Wait until a deploy has finished and the previous instance has drained** (`drainingSeconds` is 30 in `.railway/railway.ts`). A worker from before this change that picks up a manual job ignores the `manual` field, runs it as a scheduled check, and skips agendas already processed that day.
+
+What it does:
+
+- **Targets.** A slug checks that agency; `--all` checks every live agency that has a source adapter and prints the live ones it skipped for having none. A slug that is unknown, not live, or live without an adapter exits with status 1 and a message saying why, and enqueues nothing. So does a database that is not migrated, a missing `DATABASE_URL`, or any other argument.
+- **Flag.** The command respects `ingest-check-agencies`: when the flag evaluates to off it exits with status 1 and enqueues nothing, because the worker would skip the check anyway. It does not override the flag. The flag provider cannot always tell an off flag from one it failed to evaluate (PostHog unreachable, quota limited, a flag that failed), so the message says "is off or could not be evaluated"; any provider warning is printed to stderr just above it.
+- **Output.** One line per agency: `la-metro: enqueued manual check, job 4211`, `octa: not enqueued again, manual check job 4198 is still running`, or `rctc: skipped, no source adapter`, then a count. The worker logs `agency check triggered manually` with `"trigger":"manual"` when the job starts. The lines the `check_agency` and `process_agenda` workers log themselves carry `"trigger":"manual"` or `"trigger":"scheduled"`; lines from the source adapters' own loggers and River's own error logs (a failed or retried job) do not, so match those by `job_id` or `agency_slug`.
+- **Cost.** `--all` re-fetches every agenda in the 120-day window for every agency, the same load as a daily run, including Firecrawl fallbacks for blocked pages.
+
+How it gets past the daily uniqueness:
+
+- **Manual jobs carry `"manual":true` in their args.** `CheckAgencyArgs.Manual` and `ProcessAgendaArgs.Manual` are omitted from the JSON when false, so scheduled jobs encode exactly as before and keep their unique keys. River's unique key includes the args, so a manual job never collides with a scheduled one, in either direction: a manual check on day D does not stop the scheduled check of day D or D+1, and a scheduled check that already ran on day D does not stop the manual one. The command never inserts `enqueue_agency_checks`, so it cannot add or remove a scheduled run.
+- **Manual jobs are unique only while waiting or running.** Their unique options are by args and queue, with no period, over the states `available`, `pending`, `retryable`, `running` and `scheduled`. Running the command twice while the first check has not finished prints the waiting job instead of adding a second one. Once that job is completed, cancelled or discarded, the next run inserts a new one, the same day or any other. A manual job left `running` by a worker that crashed or was killed keeps blocking manual runs for that agency until River's rescuer moves it on: the client sets neither `JobTimeout` nor `RescueStuckJobsAfter`, so River's default applies, and a job is rescued once it has been running for an hour (the rescuer looks every 30 seconds). A rescued job with attempts left becomes `retryable`, which still blocks, until it runs again; one with none left is discarded.
+- **Agendas.** A manual `check_agency` passes `Manual` to the follow-up hook (`UpsertedMeeting.Manual`), and `EnqueueProcessAgenda` inserts `process_agenda` with `Manual: true` and the same waiting-or-running uniqueness. So every agenda in the window is read again in that run, including one whose job completed or was cancelled earlier the same day. An unchanged agenda stores no version and records no event, as on any day; a changed one gets its version, event and summary job as usual. A manual and a scheduled job reading the same agenda at the same time are safe: `AddAgendaVersionTx` locks the meeting row, so the second one sees the first one's version and stores nothing.
+- **Recordings.** `download_audio` is not marked manual and keeps its daily uniqueness. A manual check enqueues a download only where the scheduled one would: with `ingest-download-audio` on, for a held meeting whose recording has no stored audio, is not backing off after a failure, and has no download waiting, running or completed that UTC day. With the flag off it enqueues none. So a manual run never downloads a recording twice.
+- **Summaries, change descriptions and transcripts** follow from new agenda versions and stored audio, not from the check, so a manual run adds them only for an agenda that really changed. Their own flags apply as usual.
 
 ### Source adapters
 
@@ -750,6 +781,7 @@ type UpsertedMeeting struct {
 	Created      bool
 	AgendaURL    string
 	RecordingURL string
+	Manual       bool
 }
 ```
 

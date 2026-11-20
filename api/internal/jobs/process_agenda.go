@@ -28,11 +28,15 @@ var ErrNoFetcher = errors.New("jobs: no fetcher configured")
 type ProcessAgendaArgs struct {
 	MeetingID uuid.UUID `json:"meeting_id"`
 	AgendaURL string    `json:"agenda_url"`
+	Manual    bool      `json:"manual,omitempty"`
 }
 
 func (ProcessAgendaArgs) Kind() string { return "process_agenda" }
 
-func (ProcessAgendaArgs) InsertOpts() river.InsertOpts {
+func (a ProcessAgendaArgs) InsertOpts() river.InsertOpts {
+	if a.Manual {
+		return river.InsertOpts{MaxAttempts: checkMaxAttempts, UniqueOpts: manualUniqueOpts()}
+	}
 	return river.InsertOpts{
 		MaxAttempts: checkMaxAttempts,
 		UniqueOpts:  river.UniqueOpts{ByArgs: true, ByPeriod: 24 * time.Hour, ByQueue: true},
@@ -51,7 +55,7 @@ func (e EnqueueProcessAgenda) MeetingUpserted(ctx context.Context, tx pgx.Tx, m 
 	if err != nil {
 		return err
 	}
-	_, err = client.InsertTx(ctx, tx, ProcessAgendaArgs{MeetingID: m.Meeting.ID, AgendaURL: m.AgendaURL}, &river.InsertOpts{Queue: e.Queue})
+	_, err = client.InsertTx(ctx, tx, ProcessAgendaArgs{MeetingID: m.Meeting.ID, AgendaURL: m.AgendaURL, Manual: m.Manual}, &river.InsertOpts{Queue: e.Queue})
 	if err != nil {
 		return fmt.Errorf("enqueue process agenda: %w", err)
 	}
@@ -92,7 +96,7 @@ func (w *ProcessAgendaWorker) Timeout(*river.Job[ProcessAgendaArgs]) time.Durati
 
 func (w *ProcessAgendaWorker) Work(ctx context.Context, job *river.Job[ProcessAgendaArgs]) error {
 	args := job.Args
-	logger := w.logger.With("meeting_id", args.MeetingID, "agenda_url", args.AgendaURL, "job_id", job.ID)
+	logger := w.logger.With("meeting_id", args.MeetingID, "agenda_url", args.AgendaURL, "job_id", job.ID, "trigger", trigger(args.Manual))
 	if !w.enabled(ctx, FlagCheckAgencies) {
 		logger.InfoContext(ctx, "process agenda skipped: flag off", "flag", FlagCheckAgencies)
 		return nil
