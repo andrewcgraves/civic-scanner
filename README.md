@@ -1291,11 +1291,15 @@ Merging to `main` deploys both sides.
 The `Railway config` workflow (`.github/workflows/railway-config.yml`) plans and applies it, using the [`railwayapp/config`](https://github.com/railwayapp/config) action:
 
 - A pull request that changes `.railway/` gets a comment with the plan: what Railway would change, with destructive changes marked. The plan, the environment's state and the `.railway/` tree are pinned in an artifact.
-- Merging the pull request is the approval. The apply job applies the pinned plan and does not evaluate the file again. It fails, changing nothing, when the environment changed after the plan (a dashboard edit or another apply), when the merged `.railway/` tree is not the planned one, or when there is no plan for the merged commit. Push to the pull request again before merging, or open a new one, to plan again.
-- A destructive change, such as removing a service, a volume or the database, is not applied by the workflow (`confirm-destructive: false`): the apply job fails. Apply it by hand after reading the plan.
+- After the merge the apply job waits for approval: it runs in the `railway-production` GitHub environment, which has a required reviewer, so GitHub asks that reviewer to approve or reject the run. Nothing changes in Railway until it is approved, and a rejected or expired request applies nothing. This covers every change, destructive ones included, so read the plan comment before approving.
+- Once approved, the job applies the pinned plan and does not evaluate the file again. It fails, changing nothing, when the environment changed after the plan (a dashboard edit or another apply), when the merged `.railway/` tree is not the planned one, or when there is no plan for the merged commit. Open a new pull request to plan again, or apply by hand.
 - A push straight to `main` has no plan and applies nothing. Pull requests from forks are skipped, since they get no secrets.
 
-The workflow needs one repository secret, `RAILWAY_TOKEN`: a Railway [project token](https://docs.railway.com/integrations/api#project-token) for the production environment. The token can change that environment only. The root `package.json` and `pnpm-lock.yaml` exist for this workflow: they pin the `railway` package that `.railway/railway.ts` imports.
+The workflow needs two things set up in GitHub:
+
+- A repository secret, `RAILWAY_TOKEN`: a Railway [project token](https://docs.railway.com/integrations/api#project-token) for the production environment. The token can change that environment only.
+- An environment named `railway-production` (Settings, Environments) with a required reviewer. Without the required reviewer GitHub creates the environment on first use with no protection, and the apply job runs as soon as the pull request merges.
+The root `package.json` and `pnpm-lock.yaml` exist for this workflow: they pin the `railway` package that `.railway/railway.ts` imports.
 
 By hand, with the [Railway CLI](https://docs.railway.com/cli) installed:
 
