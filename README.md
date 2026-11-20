@@ -490,7 +490,7 @@ Base styles give every focusable element a visible `:focus-visible` outline and 
 | `Breadcrumb` from `@/components/ui/breadcrumb` | the trail above the title; pass it through `PageHeader`'s `breadcrumb` rather than rendering it yourself |
 | `Section` from `@/components/ui/section` | each titled part of a page; a `<section>` labelled by its `h2` (`level={3}` or `level={4}` for nested parts), with optional `id`, `description` and `actions` |
 | `LinkList`, `LinkListItem` from `@/components/ui/link-list` | a list of agencies or meetings; with `href` the whole row is one link to a page of this site, without it the row is plain (for when the target page is behind a flag that is off) and its `description` can hold an external link |
-| `MeetingStatusBadge` from `@/components/ui/meeting-status-badge` | a meeting's `status`; `Badge` from `@/components/ui/badge` for other short labels |
+| `MeetingStatusBadge` from `@/components/ui/meeting-status-badge` | a meeting's status as `meetingDisplay(status, startsAt, now)` gives it (see [Meeting status on the page](#meeting-status-on-the-page)); `Badge` from `@/components/ui/badge` for other short labels |
 | `ExternalLink` from `@/components/ui/external-link` | every link to an agency's site, document or recording; same tab, `rel="external noopener noreferrer"`, a visible arrow and "(leaves Civic Scanner)" for screen readers; a URL that is not `http` or `https` renders as plain text |
 | `AiSummary` from `@/components/ui/ai-summary` | any AI-written text (agenda summary, change note, transcript summary): the "AI-generated" label, the text as paragraphs, and a note that the agency's original is the record (pass `note` to link that original) |
 | `EmptyState` from `@/components/ui/empty-state` | a list or section that is legitimately empty |
@@ -551,11 +551,26 @@ An agency with no meetings yet is marked "Coming soon", with a line above the li
 - **Pagination.** The API returns meetings newest first, 50 per page, with a cursor. The first page must show the soonest upcoming meetings, which are at the end of the API's order, so while the last meeting received is still upcoming and there is a next cursor, the page asks for the next API page, at most 4 requests in all (`MAX_FIRST_PAGE_REQUESTS`). All of them share one 10-second deadline, so the page answers in about one timeout however many follow-ups it makes. When the cap is reached with upcoming meetings still to come (an agency with more than 200 future meetings), the upcoming list says that it shows the furthest-ahead meetings and that more, including sooner ones, continue on the next page, and the past list is left out instead of claiming there are no past meetings. If a follow-up request fails or runs out of time, the meetings already loaded are shown with a notice that the list may be incomplete, and "Older meetings" continues from the page that failed. "Older meetings" links to `?cursor=…` and an older page links back to the newest. On an older page the past list is headed "Older meetings", and its upcoming list appears only if upcoming meetings spill onto it. A cursor that is not 1 to 512 letters, digits, `_` or `-`, or that the API rejects, is a 404.
 - **States.** No meetings at all on the first page: "Meetings for this agency are not tracked yet." No upcoming or no past meetings: an empty state in that list. Meetings unavailable: a notice in their place.
 - **Links.** With `meeting-pages` on, each meeting row links to `/meetings/{id}`; with it off, rows are plain and link to the meeting on the agency's site when the API gives a web address for it. Slugs and ids from the API are passed through `encodeURIComponent` in every internal link (lists, breadcrumb, pagination, feed link).
-- **Statuses.** `scheduled`, `held` and `cancelled` get their own badges. Any other status gets a neutral badge: the status itself in sentence case when it is plain lower-case letters and underscores (`postponed` becomes "Postponed"), otherwise "Status unknown". Whether such a meeting is upcoming is decided by its date alone.
+- **Statuses.** Each row's badge follows [Meeting status on the page](#meeting-status-on-the-page), so a past meeting never shows "Scheduled". Whether a meeting with an unknown status is upcoming is decided by its date alone.
+
+### Meeting status on the page
+
+The API's `status` is `scheduled`, `held` or `cancelled`. Some agencies' sources give no sign that a meeting took place (RCTC never does; SBCTA and VCTC only once a recording link appears; and no agency's meeting is rechecked after it leaves the 30-day look-back), so a meeting can stay `scheduled` after its date. The API keeps reporting it that way; only the pages change how it reads. `meetingDisplay(status, startsAt, now)` in `web/src/components/ui/meeting-status-badge.tsx` is the one place that decides, and both the agency page's rows and the meeting page use it with the clock the page read once:
+
+| API status | Start | Badge | Tone |
+| --- | --- | --- | --- |
+| `scheduled` | at or after now | "Scheduled" | `scheduled` |
+| `scheduled` | before now | "Date passed" | neutral |
+| `scheduled` | not a date | "Status unknown" | neutral |
+| `held` | any | "Held" | `held` |
+| `cancelled` | any | "Cancelled" | `cancelled` |
+| anything else | any | the status in sentence case when it is plain lower-case letters and underscores (`postponed` becomes "Postponed"), otherwise "Status unknown" | neutral |
+
+The display rule does not move meetings between the upcoming and past lists; that split is unchanged.
 
 ### Meeting page
 
-`/meetings/{id}` (`web/src/app/meetings/[id]/`), behind `meeting-pages`. An id that is not a UUID, or that the API does not know, is a 404. Ids are lowercase: an uppercase or mixed-case form of a valid id is a 404 too, without a request, so each meeting has exactly one URL. The header shows the agency, the title, a status badge, the date and time in Pacific time, and a link to the meeting on the agency's site when its address is a web link (otherwise the link is left out, as is the agency page's "Agency website"). The breadcrumb links the agency's page only when `agency-pages` is on. A cancelled meeting gets a notice saying so. An unavailable API gives a generic "Meeting" heading and a notice.
+`/meetings/{id}` (`web/src/app/meetings/[id]/`), behind `meeting-pages`. An id that is not a UUID, or that the API does not know, is a 404. Ids are lowercase: an uppercase or mixed-case form of a valid id is a 404 too, without a request, so each meeting has exactly one URL. The header shows the agency, the title, a status badge, the date and time in Pacific time, and a link to the meeting on the agency's site when its address is a web link (otherwise the link is left out, as is the agency page's "Agency website"). The breadcrumb links the agency's page only when `agency-pages` is on. A cancelled meeting gets a notice saying so, and a meeting shown as "Date passed" (see [Meeting status on the page](#meeting-status-on-the-page)) gets a notice that its date has passed and that Civic Scanner has no confirmation from the agency's site that it took place; its metadata description and its empty recording section say the same, and nothing on the page calls it upcoming or held. An unavailable API gives a generic "Meeting" heading and a notice.
 
 The agenda section shows one of these:
 

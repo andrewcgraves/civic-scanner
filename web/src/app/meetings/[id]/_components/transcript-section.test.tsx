@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { MeetingDisplayKind } from "@/components/ui/meeting-status-badge";
 import type { MeetingDetail, MeetingStatus, Recording } from "@/lib/api/client";
 
 const mocks = vi.hoisted(() => ({ isFlagEnabled: vi.fn() }));
@@ -45,8 +46,11 @@ function transcribed(summary: string | null): Recording {
   };
 }
 
-async function show(detail: MeetingDetail) {
-  return render(await TranscriptSection({ meeting: detail }));
+async function show(
+  detail: MeetingDetail,
+  display: MeetingDisplayKind = detail.status,
+) {
+  return render(await TranscriptSection({ meeting: detail, display }));
 }
 
 describe("TranscriptSection", () => {
@@ -74,6 +78,25 @@ describe("TranscriptSection", () => {
     expect(within(region).getByText(COPY.scheduledTitle)).toBeVisible();
     expect(within(region).getByText(COPY.scheduledBody)).toBeVisible();
     expect(within(region).queryByRole("link")).toBeNull();
+  });
+
+  it("says a scheduled meeting whose date has passed has no recording, without calling it upcoming or held", async () => {
+    await show(meeting("scheduled"), "date-passed");
+
+    const region = screen.getByRole("region", {
+      name: "Recording and transcript",
+    });
+    expect(within(region).getByText(COPY.datePassedTitle)).toBeVisible();
+    expect(within(region).getByText(COPY.datePassedBody)).toBeVisible();
+    expect(within(region).queryByText(COPY.scheduledTitle)).toBeNull();
+    expect(region).not.toHaveTextContent(/\bheld\b|\bupcoming\b|will be/i);
+  });
+
+  it("uses the general wording for a meeting whose status is not known", async () => {
+    await show(meeting("scheduled"), "other");
+
+    expect(screen.getByText(COPY.heldTitle)).toBeVisible();
+    expect(screen.queryByText(COPY.scheduledTitle)).toBeNull();
   });
 
   it("says a held meeting's recording is not available yet", async () => {
