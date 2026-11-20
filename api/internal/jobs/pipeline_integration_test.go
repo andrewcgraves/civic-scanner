@@ -799,6 +799,38 @@ func TestPipelineRunsEndToEndFromAgencyCheckToTranscriptSummary(t *testing.T) {
 			t.Errorf("feed items = %d, want still 3", n)
 		}
 	})
+	if t.Failed() {
+		return
+	}
+
+	hitsBefore := edge.hits()
+	h.check(slug, day(1))
+	jobsRun = h.settle()
+
+	t.Run("fourth check, scheduled, past the agenda refresh cutoff", func(t *testing.T) {
+		wantJobs := map[string]int{
+			"check_agency": 4, "process_agenda": 3, "describe_agenda_change": 1, "summarize_agenda": 2,
+			"transcribe_audio": 1, "summarize_transcript": 1,
+		}
+		if !mapsEqual(jobsRun, wantJobs) {
+			t.Errorf("jobs = %v, want %v: a scheduled check enqueues no agenda for a meeting past the cutoff with a stored version", jobsRun, wantJobs)
+		}
+		if hits := edge.hits(); hits != hitsBefore {
+			t.Errorf("agency edge hits = %+v after %+v, want no request at all", hits, hitsBefore)
+		}
+		if got := versionsOf(t, pool, meeting.ID); !slices.EqualFunc(got, versionsBefore, sameVersion) {
+			t.Errorf("versions changed: %+v, was %+v", got, versionsBefore)
+		}
+		if got := eventsOf(t, pool, meeting.ID); !slices.EqualFunc(got, eventsBefore, func(a, b store.MeetingEvent) bool { return a.ID == b.ID }) {
+			t.Errorf("events = %v, was %v", eventTypesOf(t, pool, meeting.ID), eventsBefore)
+		}
+		if got := meetingsOf(t, pool, agencyID)["e2e"]; got.Status != "held" || !got.StartsAt.Equal(source.StartsAt) {
+			t.Errorf("meeting = %+v, want it still held at its start", got)
+		}
+		if got := model.calls(t); got != modelBefore {
+			t.Errorf("model calls = %+v, want still %+v", got, modelBefore)
+		}
+	})
 }
 
 func TestPipelineWithOnlyTheCheckFlagOnStoresAgendasAndCallsNothingElse(t *testing.T) {

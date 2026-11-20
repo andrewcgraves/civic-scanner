@@ -48,7 +48,7 @@ type EnqueueProcessAgenda struct {
 }
 
 func (e EnqueueProcessAgenda) MeetingUpserted(ctx context.Context, tx pgx.Tx, m UpsertedMeeting) error {
-	if m.AgendaURL == "" {
+	if m.AgendaURL == "" || m.AgendaSettled {
 		return nil
 	}
 	client, err := river.ClientFromContextSafely[pgx.Tx](ctx)
@@ -127,8 +127,12 @@ func (w *ProcessAgendaWorker) Work(ctx context.Context, job *river.Job[ProcessAg
 	if err != nil {
 		return err
 	}
+	if version.MovedFromURL != "" {
+		logger.InfoContext(ctx, "agenda source url moved", "source_url_moved", true, "version", version.Version,
+			"previous_source_url", version.MovedFromURL)
+	}
 	logger.InfoContext(ctx, "agenda processed", "version", version.Version, "created", created,
-		"formatting_only", version.RefreshedInPlace, "change_event_pending", created && version.ChangeEventPending,
+		"formatting_only", version.RefreshedInPlace, "source_url_moved", version.MovedFromURL != "", "change_event_pending", created && version.ChangeEventPending,
 		"content_type", resp.ContentType, "bytes", len(resp.Body), "characters", len(text))
 	return nil
 }

@@ -3,10 +3,14 @@ package config
 import (
 	"fmt"
 	"strconv"
+	"time"
 )
 
+const DefaultAgendaRefreshGrace = 48 * time.Hour
+
 type Ingest struct {
-	CheckHourUTC int
+	CheckHourUTC       int
+	AgendaRefreshGrace time.Duration
 }
 
 func loadIngest() (Ingest, error) {
@@ -17,5 +21,9 @@ func loadIngest() (Ingest, error) {
 	if hour < 0 || hour > 23 {
 		return Ingest{}, fmt.Errorf("INGEST_CHECK_HOUR_UTC: must be 0 to 23, got %d", hour)
 	}
-	return Ingest{CheckHourUTC: hour}, nil
+	grace, err := positiveDuration("INGEST_AGENDA_REFRESH_GRACE", DefaultAgendaRefreshGrace.String())
+	if err != nil {
+		return Ingest{}, err
+	}
+	return Ingest{CheckHourUTC: hour, AgendaRefreshGrace: grace}, nil
 }
