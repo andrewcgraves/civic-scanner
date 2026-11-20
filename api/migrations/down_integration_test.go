@@ -14,7 +14,7 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-func isolatedProvider(t *testing.T) (*goose.Provider, *pgxpool.Pool, string) {
+func isolatedProvider(t *testing.T, configure ...func(*pgxpool.Config)) (*goose.Provider, *pgxpool.Pool, string) {
 	t.Helper()
 	ctx := t.Context()
 	url := os.Getenv("DATABASE_URL")
@@ -40,6 +40,9 @@ func isolatedProvider(t *testing.T) (*goose.Provider, *pgxpool.Pool, string) {
 		t.Fatal(err)
 	}
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	for _, c := range configure {
+		c(cfg)
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
