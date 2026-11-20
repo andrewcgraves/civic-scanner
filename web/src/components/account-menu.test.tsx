@@ -22,6 +22,8 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/lib/auth/actions", () => ({ signOutAction: mocks.signOutAction }));
 
+import { FlagsProvider } from "@/lib/flags/client";
+
 import { AccountMenu } from "./account-menu";
 
 function stubSession(response: () => Promise<Response>) {
@@ -151,6 +153,45 @@ describe("AccountMenu", () => {
     expect(button).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Sign out" })).toBeNull();
+  });
+
+  it("links to billing from the open menu when billing is on", async () => {
+    stubSession(() =>
+      Promise.resolve(Response.json({ signedIn: true, email: null })),
+    );
+    render(
+      <FlagsProvider on={["billing"]}>
+        <AccountMenu />
+      </FlagsProvider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+
+    expect(screen.getByRole("link", { name: "Billing" })).toHaveAttribute(
+      "href",
+      "/billing",
+    );
+    const billing = screen.getByRole("link", { name: "Billing" });
+    const signOut = screen.getByRole("button", { name: "Sign out" });
+    expect(billing).toHaveFocus();
+    expect(
+      billing.compareDocumentPosition(signOut) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("has no billing link when billing is off", async () => {
+    stubSession(() =>
+      Promise.resolve(Response.json({ signedIn: true, email: null })),
+    );
+    await renderMenu();
+
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+
+    expect(screen.queryByRole("link", { name: "Billing" })).toBeNull();
   });
 
   it("shows a neutral label without an email", async () => {

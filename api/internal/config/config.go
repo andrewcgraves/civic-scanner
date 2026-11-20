@@ -25,6 +25,7 @@ type Config struct {
 	WorkOS        WorkOS
 	Summary       Summary
 	Web           Web
+	Stripe        Stripe
 }
 
 func Load() (Config, error) {
@@ -77,6 +78,7 @@ func Load() (Config, error) {
 	if cfg.Web, err = loadWeb(); err != nil {
 		return Config{}, err
 	}
+	cfg.Stripe = loadStripe(cfg.Web.PublicURL)
 	return cfg, nil
 }
 

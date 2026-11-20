@@ -100,6 +100,7 @@ func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
 func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Client[pgx.Tx], error) {
 	st := store.New(pool)
 	cfg = cfg.withDefaults(logger, st)
+	summaryLLM := guardLLM(cfg.LLM, newLLMBreaker(cfg.Clock, llmAccountCooldown))
 
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &CheckAgencyWorker{
@@ -137,7 +138,7 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 	river.AddWorker(workers, &SummarizeAgendaWorker{
 		logger:     logger,
 		store:      st,
-		llm:        cfg.LLM,
+		llm:        summaryLLM,
 		tier:       cfg.SummaryTier,
 		llmTimeout: cfg.LLMTimeout,
 		enabled:    cfg.Enabled,
@@ -154,7 +155,7 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		logger:     logger,
 		store:      st,
 		clock:      cfg.Clock,
-		llm:        cfg.LLM,
+		llm:        summaryLLM,
 		tier:       cfg.SummaryTier,
 		llmTimeout: cfg.LLMTimeout,
 		enabled:    cfg.Enabled,
@@ -184,7 +185,7 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 	river.AddWorker(workers, &SummarizeTranscriptWorker{
 		logger:     logger,
 		store:      st,
-		llm:        cfg.LLM,
+		llm:        summaryLLM,
 		tier:       cfg.TranscriptTier,
 		llmTimeout: cfg.LLMTimeout,
 		enabled:    cfg.Enabled,

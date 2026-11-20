@@ -124,6 +124,9 @@ func (w *SummarizeTranscriptWorker) Work(ctx context.Context, job *river.Job[Sum
 		logger.WarnContext(ctx, "transcript summary skipped: LLM not configured", attrs...)
 		return nil
 	}
+	if snooze := llmAccountSnoozeFor(ctx, logger.With("tier", w.tier, "calls", result.Calls), err); snooze != nil {
+		return snooze
+	}
 	if err != nil {
 		logger.WarnContext(ctx, "transcript not summarized", append(attrs, "error", err)...)
 		return transcriptSummaryError(err)
