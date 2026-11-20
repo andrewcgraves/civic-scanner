@@ -210,25 +210,27 @@ func TestCompleteClassifiesGatewayStatus(t *testing.T) {
 	cases := []struct {
 		status    int
 		retryable bool
+		account   bool
 	}{
-		{http.StatusBadRequest, false},
-		{http.StatusUnauthorized, false},
-		{http.StatusPaymentRequired, true},
-		{http.StatusForbidden, false},
-		{http.StatusNotFound, false},
-		{http.StatusUnprocessableEntity, false},
-		{http.StatusRequestTimeout, true},
-		{http.StatusTooManyRequests, true},
-		{http.StatusInternalServerError, true},
-		{http.StatusBadGateway, true},
-		{http.StatusServiceUnavailable, true},
-		{http.StatusGatewayTimeout, true},
+		{http.StatusBadRequest, false, false},
+		{http.StatusUnauthorized, false, true},
+		{http.StatusPaymentRequired, false, true},
+		{http.StatusForbidden, false, true},
+		{http.StatusNotFound, false, true},
+		{http.StatusRequestEntityTooLarge, false, false},
+		{http.StatusUnprocessableEntity, false, false},
+		{http.StatusRequestTimeout, true, false},
+		{http.StatusTooManyRequests, true, false},
+		{http.StatusInternalServerError, true, false},
+		{http.StatusBadGateway, true, false},
+		{http.StatusServiceUnavailable, true, false},
+		{http.StatusGatewayTimeout, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(http.StatusText(tc.status), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(`{"error":{"message":"gateway says no","type":"invalid_request_error"}}`))
+				_, _ = w.Write([]byte(`{"error":{"message":"gateway says no","type":"invalid_request_error","code":"some_code"}}`))
 			}))
 			defer srv.Close()
 
@@ -244,8 +246,40 @@ func TestCompleteClassifiesGatewayStatus(t *testing.T) {
 			if llm.IsRetryable(err) != tc.retryable {
 				t.Errorf("IsRetryable = %v, want %v", llm.IsRetryable(err), tc.retryable)
 			}
+			if llm.IsAccountFailure(err) != tc.account {
+				t.Errorf("IsAccountFailure = %v, want %v", llm.IsAccountFailure(err), tc.account)
+			}
+			if llmErr.Provider != config.LLMGateway || llmErr.Model != "vendor/cheap" || llmErr.Type != "invalid_request_error" || llmErr.Code != "some_code" {
+				t.Errorf("error fields = %q %q %q %q, want provider, model, type and code", llmErr.Provider, llmErr.Model, llmErr.Type, llmErr.Code)
+			}
 			if !strings.Contains(err.Error(), "gateway says no") || !strings.Contains(err.Error(), strconv.Itoa(tc.status)) {
 				t.Errorf("error %q lacks status or gateway message", err)
+			}
+		})
+	}
+}
+
+func TestCompleteReadsGatewayErrorCodeOfAnyShape(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"error":{"message":"m","code":403}}`:                               "403",
+		`{"error":{"message":"m","code":null}}`:                              "",
+		`{"error":{"message":"m"}}`:                                          "",
+		`{"error":{"message":"m","code":"` + strings.Repeat("x", 65) + `"}}`: "unrecognized",
+		`{"error":{"message":"m","code":"line\nbreak"}}`:                     "unrecognized",
+		`not json`: "",
+	} {
+		t.Run(body, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			_, err := llm.New(gatewayConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u"})
+
+			var llmErr *llm.Error
+			if !errors.As(err, &llmErr) || llmErr.Code != want {
+				t.Errorf("err = %v, code = %q, want %q", err, llmErr.Code, want)
 			}
 		})
 	}

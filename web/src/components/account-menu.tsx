@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useId, useRef, useState } from "react";
 
 import { signOutAction } from "@/lib/auth/actions";
+import { useFlag } from "@/lib/flags/client";
 import { parseSessionState, type SessionState } from "@/lib/auth/session-state";
 
 async function loadSessionState(): Promise<SessionState | null> {
@@ -23,13 +25,15 @@ function SignedInMenu({ email }: { email: string | null }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const signOutRef = useRef<HTMLButtonElement>(null);
+  const billingRef = useRef<HTMLAnchorElement>(null);
   const menuId = useId();
+  const billing = useFlag("billing");
 
   useEffect(() => {
     if (!open) {
       return;
     }
-    signOutRef.current?.focus();
+    (billingRef.current ?? signOutRef.current)?.focus();
     function closeOnOutsidePointer(event: PointerEvent) {
       if (!containerRef.current?.contains(event.target as Node)) {
         setOpen(false);
@@ -72,8 +76,19 @@ function SignedInMenu({ email }: { email: string | null }) {
       <div
         id={menuId}
         hidden={!open}
-        className="absolute right-0 z-10 mt-2 rounded-md border border-line bg-surface p-3 shadow"
+        className="absolute right-0 z-10 mt-2 space-y-2 rounded-md border border-line bg-surface p-3 shadow"
       >
+        {billing ? (
+          <p>
+            <Link
+              ref={billingRef}
+              href="/billing"
+              className="whitespace-nowrap underline"
+            >
+              Billing
+            </Link>
+          </p>
+        ) : null}
         <form action={signOutAction}>
           <button
             ref={signOutRef}

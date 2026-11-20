@@ -19,11 +19,51 @@ const MEETINGS = [
   },
 ];
 
+const NOW = new Date("2027-01-15T12:00:00Z");
+
 describe("AgencyMeetingList", () => {
+  it("shows a scheduled meeting whose date has passed as date passed, not scheduled", () => {
+    render(
+      <AgencyMeetingList
+        label="Meetings"
+        now={NOW}
+        meetings={[
+          {
+            id: "33333333-3333-4333-8333-333333333333",
+            title: "Planning Committee",
+            startsAt: "2027-01-15T11:59:59Z",
+            status: "scheduled",
+          },
+          {
+            id: "44444444-4444-4444-8444-444444444444",
+            title: "Audit Committee",
+            startsAt: "2027-01-15T12:00:00Z",
+            status: "scheduled",
+          },
+        ]}
+        linkToMeetings
+      />,
+    );
+
+    const [passed, upcoming] = within(
+      screen.getByRole("list", { name: "Meetings" }),
+    ).getAllByRole("listitem");
+    expect(passed).toHaveTextContent("Planning CommitteeDate passed");
+    expect(passed).not.toHaveTextContent("Scheduled");
+    expect(within(passed!).getByText("Date passed")).toHaveClass(
+      "bg-surface-muted",
+    );
+    expect(upcoming).toHaveTextContent("Audit CommitteeScheduled");
+    expect(within(upcoming!).getByText("Scheduled")).toHaveClass(
+      "bg-scheduled-surface",
+    );
+  });
+
   it("links each meeting to its page", () => {
     render(
       <AgencyMeetingList
         label="Upcoming meetings"
+        now={NOW}
         meetings={MEETINGS}
         linkToMeetings
       />,
@@ -48,6 +88,7 @@ describe("AgencyMeetingList", () => {
     render(
       <AgencyMeetingList
         label="Past meetings"
+        now={NOW}
         meetings={MEETINGS}
         linkToMeetings={false}
       />,
@@ -71,6 +112,7 @@ describe("AgencyMeetingList", () => {
     render(
       <AgencyMeetingList
         label="Past meetings"
+        now={NOW}
         meetings={[{ ...MEETINGS[1]!, id: "../../evil?x=1#y" }]}
         linkToMeetings
       />,
@@ -86,6 +128,7 @@ describe("AgencyMeetingList", () => {
     render(
       <AgencyMeetingList
         label="Past meetings"
+        now={NOW}
         meetings={[{ ...MEETINGS[0]!, sourceUrl: "javascript:alert(1)" }]}
         linkToMeetings={false}
       />,

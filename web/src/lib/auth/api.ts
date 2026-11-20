@@ -20,6 +20,7 @@ export type UserApiResult<T> =
   | { status: "signed-out" }
   | { status: "unavailable" }
   | { status: "not-found" }
+  | { status: "conflict" }
   | { status: "failed" };
 
 export type UserApiCall<T> = (
@@ -88,6 +89,9 @@ async function attempt<T>(
   }
   if (status === 404) {
     return { status: "not-found" };
+  }
+  if (status === 409) {
+    return { status: "conflict" };
   }
   if (status >= 200 && status < 300 && result.data !== undefined) {
     return { status: "ok", data: result.data };

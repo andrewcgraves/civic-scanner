@@ -257,6 +257,17 @@ describe("callApiAsUser", () => {
     expect(mocks.refreshSession).not.toHaveBeenCalled();
   });
 
+  it("reports a 409 as a conflict", async () => {
+    const { callApiAsUser } = await load([
+      apiResponse(409, { code: "already_subscribed", message: "x" }),
+    ]);
+
+    expect(
+      await callApiAsUser((api) => api.POST("/billing/checkout-session")),
+    ).toEqual({ status: "conflict" });
+    expect(mocks.refreshSession).not.toHaveBeenCalled();
+  });
+
   it("reports a 404 after a refresh", async () => {
     mocks.refreshSession.mockResolvedValue({ accessToken: "token-2" });
     const { callApiAsUser } = await load([apiResponse(401), apiResponse(404)]);

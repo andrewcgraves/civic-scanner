@@ -4,8 +4,9 @@ import { AiSummary } from "@/components/ui/ai-summary";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ExternalLink, isWebUrl } from "@/components/ui/external-link";
 import { Notice } from "@/components/ui/notice";
+import type { MeetingDisplayKind } from "@/components/ui/meeting-status-badge";
 import { Section } from "@/components/ui/section";
-import type { MeetingDetail, MeetingStatus, Recording } from "@/lib/api/client";
+import type { MeetingDetail, Recording } from "@/lib/api/client";
 import { isFlagEnabled } from "@/lib/flags/server";
 
 import { transcriptAnchorPrefix } from "./transcript-blocks";
@@ -17,6 +18,9 @@ export const COPY = {
   scheduledTitle: "No recording yet",
   scheduledBody:
     "If the agency posts a recording of this meeting and Civic Scanner finds it, a link to it will appear here, followed by a transcript and a summary.",
+  datePassedTitle: "No recording found",
+  datePassedBody:
+    "The date of this meeting has passed, and Civic Scanner has no confirmation from the agency's site that it took place. If the agency posts a recording and Civic Scanner finds it, a link to it will appear here, followed by a transcript and a summary.",
   heldTitle: "No recording available yet",
   heldBody:
     "Civic Scanner has not found a recording of this meeting. Agencies post recordings after a meeting, if at all. If one is found, a link to it will appear here, followed by a transcript and a summary.",
@@ -128,22 +132,32 @@ function SeveralRecordings({ recordings }: { recordings: Recording[] }) {
   );
 }
 
-function noRecording(status: MeetingStatus): ReactNode {
-  if (status === "cancelled") {
+function noRecording(display: MeetingDisplayKind): ReactNode {
+  if (display === "cancelled") {
     return null;
   }
-  if (status === "scheduled") {
+  if (display === "scheduled") {
     return (
       <EmptyState title={COPY.scheduledTitle}>{COPY.scheduledBody}</EmptyState>
+    );
+  }
+  if (display === "date-passed") {
+    return (
+      <EmptyState title={COPY.datePassedTitle}>
+        {COPY.datePassedBody}
+      </EmptyState>
     );
   }
   return <EmptyState title={COPY.heldTitle}>{COPY.heldBody}</EmptyState>;
 }
 
-function content(meeting: MeetingDetail): ReactNode {
+function content(
+  meeting: MeetingDetail,
+  display: MeetingDisplayKind,
+): ReactNode {
   const [first, ...others] = meeting.recordings;
   if (first === undefined) {
-    return noRecording(meeting.status);
+    return noRecording(display);
   }
   if (others.length === 0) {
     return (
@@ -160,13 +174,15 @@ function content(meeting: MeetingDetail): ReactNode {
 
 export async function TranscriptSection({
   meeting,
+  display,
 }: {
   meeting: MeetingDetail;
+  display: MeetingDisplayKind;
 }) {
   if (!(await isFlagEnabled("meeting-transcripts"))) {
     return null;
   }
-  const body = content(meeting);
+  const body = content(meeting, display);
   if (body === null) {
     return null;
   }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -67,6 +68,27 @@ func queuedChecks(t *testing.T, pool *pgxpool.Pool, queue string) map[string]que
 	return out
 }
 
+func liveAgencyWithoutAdapter(t *testing.T, pool *pgxpool.Pool) string {
+	t.Helper()
+	slug := uniqueName("worker-test-no-adapter-")
+	if _, err := pool.Exec(t.Context(), `INSERT INTO agencies (slug, name, status, website) VALUES ($1, $1, 'live', 'https://no-adapter.example.com')`, slug); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.WithoutCancel(t.Context()), `DELETE FROM agencies WHERE slug = $1`, slug)
+	})
+	return slug
+}
+
+func liveWithAdapters(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	var live []string
+	if err := pool.QueryRow(t.Context(), `SELECT coalesce(array_agg(slug ORDER BY slug), '{}') FROM agencies WHERE status = 'live' AND slug = ANY($1)`, adapterSlugs()).Scan(&live); err != nil {
+		t.Fatal(err)
+	}
+	return live
+}
+
 func runCheck(t *testing.T, queue string, args ...string) (string, error) {
 	t.Helper()
 	var out strings.Builder
@@ -80,6 +102,11 @@ func TestCheckAgencyCommandEnqueuesManualChecks(t *testing.T) {
 	t.Setenv("FEATURE_FLAGS", jobs.FlagCheckAgencies)
 	pool := testdb.Pool(t)
 	queue := checkQueue(t, pool)
+	noAdapter := liveAgencyWithoutAdapter(t, pool)
+	checkable := liveWithAdapters(t, pool)
+	if !slices.Contains(checkable, "la-metro") {
+		t.Fatalf("live agencies with an adapter = %v, want la-metro among them", checkable)
+	}
 
 	out, err := runCheck(t, queue, "la-metro")
 	if err != nil {
@@ -99,23 +126,31 @@ func TestCheckAgencyCommandEnqueuesManualChecks(t *testing.T) {
 		t.Fatalf("check-agency --all: %v", err)
 	}
 	queued = queuedChecks(t, pool, queue)
-	for _, slug := range []string{"la-metro", "metrolink", "octa", "sbcta", "vctc"} {
+	for _, slug := range checkable {
 		if c, ok := queued[slug]; !ok || !c.args.Manual {
 			t.Errorf("no manual check queued for %s: %+v", slug, queued)
 		}
 	}
-	if len(queued) != 5 {
-		t.Errorf("queued checks = %d, want 5 (one per live agency with an adapter)", len(queued))
+	if len(queued) != len(checkable) {
+		t.Errorf("queued checks = %d, want %d (one per live agency with an adapter: %v)", len(queued), len(checkable), checkable)
+	}
+	if _, ok := queued[noAdapter]; ok {
+		t.Errorf("a check was queued for %s, which has no adapter", noAdapter)
 	}
 	if queued["la-metro"].id != first.id {
 		t.Errorf("la-metro was queued again while its manual check was waiting")
 	}
-	for _, want := range []string{
+	wants := []string{
 		"la-metro: not enqueued again, manual check job " + strconv.FormatInt(first.id, 10) + " is still available\n",
-		"metrolink: enqueued manual check, job ",
-		"rctc: skipped, no source adapter\n",
-		"4 manual check(s) enqueued on queue \"" + queue + "\", 1 already waiting or running",
-	} {
+		noAdapter + ": skipped, no source adapter\n",
+		strconv.Itoa(len(checkable)-1) + " manual check(s) enqueued on queue \"" + queue + "\", 1 already waiting or running",
+	}
+	for _, slug := range checkable {
+		if slug != "la-metro" {
+			wants = append(wants, slug+": enqueued manual check, job ")
+		}
+	}
+	for _, want := range wants {
 		if !strings.Contains(out, want) {
 			t.Errorf("--all output lacks %q:\n%s", want, out)
 		}
@@ -128,6 +163,8 @@ func TestCheckAgencyCommandRefusesAndEnqueuesNothing(t *testing.T) {
 	t.Setenv("FEATURE_FLAGS", jobs.FlagCheckAgencies)
 	pool := testdb.Pool(t)
 	queue := checkQueue(t, pool)
+	noAdapter := liveAgencyWithoutAdapter(t, pool)
+	checkable := liveWithAdapters(t, pool)
 	pending := uniqueName("worker-test-pending-")
 	if _, err := pool.Exec(t.Context(), `INSERT INTO agencies (slug, name, status, website) VALUES ($1, $1, 'pending', 'https://pending.example.com')`, pending); err != nil {
 		t.Fatal(err)
@@ -140,9 +177,9 @@ func TestCheckAgencyCommandRefusesAndEnqueuesNothing(t *testing.T) {
 		args []string
 		want string
 	}{
-		"unknown slug":       {[]string{"no-such-agency"}, `agency "no-such-agency" is unknown or not live; nothing enqueued (live agencies with a source adapter: la-metro, metrolink, octa, sbcta, vctc)`},
+		"unknown slug":       {[]string{"no-such-agency"}, `agency "no-such-agency" is unknown or not live; nothing enqueued (live agencies with a source adapter: ` + strings.Join(checkable, ", ") + ")"},
 		"pending agency":     {[]string{pending}, `agency "` + pending + `" is unknown or not live; nothing enqueued`},
-		"live, no adapter":   {[]string{"rctc"}, `agency "rctc" is live but has no source adapter; nothing enqueued`},
+		"live, no adapter":   {[]string{noAdapter}, `agency "` + noAdapter + `" is live but has no source adapter; nothing enqueued`},
 		"two slugs at once":  {[]string{"la-metro", "octa"}, errCheckUsage.Error()},
 		"unknown flag style": {[]string{"--octa"}, errCheckUsage.Error()},
 	}
