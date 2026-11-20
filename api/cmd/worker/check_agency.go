@@ -32,16 +32,17 @@ var (
 	errNotMigrated  = errors.New("database is not migrated: run /app/migrate up first; nothing enqueued")
 	errNothingToDo  = errors.New("no live agency has a source adapter; nothing enqueued")
 	errCheckFlagOff = fmt.Errorf("feature flag %s is off or could not be evaluated (see any warnings above on stderr), so the worker would skip the check; nothing enqueued", jobs.FlagCheckAgencies)
-	errWorkerUsage  = errors.New("usage: worker [" + checkAgencyCommand + " (<agency-slug> | " + allAgenciesFlag + ")]")
+	errWorkerUsage  = errors.New("usage: worker [" + checkAgencyCommand + " (<agency-slug> | " + allAgenciesFlag + ") | " + setRoleCommand + " (<user-id> | <email>) (user | admin)]")
 )
 
-const workerHelp = `usage: worker [check-agency (<agency-slug> | --all)]
+const workerHelp = `usage: worker [check-agency (<agency-slug> | --all) | set-role (<user-id> | <email>) (user | admin)]
 
 With no arguments, runs the worker.
 
-  check-agency <agency-slug>  enqueue a manual check of one live agency
-  check-agency --all          enqueue a manual check of every live agency with a source adapter
-  -h, --help, help            print this help
+  check-agency <agency-slug>      enqueue a manual check of one live agency
+  check-agency --all              enqueue a manual check of every live agency with a source adapter
+  set-role <user> (user | admin)  make a user an admin, or take admin away
+  -h, --help, help                print this help
 `
 
 const checkHelp = `usage: worker check-agency (<agency-slug> | --all)
@@ -144,7 +145,7 @@ func checkAgency(ctx context.Context, args []string, stdout, stderr io.Writer, q
 	}
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	pool, err := openCommandPool(ctx, cfg.DatabaseURL)
+	pool, err := openCommandPool(ctx, cfg.DatabaseURL, "nothing enqueued")
 	if err != nil {
 		return err
 	}
@@ -193,7 +194,7 @@ func commandPoolConfig(databaseURL string) (*pgxpool.Config, error) {
 	return poolCfg, nil
 }
 
-func openCommandPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+func openCommandPool(ctx context.Context, databaseURL, outcome string) (*pgxpool.Pool, error) {
 	poolCfg, err := commandPoolConfig(databaseURL)
 	if err != nil {
 		return nil, err
@@ -204,7 +205,7 @@ func openCommandPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, er
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("could not connect to the database (connect timeout %s); nothing enqueued: %w", poolCfg.ConnConfig.ConnectTimeout, err)
+		return nil, fmt.Errorf("could not connect to the database (connect timeout %s); %s: %w", poolCfg.ConnConfig.ConnectTimeout, outcome, err)
 	}
 	return pool, nil
 }
