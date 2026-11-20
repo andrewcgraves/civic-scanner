@@ -89,7 +89,7 @@ func TestPlanChecks(t *testing.T) {
 }
 
 func TestAdapterSlugsAreTheRegisteredAdapters(t *testing.T) {
-	if got, want := adapterSlugs(), []string{"la-metro", "metrolink", "octa", "vctc"}; !slices.Equal(got, want) {
+	if got, want := adapterSlugs(), []string{"la-metro", "metrolink", "octa", "sbcta", "vctc"}; !slices.Equal(got, want) {
 		t.Errorf("adapterSlugs() = %v, want %v", got, want)
 	}
 }
