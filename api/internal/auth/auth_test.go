@@ -217,8 +217,8 @@ func TestVerifyValidToken(t *testing.T) {
 		UserID: "user_01TEST", SessionID: "session_01TEST", OrganizationID: "org_01TEST", Role: "member",
 		Permissions: []string{"posts:read"}, Email: "ada@example.com", ExpiresAt: f.clock.Now().Add(4 * time.Minute).Truncate(time.Second),
 	}
-	if id.Actor != "" {
-		t.Errorf("Actor = %q without an act claim", id.Actor)
+	if id.Actor != "" || id.Impersonated {
+		t.Errorf("Actor = %q, Impersonated = %v without an act claim", id.Actor, id.Impersonated)
 	}
 	if id.UserID != want.UserID || id.SessionID != want.SessionID || id.OrganizationID != want.OrganizationID ||
 		id.Role != want.Role || !slices.Equal(id.Permissions, want.Permissions) || id.Email != want.Email || !id.ExpiresAt.Equal(want.ExpiresAt) {
@@ -261,6 +261,12 @@ func TestVerifyRejectsClaims(t *testing.T) {
 		{"null auth_time", with(base, "auth_time", json.RawMessage("null"))},
 		{"auth_time as string", with(base, "auth_time", "1700000000")},
 		{"act not an object", with(base, "act", "admin@example.com")},
+		{"act an array", with(base, "act", []string{"admin@example.com"})},
+		{"null act", with(base, "act", json.RawMessage("null"))},
+		{"act without sub", with(base, "act", map[string]any{})},
+		{"act with empty sub", with(base, "act", map[string]any{"sub": ""})},
+		{"act with null sub", with(base, "act", map[string]any{"sub": nil})},
+		{"act with numeric sub", with(base, "act", map[string]any{"sub": 7})},
 		{"aud of wrong type", with(base, "aud", 12)},
 	}
 	for _, tt := range tests {
@@ -300,7 +306,7 @@ func TestVerifyCarriesTheActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id.Actor != "admin@example.com" || id.UserID != "user_01TEST" {
+	if id.Actor != "admin@example.com" || !id.Impersonated || id.UserID != "user_01TEST" {
 		t.Errorf("identity = %+v, want actor admin@example.com acting as user_01TEST", id)
 	}
 }

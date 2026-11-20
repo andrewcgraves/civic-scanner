@@ -22,7 +22,7 @@ func TestBinaryExitsWithErrorOnBadConfig(t *testing.T) {
 
 func TestBinaryHelpExitsZero(t *testing.T) {
 	bin := testbin.Build(t)
-	for args, want := range map[string]string{"--help": workerHelp, "check-agency -h": checkHelp} {
+	for args, want := range map[string]string{"--help": workerHelp, "check-agency -h": checkHelp, "set-role --help": setRoleHelp} {
 		cmd := testbin.Command(t, bin, []string{"DATABASE_URL="}, strings.Fields(args)...)
 		var stdout, stderr strings.Builder
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -40,9 +40,11 @@ func TestBinaryCheckAgencyExitsWithAnError(t *testing.T) {
 		args []string
 		want string
 	}{
-		"missing DATABASE_URL": {[]string{"check-agency", "la-metro"}, "worker: DATABASE_URL is required\n"},
-		"no target":            {[]string{"check-agency"}, "worker: usage: worker check-agency (<agency-slug> | --all)\n"},
-		"unknown command":      {[]string{"run"}, "worker: usage: worker [check-agency (<agency-slug> | --all)]\n"},
+		"missing DATABASE_URL":          {[]string{"check-agency", "la-metro"}, "worker: DATABASE_URL is required\n"},
+		"no target":                     {[]string{"check-agency"}, "worker: usage: worker check-agency (<agency-slug> | --all)\n"},
+		"unknown command":               {[]string{"run"}, "worker: usage: worker [check-agency (<agency-slug> | --all) | set-role (<user-id> | <email>) (user | admin)]\n"},
+		"set-role without DATABASE_URL": {[]string{"set-role", "ada@example.com", "admin"}, "worker: DATABASE_URL is required\n"},
+		"set-role with a bad role":      {[]string{"set-role", "ada@example.com", "root"}, "worker: usage: worker set-role (<user-id> | <email>) (user | admin): invalid role: \"root\", want \"user\" or \"admin\"\n"},
 	}
 	bin := testbin.Build(t)
 	for name, tc := range cases {
