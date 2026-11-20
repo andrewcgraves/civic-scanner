@@ -16,7 +16,7 @@ import (
 
 func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), limitBody(maxRequestBodyBytes), authenticate(h.auth, logger))
+	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), captureBody(maxRequestBodyBytes), authenticate(h.auth, logger))
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	})
@@ -42,17 +42,6 @@ func allowedMethods(routes chi.Routes, path string) string {
 		}
 	}
 	return strings.Join(allowed, ", ")
-}
-
-func limitBody(limit int64) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Body != nil {
-				r.Body = http.MaxBytesReader(w, r.Body, limit)
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
 }
 
 func joinHeaderLines(name string) func(http.Handler) http.Handler {

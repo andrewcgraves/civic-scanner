@@ -85,6 +85,19 @@ describe("SubmissionForm", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
+  it("announces the success and moves focus to it", async () => {
+    await submitWith({
+      kind: "submitted",
+      name: "Big Bear Transit",
+      website: "https://bigbeartransit.org",
+    });
+
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Thanks, your suggestion was sent");
+    expect(status).toHaveFocus();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("ties each field error to its field and lists it in the summary", async () => {
     await submitWith({
       kind: "invalid",

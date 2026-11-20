@@ -159,7 +159,7 @@ export interface paths {
     put?: never;
     /**
      * Submit an agency for review
-     * @description Creates a pending agency from a name and a website, recorded as submitted by the signed-in user. A pending agency never appears in any public response. The token is checked first, then the `agency-submissions` and `accounts` flags for that user, then the body. A website whose site is already on file, for an agency of any status, is a 409. A user with too many submissions awaiting review gets a 429. The submitted website is never fetched. Every response carries `Cache-Control: no-store`.
+     * @description Creates a pending agency from a name and a website, recorded as submitted by the signed-in user. A pending agency never appears in any public response. The token is checked first, then the `agency-submissions` and `accounts` flags for that user, then the body: at most 16 KiB, `Content-Type: application/json` (a `charset`, if given, must be `utf-8`), and exactly one JSON object whose only members are the strings `name` and `website`, each at most once, with nothing after it. A website whose site is already on file, for an agency of any status, is a 409. A user with too many submissions awaiting review gets a 429. The submitted website is never fetched. Every response carries `Cache-Control: no-store`.
      */
     post: operations["createAgencySubmission"];
     delete?: never;
@@ -407,7 +407,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description The body is not valid. `code` is `invalid_body` when it is not a JSON object with string `name` and `website`, with no `fields`, and `invalid_submission` when a field is invalid, with one entry in `fields` per invalid field. */
+    /** @description The body is not valid. `code` is `invalid_body`, with no `fields`, when it is not a single JSON object, has a member other than `name` and `website`, names a member twice, has a member that is not a string, or has data after the object; `code` is `invalid_submission` when a field is invalid, with one entry in `fields` per invalid field. A missing member counts as empty. */
     InvalidSubmission: {
       headers: {
         "Cache-Control": components["headers"]["NoStore"];
@@ -429,6 +429,16 @@ export interface components {
     };
     /** @description The body is larger than the endpoint accepts. `code` is `body_too_large`. */
     PayloadTooLarge: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The body is not declared as `application/json` in UTF-8. `code` is `unsupported_media_type`. */
+    UnsupportedMediaType: {
       headers: {
         "Cache-Control": components["headers"]["NoStore"];
         [name: string]: unknown;
@@ -770,6 +780,7 @@ export interface operations {
       405: components["responses"]["MethodNotAllowed"];
       409: components["responses"]["AlreadyOnFile"];
       413: components["responses"]["PayloadTooLarge"];
+      415: components["responses"]["UnsupportedMediaType"];
       429: components["responses"]["SubmissionLimit"];
       503: components["responses"]["AuthUnavailable"];
       /** @description Unexpected error. */

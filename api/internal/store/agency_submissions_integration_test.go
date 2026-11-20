@@ -31,6 +31,15 @@ func submitter(t *testing.T, pool *pgxpool.Pool) store.User {
 	return u
 }
 
+func databaseClock(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(t.Context(), `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	return now
+}
+
 func uniqueSite() (string, string) {
 	key := "civ38-" + uuid.NewString() + ".example.org"
 	return "https://www." + key, key
@@ -52,10 +61,12 @@ func TestCreateAgencySubmissionStoresAPendingAgency(t *testing.T) {
 	s := store.New(pool)
 	user := submitter(t, pool)
 
-	before := time.Now()
+	before := databaseClock(t, pool)
 	sub, key := submit(t, s, user, "Big Bear Transit")
-	if sub.AgencyID == uuid.Nil || sub.Name != "Big Bear Transit" || sub.SubmittedBy != user.ID || sub.SubmittedAt.Before(before.Add(-time.Minute)) {
-		t.Errorf("submission = %+v", sub)
+	after := databaseClock(t, pool)
+	if sub.AgencyID == uuid.Nil || sub.Name != "Big Bear Transit" || sub.SubmittedBy != user.ID ||
+		sub.SubmittedAt.Before(before) || sub.SubmittedAt.After(after) {
+		t.Errorf("submission = %+v, want submitted between %s and %s by the database clock", sub, before, after)
 	}
 	if want := store.SubmittedSlug(sub.AgencyID); sub.Slug != want || !strings.HasPrefix(want, store.SubmittedSlugPrefix) || len(want) != len(store.SubmittedSlugPrefix)+32 {
 		t.Errorf("slug = %q, want %q", sub.Slug, want)
@@ -63,16 +74,17 @@ func TestCreateAgencySubmissionStoresAPendingAgency(t *testing.T) {
 
 	var status, slug, name, website, storedKey string
 	var by uuid.UUID
+	var at time.Time
 	if err := pool.QueryRow(ctx, `
-SELECT a.status, a.slug, a.name, a.website, w.site_key, s.submitted_by
+SELECT a.status, a.slug, a.name, a.website, w.site_key, s.submitted_by, s.submitted_at
 FROM agencies a
 JOIN agency_websites w ON w.agency_id = a.id
 JOIN agency_submissions s ON s.agency_id = a.id
-WHERE a.id = $1`, sub.AgencyID).Scan(&status, &slug, &name, &website, &storedKey, &by); err != nil {
+WHERE a.id = $1`, sub.AgencyID).Scan(&status, &slug, &name, &website, &storedKey, &by, &at); err != nil {
 		t.Fatal(err)
 	}
-	if status != "pending" || slug != sub.Slug || name != sub.Name || website != sub.Website || storedKey != key || by != user.ID {
-		t.Errorf("row = %s %s %s %s %s %s", status, slug, name, website, storedKey, by)
+	if status != "pending" || slug != sub.Slug || name != sub.Name || website != sub.Website || storedKey != key || by != user.ID || !at.Equal(sub.SubmittedAt) {
+		t.Errorf("row = %s %s %s %s %s %s %s", status, slug, name, website, storedKey, by, at)
 	}
 }
 
@@ -279,5 +291,44 @@ func TestCreateAgencySubmissionFailsOnClosedPool(t *testing.T) {
 	site, key := uniqueSite()
 	if _, err := store.New(closed).CreateAgencySubmission(t.Context(), store.AgencySubmissionInput{UserID: user.ID, Name: "x", Website: site, WebsiteKey: key}); err == nil {
 		t.Error("no error on a closed pool")
+	}
+}
+
+func TestEveryLiveOrPendingAgencyTheStoreKnowsHasASiteRow(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	user := submitter(t, pool)
+
+	created := make([]uuid.UUID, 0, 3)
+	for _, name := range []string{"One", "Two", "Three"} {
+		sub, _ := submit(t, s, user, name)
+		created = append(created, sub.AgencyID)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE agencies SET status = 'live' WHERE id = $1`, created[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := pool.Query(ctx, `
+SELECT a.slug
+FROM agencies a
+LEFT JOIN agency_websites w ON w.agency_id = a.id
+WHERE a.status IN ('live', 'pending')
+  AND w.agency_id IS NULL
+  AND (a.id = ANY($1) OR a.slug = ANY($2))`,
+		created, []string{"metrolink", "la-metro", "vctc", "rctc", "sbcta", "octa"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var slug string
+		if err := rows.Scan(&slug); err != nil {
+			t.Fatal(err)
+		}
+		t.Errorf("agency %s has no agency_websites row; every path that creates an agency must insert one", slug)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 }

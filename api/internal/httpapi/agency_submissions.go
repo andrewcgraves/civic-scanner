@@ -20,9 +20,21 @@ var (
 	submissionsOff  = v1.NotFoundJSONResponse{Code: "not_found", Message: "not found"}
 	websiteOnFile   = v1.AlreadyOnFileJSONResponse{Body: v1.Error{Code: "already_on_file", Message: "an agency with this website is already on file"}}
 	submissionLimit = v1.SubmissionLimitJSONResponse{Body: v1.Error{Code: "submission_limit_reached", Message: "you have too many submissions awaiting review"}}
-	bodyTooLarge    = v1.PayloadTooLargeJSONResponse{Body: v1.Error{Code: "body_too_large", Message: "the request body is too large"}}
-	invalidBody     = v1.InvalidSubmissionJSONResponse{Body: v1.ValidationError{Code: "invalid_body", Message: "the body must be a JSON object with string name and website"}}
+	bodyTooLarge    = v1.PayloadTooLargeJSONResponse{Body: v1.Error{Code: "body_too_large", Message: errBodyTooLarge.Error()}}
+	notJSON         = v1.UnsupportedMediaTypeJSONResponse{Body: v1.Error{Code: "unsupported_media_type", Message: errNotJSON.Error()}}
 )
+
+func bodyResponse(err error) v1.CreateAgencySubmissionResponseObject {
+	switch {
+	case errors.Is(err, errBodyTooLarge):
+		return v1.CreateAgencySubmission413JSONResponse{PayloadTooLargeJSONResponse: bodyTooLarge}
+	case errors.Is(err, errNotJSON):
+		return v1.CreateAgencySubmission415JSONResponse{UnsupportedMediaTypeJSONResponse: notJSON}
+	}
+	return v1.CreateAgencySubmission400JSONResponse{InvalidSubmissionJSONResponse: v1.InvalidSubmissionJSONResponse{
+		Body: v1.ValidationError{Code: "invalid_body", Message: err.Error()},
+	}}
+}
 
 func (h *Handler) submissionGate(ctx context.Context) v1.CreateAgencySubmissionResponseObject {
 	_, err := IdentityFrom(ctx)
@@ -39,28 +51,30 @@ func (h *Handler) submissionGate(ctx context.Context) v1.CreateAgencySubmissionR
 	return nil
 }
 
-func (h *Handler) requestBodyError(w http.ResponseWriter, r *http.Request, err error) {
+func (h *Handler) requestBodyError(w http.ResponseWriter, r *http.Request, _ error) {
 	w.Header().Set("Cache-Control", "no-store")
-	var response v1.CreateAgencySubmissionResponseObject = v1.CreateAgencySubmission400JSONResponse{InvalidSubmissionJSONResponse: invalidBody}
-	if _, tooLarge := errors.AsType[*http.MaxBytesError](err); tooLarge {
-		response = v1.CreateAgencySubmission413JSONResponse{PayloadTooLargeJSONResponse: bodyTooLarge}
-	}
-	if gate := h.submissionGate(r.Context()); gate != nil {
-		response = gate
+	response := h.submissionGate(r.Context())
+	if response == nil {
+		_, err := readSubmissionBody(r.Context())
+		if err == nil {
+			err = errNotObject
+		}
+		response = bodyResponse(err)
 	}
 	if err := response.VisitCreateAgencySubmissionResponse(w); err != nil {
 		h.logger.WarnContext(r.Context(), "write request error failed", "error", err)
 	}
 }
 
-func (h *Handler) CreateAgencySubmission(ctx context.Context, req v1.CreateAgencySubmissionRequestObject) (v1.CreateAgencySubmissionResponseObject, error) {
+func (h *Handler) CreateAgencySubmission(ctx context.Context, _ v1.CreateAgencySubmissionRequestObject) (v1.CreateAgencySubmissionResponseObject, error) {
 	if gate := h.submissionGate(ctx); gate != nil {
 		return gate, nil
 	}
-	if req.Body == nil {
-		return v1.CreateAgencySubmission400JSONResponse{InvalidSubmissionJSONResponse: invalidBody}, nil
+	body, err := readSubmissionBody(ctx)
+	if err != nil {
+		return bodyResponse(err), nil
 	}
-	clean, problems := submission.Validate(req.Body.Name, req.Body.Website)
+	clean, problems := submission.Validate(body["name"], body["website"])
 	if len(problems) > 0 {
 		fields := make([]v1.FieldError, 0, len(problems))
 		for _, p := range problems {

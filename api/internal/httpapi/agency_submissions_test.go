@@ -45,9 +45,16 @@ func newSubmissionFixture(a *fakeAuth, flags func(context.Context, string) bool)
 
 func post(t *testing.T, h *Handler, path, authorization, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postAs(t, h, path, authorization, "application/json", body)
+}
+
+func postAs(t *testing.T, h *Handler, path, authorization, contentType, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	router := NewRouter(h, slog.New(slog.DiscardHandler))
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
@@ -170,26 +177,44 @@ func TestCreateAgencySubmissionBehindFlags(t *testing.T) {
 }
 
 func TestCreateAgencySubmissionRejectsBadBodies(t *testing.T) {
+	const jsonType = "application/json"
 	tests := []struct {
-		name, body string
-		status     int
-		code       string
+		name, contentType, body string
+		status                  int
+		code, message           string
 	}{
-		{"malformed", `{"name":`, http.StatusBadRequest, "invalid_body"},
-		{"array", `[]`, http.StatusBadRequest, "invalid_body"},
-		{"number name", `{"name":1,"website":"metro.net"}`, http.StatusBadRequest, "invalid_body"},
-		{"empty", ``, http.StatusBadRequest, "invalid_body"},
-		{"too large", `{"name":"` + strings.Repeat("a", maxRequestBodyBytes) + `","website":"metro.net"}`, http.StatusRequestEntityTooLarge, "body_too_large"},
+		{"malformed", jsonType, `{"name":`, http.StatusBadRequest, "invalid_body", errNotObject.Error()},
+		{"array", jsonType, `[]`, http.StatusBadRequest, "invalid_body", errNotObject.Error()},
+		{"string", jsonType, `"x"`, http.StatusBadRequest, "invalid_body", errNotObject.Error()},
+		{"number name", jsonType, `{"name":1,"website":"metro.net"}`, http.StatusBadRequest, "invalid_body", errFieldNotString.Error()},
+		{"null website", jsonType, `{"name":"Metro","website":null}`, http.StatusBadRequest, "invalid_body", errFieldNotString.Error()},
+		{"object name", jsonType, `{"name":{"x":1},"website":"metro.net"}`, http.StatusBadRequest, "invalid_body", errFieldNotString.Error()},
+		{"empty", jsonType, ``, http.StatusBadRequest, "invalid_body", errNotObject.Error()},
+		{"duplicate key", jsonType, `{"name":"Metro","website":"metro.net","name":"Other"}`, http.StatusBadRequest, "invalid_body", errDuplicateField.Error()},
+		{"unknown field", jsonType, `{"name":"Metro","website":"metro.net","status":"live"}`, http.StatusBadRequest, "invalid_body", errUnknownField.Error()},
+		{"field in another case", jsonType, `{"Name":"Metro","website":"metro.net"}`, http.StatusBadRequest, "invalid_body", errUnknownField.Error()},
+		{"trailing object", jsonType, `{"name":"Metro","website":"metro.net"}{"name":"x"}`, http.StatusBadRequest, "invalid_body", errTrailingData.Error()},
+		{"trailing garbage", jsonType, `{"name":"Metro","website":"metro.net"} x`, http.StatusBadRequest, "invalid_body", errTrailingData.Error()},
+		{"number key", jsonType, `{1:"x"}`, http.StatusBadRequest, "invalid_body", errNotObject.Error()},
+		{"missing value", jsonType, `{"name":}`, http.StatusBadRequest, "invalid_body", errNotObject.Error()},
+		{"unclosed object", jsonType, `{"name":"Metro","website":"metro.net"`, http.StatusBadRequest, "invalid_body", errNotObject.Error()},
+		{"too large", jsonType, `{"name":"` + strings.Repeat("a", maxRequestBodyBytes) + `","website":"metro.net"}`, http.StatusRequestEntityTooLarge, "body_too_large", errBodyTooLarge.Error()},
+		{"no content type", "", goodSubmission, http.StatusUnsupportedMediaType, "unsupported_media_type", errNotJSON.Error()},
+		{"form content type", "application/x-www-form-urlencoded", goodSubmission, http.StatusUnsupportedMediaType, "unsupported_media_type", errNotJSON.Error()},
+		{"text content type", "text/plain", goodSubmission, http.StatusUnsupportedMediaType, "unsupported_media_type", errNotJSON.Error()},
+		{"latin-1 charset", "application/json; charset=iso-8859-1", goodSubmission, http.StatusUnsupportedMediaType, "unsupported_media_type", errNotJSON.Error()},
+		{"unparsable content type", "application/json; =", goodSubmission, http.StatusUnsupportedMediaType, "unsupported_media_type", errNotJSON.Error()},
+		{"malformed and not JSON", "text/plain", `{"name":`, http.StatusUnsupportedMediaType, "unsupported_media_type", errNotJSON.Error()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newSubmissionFixture(nil, submissionFlags)
-			rec := post(t, f.handler, "/v1/agency-submissions", "Bearer good", tt.body)
+			rec := postAs(t, f.handler, "/v1/agency-submissions", "Bearer good", tt.contentType, tt.body)
 			if rec.Code != tt.status {
 				t.Fatalf("status = %d, want %d, body %s", rec.Code, tt.status, rec.Body)
 			}
 			body := decodeValidation(t, rec)
-			if body.Code != tt.code || body.Message == "" || body.Fields != nil {
+			if body.Code != tt.code || body.Message != tt.message || body.Fields != nil {
 				t.Errorf("body = %+v, want code %s without fields", body, tt.code)
 			}
 			if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Content-Type") != "application/json" {
@@ -261,15 +286,80 @@ func TestCreateAgencySubmissionStoreOutcomes(t *testing.T) {
 	}
 }
 
-func TestCreateAgencySubmissionWithoutBody(t *testing.T) {
+func signedInContext(t *testing.T) context.Context {
+	return context.WithValue(t.Context(), authContextKey{}, authResult{identity: auth.Identity{UserID: "user_01"}})
+}
+
+func TestCreateAgencySubmissionWithoutACapturedBody(t *testing.T) {
 	f := newSubmissionFixture(nil, submissionFlags)
-	ctx := context.WithValue(t.Context(), authContextKey{}, authResult{identity: auth.Identity{UserID: "user_01"}})
-	resp, err := f.handler.CreateAgencySubmission(ctx, v1.CreateAgencySubmissionRequestObject{})
+	resp, err := f.handler.CreateAgencySubmission(signedInContext(t), v1.CreateAgencySubmissionRequestObject{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := resp.(v1.CreateAgencySubmission400JSONResponse); !ok {
-		t.Errorf("response = %#v, want 400", resp)
+	if _, ok := resp.(v1.CreateAgencySubmission415JSONResponse); !ok {
+		t.Errorf("response = %#v, want 415", resp)
+	}
+}
+
+func TestCreateAgencySubmissionAcceptsJSONMediaTypeVariants(t *testing.T) {
+	for _, contentType := range []string{"application/json; charset=utf-8", "Application/JSON; Charset=UTF-8", "application/json;foo=bar"} {
+		f := newSubmissionFixture(nil, submissionFlags)
+		rec := postAs(t, f.handler, "/v1/agency-submissions", "Bearer good", contentType, goodSubmission)
+		if rec.Code != http.StatusCreated {
+			t.Errorf("%q: status %d, body %s", contentType, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestCreateAgencySubmissionRefusesReplacementCharacters(t *testing.T) {
+	tests := map[string]struct {
+		body, field, code string
+	}{
+		"invalid bytes in the name":  {"{\"name\":\"Big \xff\xfe\",\"website\":\"bigbear.org\"}", "name", "invalid_characters"},
+		"escaped U+FFFD in the name": {`{"name":"Big \ufffd","website":"bigbear.org"}`, "name", "invalid_characters"},
+		"invalid bytes in the site":  {"{\"name\":\"Big Bear\",\"website\":\"bigbear\xff.org\"}", "website", "invalid_url"},
+		"escaped U+FFFD in the site": {`{"name":"Big Bear","website":"bigbear.org/\ufffd"}`, "website", "invalid_url"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			f := newSubmissionFixture(nil, submissionFlags)
+			rec := post(t, f.handler, "/v1/agency-submissions", "Bearer good", tt.body)
+			body := decodeValidation(t, rec)
+			if rec.Code != http.StatusBadRequest || body.Fields == nil || len(*body.Fields) != 1 ||
+				string((*body.Fields)[0].Field) != tt.field || (*body.Fields)[0].Code != tt.code {
+				t.Errorf("status %d, body %s", rec.Code, rec.Body)
+			}
+			if len(f.submissions.inputs) != 0 {
+				t.Errorf("stored %+v", f.submissions.inputs)
+			}
+		})
+	}
+}
+
+type erroringBody struct{}
+
+func (erroringBody) Read([]byte) (int, error) { return 0, errors.New("connection reset") }
+
+func TestCreateAgencySubmissionWhenTheBodyCannotBeRead(t *testing.T) {
+	f := newSubmissionFixture(nil, submissionFlags)
+	router := NewRouter(f.handler, slog.New(slog.DiscardHandler))
+	req := httptest.NewRequest(http.MethodPost, "/v1/agency-submissions", erroringBody{})
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer good")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if body := decodeValidation(t, rec); rec.Code != http.StatusBadRequest || body.Code != "invalid_body" {
+		t.Errorf("status %d, body %s", rec.Code, rec.Body)
+	}
+}
+
+func TestRequestBodyErrorWithABodyTheStrictParserAccepts(t *testing.T) {
+	f := newSubmissionFixture(nil, submissionFlags)
+	ctx := context.WithValue(signedInContext(t), bodyContextKey{}, capturedBody{contentType: "application/json", data: []byte(goodSubmission)})
+	rec := httptest.NewRecorder()
+	f.handler.requestBodyError(rec, httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/agency-submissions", nil), errors.New("decoder disagreed"))
+	if body := decodeValidation(t, rec); rec.Code != http.StatusBadRequest || body.Code != "invalid_body" {
+		t.Errorf("status %d, body %s", rec.Code, rec.Body)
 	}
 }
 

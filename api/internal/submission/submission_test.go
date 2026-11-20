@@ -54,6 +54,8 @@ func TestNormalizeWebsiteRejects(t *testing.T) {
 		{"https://metro .net", "invalid_url"},
 		{"https://metro.net/\x00", "invalid_url"},
 		{"https://metro.net/\xff", "invalid_url"},
+		{"https://metro.net/" + string(rune(0xFFFD)), "invalid_url"},
+		{"https://metro" + string(rune(0xFFFD)) + ".net", "invalid_url"},
 		{"https://%zz", "invalid_url"},
 		{"https://metro.net:abc", "invalid_url"},
 		{"https://", "invalid_url"},
@@ -155,6 +157,7 @@ func TestNormalizeNameRejects(t *testing.T) {
 		{"Metro\uffff", "invalid_characters"},
 		{"Metro\ufdd0", "invalid_characters"},
 		{"Metro\xff", "invalid_characters"},
+		{"Big " + string(rune(0xFFFD)) + string(rune(0xFFFD)), "invalid_characters"},
 	}
 	for _, tt := range tests {
 		got, problem := NormalizeName(tt.raw)

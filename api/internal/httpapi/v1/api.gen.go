@@ -312,6 +312,9 @@ type SubmissionLimit = Error
 // Unauthorized defines model for Unauthorized.
 type Unauthorized = Error
 
+// UnsupportedMediaType defines model for UnsupportedMediaType.
+type UnsupportedMediaType = Error
+
 // GetAgencyFeedParams defines parameters for GetAgencyFeed.
 type GetAgencyFeedParams struct {
 	// IfNoneMatch ETags from earlier responses. When one matches the current feed, the response is 304 with no body.
@@ -928,6 +931,15 @@ type UnauthorizedJSONResponse struct {
 	Headers UnauthorizedResponseHeaders
 }
 
+type UnsupportedMediaTypeResponseHeaders struct {
+	CacheControl *string
+}
+type UnsupportedMediaTypeJSONResponse struct {
+	Body Error
+
+	Headers UnsupportedMediaTypeResponseHeaders
+}
+
 type ListAgenciesRequestObject struct {
 }
 
@@ -1456,6 +1468,25 @@ func (response CreateAgencySubmission413JSONResponse) VisitCreateAgencySubmissio
 		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
 	}
 	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateAgencySubmission415JSONResponse struct {
+	UnsupportedMediaTypeJSONResponse
+}
+
+func (response CreateAgencySubmission415JSONResponse) VisitCreateAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(415)
 	_, err := buf.WriteTo(w)
 	return err
 }

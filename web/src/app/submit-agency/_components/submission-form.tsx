@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect, useRef } from "react";
 
 import { Notice } from "@/components/ui/notice";
 
@@ -120,6 +120,30 @@ function Field({
   );
 }
 
+function SubmittedNotice({ name, website }: { name: string; website: string }) {
+  const announcement = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    announcement.current?.focus();
+  }, []);
+  return (
+    <div className="space-y-4">
+      <div ref={announcement} role="status" tabIndex={-1}>
+        <Notice title="Thanks, your suggestion was sent">
+          <p>
+            {name} ({website}) is waiting for review. It will not appear on
+            Civic Scanner unless it is approved.
+          </p>
+        </Notice>
+      </div>
+      <p>
+        <a href={SUBMIT_AGENCY_PATH} className="link">
+          Suggest another agency
+        </a>
+      </p>
+    </div>
+  );
+}
+
 export function SubmissionForm() {
   const [state, formAction, pending] = useActionState(
     submitAgency,
@@ -127,21 +151,7 @@ export function SubmissionForm() {
   );
 
   if (state.kind === "submitted") {
-    return (
-      <div className="space-y-4">
-        <Notice title="Thanks, your suggestion was sent">
-          <p>
-            {state.name} ({state.website}) is waiting for review. It will not
-            appear on Civic Scanner unless it is approved.
-          </p>
-        </Notice>
-        <p>
-          <a href={SUBMIT_AGENCY_PATH} className="link">
-            Suggest another agency
-          </a>
-        </p>
-      </div>
-    );
+    return <SubmittedNotice name={state.name} website={state.website} />;
   }
 
   const errors = state.kind === "invalid" ? state.errors : {};

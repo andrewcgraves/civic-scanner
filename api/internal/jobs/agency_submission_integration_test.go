@@ -40,7 +40,7 @@ func TestSubmittedAgencyIsNeverChecked(t *testing.T) {
 	fake := sourcestest.Returning(boardMeeting("m-1", fixedNow, sources.StatusScheduled))
 	h := start(t, pool, jobs.Config{Registry: registry(map[string]sources.Adapter{sub.Slug: fake})})
 
-	if !h.enqueueChecks(time.Now().UTC().Truncate(24 * time.Hour).Add(2 * time.Hour)) {
+	if !h.enqueueChecks(fixedNow.Truncate(24 * time.Hour).Add(5 * time.Hour)) {
 		t.Fatal("enqueue skipped as duplicate")
 	}
 	if n := h.checkJobsBySlug()[sub.Slug]; n != 0 {

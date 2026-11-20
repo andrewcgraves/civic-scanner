@@ -67,14 +67,13 @@ func websiteError(code, message string) *FieldError {
 }
 
 func NormalizeName(raw string) (string, *FieldError) {
-	if !utf8.ValidString(raw) {
-		return "", nameError("invalid_characters", "Name contains characters that are not valid text.")
-	}
 	var b strings.Builder
 	pendingSpace := false
 	hasAlnum := false
 	for _, r := range raw {
 		switch {
+		case r == utf8.RuneError:
+			return "", nameError("invalid_characters", "Name contains characters that are not valid text.")
 		case unicode.IsSpace(r):
 			pendingSpace = b.Len() > 0
 			continue
@@ -120,7 +119,9 @@ func NormalizeWebsite(raw string) (Website, *FieldError) {
 		return Website{}, websiteError("required", "Enter the agency's website.")
 	case len(raw) > MaxWebsiteBytes:
 		return Website{}, websiteError("too_long", "Website must be at most 2,048 characters.")
-	case !utf8.ValidString(raw) || strings.IndexFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
+	case strings.ContainsRune(raw, utf8.RuneError):
+		return Website{}, websiteError("invalid_url", "Website contains characters that are not valid text.")
+	case strings.IndexFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
 		return Website{}, websiteError("invalid_url", "Website must be a web address without spaces.")
 	}
 	if !strings.Contains(raw, "://") {
