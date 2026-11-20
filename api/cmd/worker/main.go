@@ -119,7 +119,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC,
-		"pdf_extractor", pdfExtractor.Binary, "agenda_summary_tier", cfg.Summary.AgendaTier, "llm_configured", summarizer != nil,
+		"pdf_extractor", pdfExtractor.Binary, "agenda_summary_tier", cfg.Summary.AgendaTier, "llm_configured", summarizer != nil, "llm_provider", cfg.LLM.Provider,
 		"audio_limit", audio.Tool.Limit, "ffmpeg", audio.Tool.FFmpeg, "yt_dlp", audio.Tool.YTDLP,
 		"storage_configured", cfg.Storage.Configured(), "transcription_configured", transcriber != nil)
 	if _, err := os.Stat(pdfExtractor.Binary); err != nil {
