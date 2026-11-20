@@ -25,6 +25,7 @@ type Config struct {
 	WorkOS        WorkOS
 	Summary       Summary
 	Web           Web
+	Stripe        Stripe
 }
 
 func Load() (Config, error) {
@@ -76,6 +77,12 @@ func Load() (Config, error) {
 	}
 	if cfg.Web, err = loadWeb(); err != nil {
 		return Config{}, err
+	}
+	if cfg.Stripe, err = loadStripe(); err != nil {
+		return Config{}, err
+	}
+	if cfg.Stripe.Configured() && cfg.Web.PublicURL == "" {
+		return Config{}, errors.New("STRIPE_SECRET_KEY needs PUBLIC_WEB_URL, which the checkout and billing portal return links are built from")
 	}
 	return cfg, nil
 }
