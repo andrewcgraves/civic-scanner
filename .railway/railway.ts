@@ -71,6 +71,8 @@ export default defineRailway(() => {
       APP_ENV: "production",
       LOG_LEVEL: "info",
       FEATURE_FLAGS: "ingest-check-agencies,ingest-summarize-agendas",
+      LLM_PROVIDER: "anthropic",
+      ANTHROPIC_API_KEY: preserve(),
       AI_GATEWAY_API_KEY: preserve(),
       FIRECRAWL_API_KEY: preserve(),
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",

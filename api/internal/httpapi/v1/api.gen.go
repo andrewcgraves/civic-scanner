@@ -57,6 +57,24 @@ func (e MeetingStatus) Valid() bool {
 	}
 }
 
+// Defines values for UserRole.
+const (
+	UserRoleAdmin UserRole = "admin"
+	UserRoleUser  UserRole = "user"
+)
+
+// Valid indicates whether the value is a known member of the UserRole enum.
+func (e UserRole) Valid() bool {
+	switch e {
+	case UserRoleAdmin:
+		return true
+	case UserRoleUser:
+		return true
+	default:
+		return false
+	}
+}
+
 // Agency defines model for Agency.
 type Agency struct {
 	Id   openapi_types.UUID `json:"id"`
@@ -200,7 +218,13 @@ type User struct {
 
 	// Id The user's id in this service.
 	Id openapi_types.UUID `json:"id"`
+
+	// Role What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.
+	Role UserRole `json:"role"`
 }
+
+// UserRole What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.
+type UserRole string
 
 // AgencySlug defines model for AgencySlug.
 type AgencySlug = string

@@ -15,8 +15,8 @@ func TestUserStripeCustomerMigrationRollsBackAndReapplies(t *testing.T) {
 		t.Fatal("stripe_customer_id or its index missing after Up")
 	}
 
-	if _, err := provider.DownTo(ctx, 11); err != nil {
-		t.Fatalf("DownTo(11): %v", err)
+	if _, err := provider.DownTo(ctx, 12); err != nil {
+		t.Fatalf("DownTo(12): %v", err)
 	}
 	if columnExists(t, pool, schema, "users", "stripe_customer_id") {
 		t.Error("stripe_customer_id still exists after rolling back 00013")
@@ -24,8 +24,8 @@ func TestUserStripeCustomerMigrationRollsBackAndReapplies(t *testing.T) {
 	if tableExists(t, pool, schema, "users_stripe_customer_id_unique") {
 		t.Error("users_stripe_customer_id_unique still exists after rolling back 00013")
 	}
-	if !columnExists(t, pool, schema, "agenda_versions", "change_event_pending") {
-		t.Error("change_event_pending missing after rolling back only 00013")
+	if !columnExists(t, pool, schema, "users", "role") {
+		t.Error("users.role missing after rolling back only 00013")
 	}
 
 	if _, err := provider.Up(ctx); err != nil {

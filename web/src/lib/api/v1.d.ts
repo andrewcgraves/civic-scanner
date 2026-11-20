@@ -324,6 +324,11 @@ export interface components {
       /** @description The email address from the latest access token that carried one, or null when none has. Not an identifier: it can change. */
       email: string | null;
       /**
+       * @description What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.
+       * @enum {string}
+       */
+      role: "user" | "admin";
+      /**
        * Format: date-time
        * @description When the user was first seen.
        */
@@ -362,6 +367,16 @@ export interface components {
       headers: {
         /** @description Always `Bearer`. */
         "WWW-Authenticate": string;
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The token is valid but the signed-in user may not use this route, for example a route for admins only. `code` is `forbidden`. The role is read from the database on every request, so a change takes effect on the next one; signing in again does not help. */
+    Forbidden: {
+      headers: {
         "Cache-Control": components["headers"]["NoStore"];
         [name: string]: unknown;
       };
@@ -419,7 +434,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description A query parameter is invalid. `code` is `invalid_cursor` for a bad cursor and `invalid_parameter` for any other parameter. */
+    /** @description A parameter or the request body is invalid. `code` is `invalid_cursor` for a bad cursor, `invalid_parameter` for any other parameter and `invalid_body` for a body that cannot be decoded. */
     BadRequest: {
       headers: {
         [name: string]: unknown;

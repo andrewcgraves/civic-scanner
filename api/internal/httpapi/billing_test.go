@@ -60,10 +60,6 @@ func post(t *testing.T, h *Handler, path, authorization string) *httptest.Respon
 	return rec
 }
 
-func goodAuth() *fakeAuth {
-	return &fakeAuth{tokens: map[string]auth.Identity{"good": {UserID: "user_01", Email: "ada@example.com"}}}
-}
-
 func TestBillingRedirects(t *testing.T) {
 	for _, path := range []string{checkoutPath, portalPath} {
 		user := store.User{ID: uuid.New(), WorkOSUserID: "user_01"}
@@ -176,6 +172,17 @@ func TestBillingMapsErrors(t *testing.T) {
 					t.Errorf("Cache-Control = %q, want no-store", got)
 				}
 			})
+		}
+	}
+}
+
+func TestBillingOperationsAreNotAdminOnly(t *testing.T) {
+	for _, op := range []string{"CreateCheckoutSession", "CreateBillingPortalSession"} {
+		if _, ok := adminOperations[op]; ok {
+			t.Errorf("%s is admin-only", op)
+		}
+		if !privateOperations[op] {
+			t.Errorf("%s is not in privateOperations", op)
 		}
 	}
 }

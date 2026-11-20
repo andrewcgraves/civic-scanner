@@ -41,6 +41,7 @@ type Identity struct {
 	Permissions    []string
 	Email          string
 	Actor          string
+	Impersonated   bool
 	ExpiresAt      time.Time
 }
 
@@ -150,6 +151,10 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
 	if err := v.check(c); err != nil {
 		return Identity{}, err
 	}
+	actor, err := c.actor()
+	if err != nil {
+		return Identity{}, err
+	}
 	return Identity{
 		UserID:         c.Subject,
 		SessionID:      c.SessionID,
@@ -157,7 +162,8 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
 		Role:           c.Role,
 		Permissions:    c.Permissions,
 		Email:          c.Email,
-		Actor:          c.actor(),
+		Actor:          actor,
+		Impersonated:   c.Act != nil,
 		ExpiresAt:      c.ExpiresAt.Time(),
 	}, nil
 }
@@ -172,7 +178,7 @@ type claims struct {
 	Role           string          `json:"role"`
 	Permissions    []string        `json:"permissions"`
 	Email          string          `json:"email"`
-	Act            *actor          `json:"act"`
+	Act            json.RawMessage `json:"act"`
 	SubProfile     json.RawMessage `json:"sub_profile"`
 	SubType        json.RawMessage `json:"sub_type"`
 	AuthTime       *numericDate    `json:"auth_time"`
@@ -214,15 +220,20 @@ func (v *Verifier) check(c claims) error {
 	return nil
 }
 
-type actor struct {
-	Subject string `json:"sub"`
-}
-
-func (c claims) actor() string {
+func (c claims) actor() (string, error) {
 	if c.Act == nil {
-		return ""
+		return "", nil
 	}
-	return c.Act.Subject
+	var act struct {
+		Subject *string `json:"sub"`
+	}
+	if !bytes.HasPrefix(bytes.TrimSpace(c.Act), []byte("{")) || json.Unmarshal(c.Act, &act) != nil {
+		return "", invalid("act not an object")
+	}
+	if act.Subject == nil || *act.Subject == "" {
+		return "", invalid("act without a subject")
+	}
+	return *act.Subject, nil
 }
 
 func invalid(reason string) error {
