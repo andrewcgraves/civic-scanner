@@ -26,10 +26,14 @@ const (
 	agendaDue    = 72 * time.Hour
 )
 
-var committeeWord = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+var (
+	committeeWord = regexp.MustCompile(`^[A-Za-z0-9]+$`)
+	agendaDomain  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`)
+)
 
 type Config struct {
 	PageURL        string
+	AgendaDomain   string
 	Boards         []Board
 	CommitteeWords []string
 	TimeZone       string
@@ -83,6 +87,8 @@ func (c Config) adapter() (Adapter, error) {
 	switch {
 	case err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil:
 		return Adapter{}, fmt.Errorf("%w: page url %q", ErrInvalidConfig, c.PageURL)
+	case !agendaDomain.MatchString(c.AgendaDomain):
+		return Adapter{}, fmt.Errorf("%w: agenda domain %q", ErrInvalidConfig, c.AgendaDomain)
 	case len(c.Boards) == 0:
 		return Adapter{}, fmt.Errorf("%w: no boards", ErrInvalidConfig)
 	case slices.ContainsFunc(c.CommitteeWords, func(w string) bool { return !committeeWord.MatchString(w) }):
@@ -174,8 +180,7 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 		if w.hasDate {
 			dated++
 		}
-		n := parseName(r.name)
-		board, isBoard := a.board(n)
+		n, board, isBoard := a.match(r)
 		if isBoard {
 			boards++
 		}
@@ -237,6 +242,32 @@ func (a *Adapter) board(n name) (Board, bool) {
 	return Board{}, false
 }
 
+func (a *Adapter) match(r row) (name, Board, bool) {
+	whole := parseName(r.name)
+	if b, ok := a.board(whole); ok {
+		return whole, b, true
+	}
+	for _, l := range r.links {
+		n := parseName(l.text)
+		if b, ok := a.board(n); ok {
+			n.marker = n.marker.merge(standaloneMarker(r.plain))
+			for _, other := range r.links {
+				n.marker = n.marker.merge(standaloneMarker(other.text))
+			}
+			return n, b, true
+		}
+	}
+	if n := parseName(r.plain); r.plain != "" {
+		if b, ok := a.board(n); ok {
+			for _, other := range r.links {
+				n.marker = n.marker.merge(standaloneMarker(other.text))
+			}
+			return n, b, true
+		}
+	}
+	return whole, Board{}, false
+}
+
 func (a *Adapter) relevant(w when, r row, days windowDays) bool {
 	if w.hasDate {
 		return days.has(w.date)
@@ -261,38 +292,39 @@ func (a *Adapter) entry(ctx context.Context, i int, r row, w when, n name, board
 	relevant := a.relevant(w, r, days)
 	if !isBoard {
 		if looksLikeBoard(n.full) {
-			a.log(ctx, relevant, "rctc: dropped a listed meeting that names the commission but is not a configured board meeting", "row", i, "meeting", n.full, "date", r.when)
+			a.log(ctx, relevant, "rctc: dropped a listed meeting that names the commission but is not a configured board meeting", "row", i, "meeting", n.full, "date", r.posted)
 		} else {
-			a.logger.DebugContext(ctx, "rctc: dropped a listed meeting that is not a board meeting", "row", i, "meeting", n.full, "date", r.when)
+			a.logger.DebugContext(ctx, "rctc: dropped a listed meeting that is not a board meeting", "row", i, "meeting", n.full, "date", r.posted)
 		}
 		return entry{}, false
 	}
-	l, hasLink := agendaLink(r.links)
+	l, hasLink := a.agendaLink(r.links)
 	if hasLink {
 		if word, ok := a.committee(l); ok {
-			a.log(ctx, relevant, "rctc: dropped a board meeting whose agenda link names a committee", "row", i, "meeting", n.full, "date", r.when, "agenda", l.href, "committee", word)
+			a.log(ctx, relevant, "rctc: dropped a board meeting whose agenda link names a committee", "row", i, "meeting", n.full, "date", r.posted, "agenda", redact(l.href), "committee", word)
 			return entry{}, false
 		}
 	}
 	if !w.hasDate {
-		a.log(ctx, relevant, "rctc: skipped a board meeting without one readable date", "row", i, "meeting", n.full, "date", r.when, "dates_found", w.dates)
+		a.log(ctx, relevant, "rctc: skipped a board meeting without one readable date", "row", i, "meeting", n.full, "date", r.posted, "dates_found", w.dates)
 		return entry{}, false
 	}
-	e := entry{index: i, board: board, full: n.full, date: w.date, cancelled: n.cancelled}
+	cancelled := w.called || n.marker == cancelMarker || (n.marker == rescheduleMarker && !w.movedFrom)
+	e := entry{index: i, board: board, full: n.full, date: w.date, cancelled: cancelled}
 	hour, minute := a.startHour, a.startMin
 	switch {
 	case w.hasTime:
 		hour, minute = w.hour, w.minute
 	case w.timeText:
-		a.log(ctx, relevant, "rctc: board meeting has an unreadable start time; using the configured start time", "row", i, "meeting", n.full, "date", r.when, "start_time", a.cfg.StartTime)
+		a.log(ctx, relevant, "rctc: board meeting has an unreadable start time; using the configured start time", "row", i, "meeting", n.full, "date", r.posted, "start_time", a.cfg.StartTime)
 	case relevant:
-		a.logger.InfoContext(ctx, "rctc: board meeting has no start time; using the configured start time", "row", i, "meeting", n.full, "date", r.when, "start_time", a.cfg.StartTime)
+		a.logger.InfoContext(ctx, "rctc: board meeting has no start time; using the configured start time", "row", i, "meeting", n.full, "date", r.posted, "start_time", a.cfg.StartTime)
 	}
 	e.startsAt = time.Date(w.date.year, w.date.month, w.date.day, hour, minute, 0, 0, a.loc).UTC()
 	if hasLink {
 		e.agendaURL = a.resolve(ctx, relevant, i, l, base)
 		if s, ok := linkSlug(l.href); ok && (s.year != w.date.year || s.month != w.date.month) {
-			a.log(ctx, relevant, "rctc: the agenda link names another month than the meeting date; using the meeting date", "row", i, "meeting", n.full, "date", r.when, "agenda", l.href)
+			a.log(ctx, relevant, "rctc: the agenda link names another month than the meeting date; using the meeting date", "row", i, "meeting", n.full, "date", r.posted, "agenda", redact(l.href))
 		}
 	}
 	if e.agendaURL == "" && !e.cancelled && relevant && !e.startsAt.After(now.Add(agendaDue)) {
@@ -301,17 +333,31 @@ func (a *Adapter) entry(ctx context.Context, i int, r row, w when, n name, board
 	return e, true
 }
 
-func agendaLink(links []link) (link, bool) {
-	if len(links) == 0 {
-		return link{}, false
-	}
+func (a *Adapter) agendaLink(links []link) (link, bool) {
+	var revised, board, named []link
 	for _, l := range links {
-		lower := strings.ToLower(l.text + " " + l.href)
-		if strings.Contains(lower, "revised") || strings.Contains(lower, "amended") || strings.Contains(lower, "updated") {
-			return l, true
+		textWords := wordsOf(strings.ToLower(l.text))
+		words := append(textWords, linkWords(l.href)...)
+		if supporting(words) {
+			continue
+		}
+		_, isBoard := a.board(parseName(l.text))
+		saysAgenda := slices.Contains(words, "agenda")
+		switch {
+		case revisedWord(words) && saysAgenda:
+			revised = append(revised, l)
+		case isBoard:
+			board = append(board, l)
+		case slices.Contains(textWords, "agenda"):
+			named = append(named, l)
 		}
 	}
-	return links[0], true
+	for _, group := range [][]link{revised, board, named} {
+		if len(group) > 0 {
+			return group[0], true
+		}
+	}
+	return link{}, false
 }
 
 func (a *Adapter) committee(l link) (string, bool) {
@@ -328,16 +374,24 @@ func (a *Adapter) resolve(ctx context.Context, relevant bool, i int, l link, bas
 	b, _ := url.Parse(base)
 	ref, err := url.Parse(l.href)
 	if err != nil {
-		a.log(ctx, relevant, "rctc: unreadable agenda link", "row", i, "href", l.href, "error", err)
+		a.log(ctx, relevant, "rctc: unreadable agenda link", "row", i)
 		return ""
 	}
 	resolved := b.ResolveReference(ref)
 	resolved.Fragment = ""
-	if !absolute(resolved.String()) {
-		a.log(ctx, relevant, "rctc: agenda link is not an http url", "row", i, "href", l.href)
+	if !a.onAgendaHost(resolved) {
+		a.log(ctx, relevant, "rctc: dropped an agenda link that is not https on the agency's domain", "row", i, "resolved", resolved.Redacted(), "domain", a.cfg.AgendaDomain)
 		return ""
 	}
 	return resolved.String()
+}
+
+func (a *Adapter) onAgendaHost(u *url.URL) bool {
+	if u.Scheme != "https" || u.User != nil || u.Opaque != "" || (u.Port() != "" && u.Port() != "443") {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	return host == a.cfg.AgendaDomain || strings.HasSuffix(host, "."+a.cfg.AgendaDomain)
 }
 
 func absolute(raw string) bool {
@@ -366,7 +420,14 @@ func (a *Adapter) merge(ctx context.Context, entries []entry, days windowDays) [
 
 func (a *Adapter) assignIDs(ctx context.Context, entries []entry, days windowDays) {
 	taken := map[string]bool{}
-	for i := range entries {
+	order := make([]int, len(entries))
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortStableFunc(order, func(x, y int) int {
+		return cmp.Compare(boolRank(entries[x].cancelled), boolRank(entries[y].cancelled))
+	})
+	for _, i := range order {
 		e := &entries[i]
 		prefix := boardSlug(e.board.Name) + "/"
 		local := e.startsAt.In(a.loc)
@@ -387,4 +448,19 @@ func (a *Adapter) assignIDs(ctx context.Context, entries []entry, days windowDay
 			break
 		}
 	}
+}
+
+func boolRank(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func redact(href string) string {
+	u, err := url.Parse(href)
+	if err != nil {
+		return ""
+	}
+	return u.Redacted()
 }

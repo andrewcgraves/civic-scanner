@@ -1,7 +1,8 @@
 package rctc
 
 var RCTC = Config{
-	PageURL: "https://www.rctc.org/meetings-and-agendas/",
+	PageURL:      "https://www.rctc.org/meetings-and-agendas/",
+	AgendaDomain: "rctc.org",
 	Boards: []Board{
 		{Name: "Commission Meeting", Monthly: true},
 		{Name: "Special Commission Meeting"},

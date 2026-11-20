@@ -15,18 +15,22 @@ type link struct {
 }
 
 type row struct {
-	when  string
-	name  string
-	links []link
+	when   string
+	posted string
+	name   string
+	plain  string
+	links  []link
 }
 
 func (r row) empty() bool {
-	return r.when == "" && r.name == "" && len(r.links) == 0
+	return r.posted == "" && r.name == "" && len(r.links) == 0
 }
 
 type cell struct {
 	header bool
 	text   string
+	live   string
+	plain  string
 	links  []link
 }
 
@@ -41,9 +45,24 @@ type table struct {
 type cellBuilder struct {
 	header bool
 	text   strings.Builder
+	live   strings.Builder
+	plain  strings.Builder
+	struck int
 	links  []link
 	anchor *link
 	atext  strings.Builder
+}
+
+func (c *cellBuilder) write(text string) {
+	c.text.WriteString(text)
+	if c.struck == 0 {
+		c.live.WriteString(text)
+	}
+	if c.anchor != nil {
+		c.atext.WriteString(text)
+	} else {
+		c.plain.WriteString(text)
+	}
 }
 
 var (
@@ -68,7 +87,7 @@ func (t *table) closeCell() {
 		c.closeAnchor()
 	}
 	t.cell = nil
-	out := cell{header: c.header, text: normalize(c.text.String()), links: c.links}
+	out := cell{header: c.header, text: normalize(c.text.String()), live: normalize(c.live.String()), plain: normalize(c.plain.String()), links: c.links}
 	if out.header {
 		t.headers = append(t.headers, out.text)
 		return
@@ -114,10 +133,12 @@ func (t *table) meetingRows() []row {
 	for _, cells := range t.rows {
 		var r row
 		if date < len(cells) {
-			r.when = cells[date].text
+			r.when = cells[date].live
+			r.posted = cells[date].text
 		}
 		if meeting < len(cells) {
 			r.name = cells[meeting].text
+			r.plain = cells[meeting].plain
 			r.links = cells[meeting].links
 		}
 		out = append(out, r)
@@ -181,10 +202,12 @@ func parseTables(body []byte) (int, []row) {
 				}
 			case atom.Br, atom.P, atom.Div:
 				if top != nil && top.cell != nil {
-					top.cell.text.WriteString(" ")
-					if top.cell.anchor != nil {
-						top.cell.atext.WriteString(" ")
-					}
+					top.cell.write(" ")
+				}
+			case atom.Del, atom.S, atom.Strike:
+				if top != nil && top.cell != nil && tt == html.StartTagToken {
+					top.cell.write(" ")
+					top.cell.struck++
 				}
 			}
 		case html.EndTagToken:
@@ -207,14 +230,15 @@ func parseTables(body []byte) (int, []row) {
 				if top != nil && top.cell != nil && top.cell.anchor != nil {
 					top.cell.closeAnchor()
 				}
+			case atom.Del, atom.S, atom.Strike:
+				if top != nil && top.cell != nil && top.cell.struck > 0 {
+					top.cell.struck--
+					top.cell.write(" ")
+				}
 			}
 		case html.TextToken:
 			if top != nil && top.cell != nil {
-				text := string(z.Text())
-				top.cell.text.WriteString(text)
-				if top.cell.anchor != nil {
-					top.cell.atext.WriteString(text)
-				}
+				top.cell.write(string(z.Text()))
 			}
 		}
 	}

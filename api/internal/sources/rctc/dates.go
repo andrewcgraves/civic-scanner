@@ -34,6 +34,8 @@ var (
 	noon        = regexp.MustCompile(`(?i)\bnoon\b`)
 	weekday     = regexp.MustCompile(`(?i)\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b\.?`)
 	slug        = regexp.MustCompile(`^(` + monthNames + `)(\d{4})([a-z]+)$`)
+	movedFrom   = regexp.MustCompile(`(?i)[(\[]\s*(?:rescheduled|moved|postponed|changed)\s+from\b[^)\]]*[)\]]`)
+	statusWord  = regexp.MustCompile(`(?i)\b(cancell?ed|postponed|rescheduled)\b`)
 )
 
 type day struct {
@@ -47,13 +49,15 @@ func (d day) String() string {
 }
 
 type when struct {
-	date     day
-	hasDate  bool
-	dates    int
-	hour     int
-	minute   int
-	hasTime  bool
-	timeText bool
+	date      day
+	hasDate   bool
+	dates     int
+	hour      int
+	minute    int
+	hasTime   bool
+	timeText  bool
+	called    bool
+	movedFrom bool
 }
 
 func civil(year int, month time.Month, d int) (day, bool) {
@@ -66,6 +70,10 @@ func civil(year int, month time.Month, d int) (day, bool) {
 
 func parseWhen(text string) when {
 	var w when
+	if movedFrom.MatchString(text) {
+		w.movedFrom = true
+		text = movedFrom.ReplaceAllString(text, " ")
+	}
 	rest := text
 	var found []day
 	add := func(d day, ok bool) {
@@ -93,6 +101,10 @@ func parseWhen(text string) when {
 	rest = namedDate.ReplaceAllString(rest, " ")
 	rest = slashedDate.ReplaceAllString(rest, " ")
 	rest = weekday.ReplaceAllString(rest, " ")
+	if statusWord.MatchString(rest) {
+		w.called = true
+		rest = statusWord.ReplaceAllString(rest, " ")
+	}
 	w.dates = len(found)
 	if len(found) == 1 {
 		w.date, w.hasDate = found[0], true
@@ -145,6 +157,10 @@ func linkWords(href string) []string {
 	if u, err := url.Parse(href); err == nil {
 		name = path.Base(u.Path)
 	}
+	return wordsOf(name)
+}
+
+func wordsOf(name string) []string {
 	var words []string
 	var b strings.Builder
 	var last rune

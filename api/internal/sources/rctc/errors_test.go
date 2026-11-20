@@ -131,6 +131,11 @@ func TestInvalidConfigs(t *testing.T) {
 		"no page url":       func(c *rctc.Config) { c.PageURL = "" },
 		"relative page url": func(c *rctc.Config) { c.PageURL = "/meetings-and-agendas/" },
 		"ftp page url":      func(c *rctc.Config) { c.PageURL = "ftp://www.rctc.org/" },
+		"no agenda domain":  func(c *rctc.Config) { c.AgendaDomain = "" },
+		"agenda domain url": func(c *rctc.Config) { c.AgendaDomain = "https://rctc.org" },
+		"single label":      func(c *rctc.Config) { c.AgendaDomain = "rctc" },
+		"upper case domain": func(c *rctc.Config) { c.AgendaDomain = "RCTC.org" },
+		"leading dot":       func(c *rctc.Config) { c.AgendaDomain = ".rctc.org" },
 		"no boards":         func(c *rctc.Config) { c.Boards = nil },
 		"blank board":       func(c *rctc.Config) { c.Boards = []rctc.Board{{Name: " "}} },
 		"duplicate board": func(c *rctc.Config) {
