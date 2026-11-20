@@ -29,7 +29,7 @@ func TestFetchErrorsKeepTheirRetryability(t *testing.T) {
 		{"forbidden", &fetch.Error{StatusCode: 403, Err: errors.New("forbidden")}, false},
 	}
 	for _, c := range cases {
-		_, err := adapter(t, vctc.VCTC, fetchtest.Failing(c.err), errorsNow).Meetings(t.Context(), checkWindow(errorsNow))
+		_, err := adapter(t, agendasOnly(), fetchtest.Failing(c.err), errorsNow).Meetings(t.Context(), checkWindow(errorsNow))
 		if !errors.Is(err, c.err) || sources.Retryable(err) != c.retryable {
 			t.Errorf("%s: err = %v, retryable %v; want %v wrapped, retryable %v", c.name, err, sources.Retryable(err), c.err, c.retryable)
 		}
@@ -54,7 +54,7 @@ func TestYouTubeFetchErrorsKeepTheirRetryability(t *testing.T) {
 func TestCanceledContextIsRetryable(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := adapter(t, vctc.VCTC, serving(posts(t), nil), errorsNow).Meetings(ctx, checkWindow(errorsNow))
+	_, err := adapter(t, agendasOnly(), serving(posts(t), nil), errorsNow).Meetings(ctx, checkWindow(errorsNow))
 	if !sources.Retryable(err) {
 		t.Errorf("err = %v, want retryable", err)
 	}
@@ -119,7 +119,7 @@ func TestOneUnreadablePostDoesNotCancelTheCheck(t *testing.T) {
 	}
 	for _, c := range cases {
 		body := posts(t, commission(1, "November 2026", "2026-11-06", "09:00", novAgenda), c.bad)
-		a, logs := logged(t, vctc.VCTC, serving(body, nil), errorsNow)
+		a, logs := logged(t, agendasOnly(), serving(body, nil), errorsNow)
 		got, err := a.Meetings(t.Context(), checkWindow(errorsNow))
 		if err != nil || len(got) != 1 || got[0].SourceID != "1" {
 			t.Errorf("%s: got %+v, %v; want meeting 1 alone", c.name, got, err)
@@ -136,7 +136,7 @@ func TestUnreadablePostsOutsideTheWindowAreQuiet(t *testing.T) {
 		commission(2, "March 2011", "", "", ""),
 		commission(3, "July 2011", "2011-07-xx", "", ""),
 	)
-	a, logs := logged(t, vctc.VCTC, serving(body, nil), errorsNow)
+	a, logs := logged(t, agendasOnly(), serving(body, nil), errorsNow)
 	got, err := a.Meetings(t.Context(), checkWindow(errorsNow))
 	if err != nil || len(got) != 1 {
 		t.Fatalf("got %+v, %v", got, err)
@@ -148,7 +148,7 @@ func TestUnreadablePostsOutsideTheWindowAreQuiet(t *testing.T) {
 
 func TestUndatableTitleIsNotInTheWindow(t *testing.T) {
 	body := posts(t, commission(1, "", "", "", "").titled("Commission Meeting"), commission(2, "", "", "", "").titled("Commission Meeting – Fall 2026"))
-	a, logs := logged(t, vctc.VCTC, serving(body, nil), errorsNow)
+	a, logs := logged(t, agendasOnly(), serving(body, nil), errorsNow)
 	got, err := a.Meetings(t.Context(), checkWindow(errorsNow))
 	if err != nil || len(got) != 0 || strings.Contains(logs.String(), "level=WARN") {
 		t.Errorf("got %+v, %v; want none, no error and no warning:\n%s", got, err, logs)
@@ -164,7 +164,7 @@ func TestEmptyListHasNoMeetings(t *testing.T) {
 
 func TestInvalidConfigs(t *testing.T) {
 	mutate := func(f func(*vctc.Config)) vctc.Config {
-		cfg := vctc.VCTC
+		cfg := agendasOnly()
 		cfg.Boards = append([]vctc.Board(nil), cfg.Boards...)
 		f(&cfg)
 		return cfg
@@ -208,7 +208,7 @@ func TestInvalidConfigs(t *testing.T) {
 }
 
 func TestConstructorUsesTheDepsOfEachRegistry(t *testing.T) {
-	construct := vctc.Constructor(vctc.VCTC)
+	construct := vctc.Constructor(agendasOnly())
 	fake := serving(posts(t), nil)
 	if _, err := construct(sources.Deps{Fetcher: fake, Clock: sourcestest.NewClock(errorsNow)}).Meetings(t.Context(), checkWindow(errorsNow)); err != nil {
 		t.Fatal(err)

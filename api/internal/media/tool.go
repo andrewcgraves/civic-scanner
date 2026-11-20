@@ -89,7 +89,11 @@ func NewTool(cfg config.Audio, userAgent string) Tool {
 }
 
 func NewDownloader(cfg config.Audio, userAgent string) Downloader {
-	tool := NewTool(cfg, userAgent)
+	mediaUserAgent := userAgent
+	if cfg.MediaUserAgent != "" {
+		mediaUserAgent = cfg.MediaUserAgent
+	}
+	tool := NewTool(cfg, mediaUserAgent)
 	return Downloader{
 		Resolver: Resolver{
 			Fetcher: PageFetcher{Hosts: DefaultHosts.Players, UserAgent: userAgent},

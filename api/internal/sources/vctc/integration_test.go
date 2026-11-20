@@ -161,7 +161,7 @@ func TestCheckAgencyWithTheProductionConfigStoresMeetingsAndEnqueuesAgendas(t *t
 		}
 		return recorded.Fetch(context.Background(), req)
 	}}
-	h := newHarness(t, vctc.VCTC, fake, nil)
+	h := newHarness(t, agendasOnly(), fake, nil)
 	h.check(recordedAt)
 
 	stored := h.meetings()
