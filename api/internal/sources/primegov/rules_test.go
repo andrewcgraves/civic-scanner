@@ -152,7 +152,7 @@ func TestTitleKeepsSpecialAndDropsCancelMarkers(t *testing.T) {
 		"dash cancelled":      {"Board of Directors - CANCELLED ", "Board of Directors", sources.StatusCancelled},
 		"canceled in parens":  {"Board of Directors (Canceled)", "Board of Directors", sources.StatusCancelled},
 		"leading cancelled":   {"CANCELLED: Board of Directors", "Board of Directors", sources.StatusCancelled},
-		"dark":                {"Board of Directors (DARK)", "Board of Directors", sources.StatusCancelled},
+		"dark with a packet":  {"Board of Directors (DARK)", "Board of Directors", sources.StatusCancelled},
 		"special cancelled":   {"Special Board of Directors - CANCELLED", "Special Board of Directors", sources.StatusCancelled},
 		"special meeting":     {"Special Board of Directors Meeting", "Special Board of Directors Meeting", sources.StatusScheduled},
 		"regular meeting":     {"Regular Board of Directors Meeting", "Regular Board of Directors Meeting", sources.StatusScheduled},
@@ -165,7 +165,7 @@ func TestTitleKeepsSpecialAndDropsCancelMarkers(t *testing.T) {
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			got, _ := run(t, rulesNow, checkWindow(rulesNow), []mtg{boardMeeting(1, "2026-12-02T10:00:00").titled(c.title)})
+			got, _ := run(t, rulesNow, checkWindow(rulesNow), []mtg{boardMeeting(1, "2026-12-02T10:00:00", packet(9, "")).titled(c.title)})
 			if c.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("kept %+v, want it dropped", got)
@@ -449,10 +449,72 @@ func TestDuplicateIDKeepsTheBoardMeeting(t *testing.T) {
 	}
 }
 
-func TestDarkMonthIsCancelledInOnePlace(t *testing.T) {
-	got, _ := run(t, rulesNow, checkWindow(rulesNow), []mtg{boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors (DARK)")})
-	if m := one(t, got); m.Status != sources.StatusCancelled || m.Title != "Board of Directors" {
-		t.Errorf("dark month = %+v, want cancelled Board of Directors", m)
+func TestDarkMonths(t *testing.T) {
+	cases := []struct {
+		name   string
+		m      mtg
+		want   sources.Status
+		agenda string
+	}{
+		{"placeholder", boardMeeting(1, "2026-11-21T10:00:00").titled("Board of Directors (DARK)"), "", ""},
+		{"placeholder, past", boardMeeting(1, "2026-11-04T10:00:00").titled("Board of Directors - DARK"), "", ""},
+		{"with a packet", boardMeeting(1, "2026-12-02T10:00:00", packet(645, "2026-11-25T10:00:00")).titled("Board of Directors (DARK)"), sources.StatusCancelled, packetURL + "645&compileOutputType=1"},
+		{"with a cancellation notice", boardMeeting(1, "2026-12-02T10:00:00", named("Cancellation Notice", 743)).titled("Board of Directors (DARK)"), sources.StatusCancelled, ""},
+		{"with a video link", boardMeeting(1, "2026-11-04T10:00:00", named("Video Link", 647)).titled("Board of Directors (DARK)"), sources.StatusCancelled, ""},
+		{"with a document of another template", func() mtg {
+			m := boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors (DARK)")
+			m.Documents = []doc{{Name: "Agenda"}}
+			return m
+		}(), sources.StatusCancelled, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, logs := run(t, rulesNow, checkWindow(rulesNow), []mtg{c.m, boardMeeting(2, "2027-01-06T10:00:00")})
+			if c.want == "" {
+				if len(got) != 1 || got[0].SourceID != "2" {
+					t.Fatalf("got %+v, want the dark placeholder left out", got)
+				}
+				if !strings.Contains(logs, `level=DEBUG msg="primegov: left out a dark month without documents" host=sbcta.primegov.com meeting=1 `) {
+					t.Errorf("no debug log:\n%s", logs)
+				}
+				if strings.Contains(logs, "level=WARN") || strings.Contains(logs, "level=INFO") {
+					t.Errorf("logs above debug for a dark placeholder:\n%s", logs)
+				}
+				return
+			}
+			if len(got) != 2 || got[0].SourceID != "1" || got[0].Status != c.want || got[0].AgendaURL != c.agenda || got[0].Title != "Board of Directors" {
+				t.Errorf("got %+v, want meeting 1 %s with agenda %q", got, c.want, c.agenda)
+			}
+		})
+	}
+}
+
+func TestOnlyDarkPlaceholdersInTheWindowIsNoMeetings(t *testing.T) {
+	got, err := adapter(t, primegov.SBCTA, serving(list(t,
+		boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors (DARK)"),
+		boardMeeting(2, "2026-12-09T09:00:00").titled("General Policy Committee").in(4),
+	), nil), rulesNow).Meetings(t.Context(), checkWindow(rulesNow))
+	if err != nil || len(got) != 0 {
+		t.Errorf("got %+v, %v; want no meetings and no error", got, err)
+	}
+}
+
+func TestMeetingRetitledDarkAfterItsPacketIsCancelledInTheSameRow(t *testing.T) {
+	scheduled := boardMeeting(150, "2026-12-02T10:00:00", packet(900, "2026-11-25T10:00:00"))
+	states := []struct {
+		name string
+		now  time.Time
+		m    mtg
+		want sources.Status
+	}{
+		{"packet posted", time.Date(2026, 11, 26, 13, 0, 0, 0, time.UTC), scheduled, sources.StatusScheduled},
+		{"retitled dark", time.Date(2026, 11, 27, 13, 0, 0, 0, time.UTC), scheduled.titled("Board of Directors (DARK)"), sources.StatusCancelled},
+	}
+	for _, s := range states {
+		got, _ := run(t, s.now, checkWindow(s.now), []mtg{s.m})
+		if m := one(t, got); m.SourceID != "150" || m.Status != s.want {
+			t.Errorf("%s: %+v, want meeting 150 %s", s.name, m, s.want)
+		}
 	}
 }
 

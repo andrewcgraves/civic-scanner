@@ -171,6 +171,11 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 			a.logger.DebugContext(ctx, "primegov: board meeting outside the window", "meeting", it.ID, "title", t.full, "starts_at", startsAt.Format(time.RFC3339))
 			continue
 		}
+		docs := a.documents(ctx, it)
+		if darkPlaceholder(t, docs) {
+			a.logger.DebugContext(ctx, "primegov: left out a dark month without documents", "meeting", it.ID, "title", t.full)
+			continue
+		}
 		seen++
 		if startErr != nil {
 			a.logger.WarnContext(ctx, "primegov: skipped a board meeting without a readable date", "meeting", it.ID, "title", t.full, "error", startErr)
@@ -180,7 +185,7 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 			a.logger.Log(ctx, n.level, n.msg, append([]any{"meeting", it.ID, "title", t.full}, n.args...)...)
 		}
 		read++
-		meetings = append(meetings, a.meeting(ctx, it, t, startsAt, now))
+		meetings = append(meetings, a.meeting(ctx, it, t, docs, startsAt, now))
 	}
 	if seen > 0 && read == 0 {
 		return nil, fmt.Errorf("%w: %s: all %d board meetings in the window are unreadable", ErrMalformed, a.cfg.Host, seen)
@@ -288,8 +293,8 @@ func (a *Adapter) board(it item, t title) bool {
 	return slices.Contains(a.cfg.CommitteeIDs, it.CommitteeID) && !t.test && strings.EqualFold(t.name, normalize(a.cfg.BoardName))
 }
 
-func darkMonthIsCancelled(t title) bool {
-	return t.dark
+func darkPlaceholder(t title, docs []document) bool {
+	return t.dark && len(docs) == 0
 }
 
 func (a *Adapter) logDropped(ctx context.Context, it item, t title, inWindow bool) {
@@ -370,9 +375,8 @@ func sameDay(x, y time.Time) bool {
 	return x.Year() == y.Year() && x.Month() == y.Month() && x.Day() == y.Day()
 }
 
-func (a *Adapter) meeting(ctx context.Context, it item, t title, startsAt, now time.Time) sources.Meeting {
-	docs := a.documents(ctx, it)
-	cancelled := t.cancelled || t.postponed || darkMonthIsCancelled(t) || hasTemplate(docs, a.cfg.CancelTemplates)
+func (a *Adapter) meeting(ctx context.Context, it item, t title, docs []document, startsAt, now time.Time) sources.Meeting {
+	cancelled := t.cancelled || t.postponed || t.dark || hasTemplate(docs, a.cfg.CancelTemplates)
 	status := sources.StatusScheduled
 	switch {
 	case cancelled:

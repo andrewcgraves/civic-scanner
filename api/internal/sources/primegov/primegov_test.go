@@ -152,7 +152,6 @@ func TestSBCTAEveryBoardMeetingAndNoCommitteeFromRecordedResponses(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dark := board("151", time.Date(2027, 8, 4, 17, 0, 0, 0, time.UTC), sources.StatusCancelled, "")
 	assertMeetings(t, got, []sources.Meeting{
 		board("67", time.Date(2026, 9, 2, 17, 0, 0, 0, time.UTC), sources.StatusHeld, "381"),
 		board("86", time.Date(2026, 10, 7, 17, 0, 0, 0, time.UTC), sources.StatusHeld, "533"),
@@ -162,8 +161,15 @@ func TestSBCTAEveryBoardMeetingAndNoCommitteeFromRecordedResponses(t *testing.T)
 		board("145", time.Date(2027, 2, 3, 18, 0, 0, 0, time.UTC), sources.StatusScheduled, ""),
 		board("146", time.Date(2027, 3, 3, 18, 0, 0, 0, time.UTC), sources.StatusScheduled, ""),
 		board("147", time.Date(2027, 4, 7, 17, 0, 0, 0, time.UTC), sources.StatusScheduled, ""),
-		dark,
 	})
+	if !strings.Contains(logs.String(), `level=DEBUG msg="primegov: left out a dark month without documents" host=sbcta.primegov.com meeting=151 title="Board of Directors (DARK)"`) {
+		t.Errorf("the dark board meeting of 2027-08-04 was not left out at debug level:\n%s", logs)
+	}
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "meeting=151 ") && !strings.Contains(line, "level=DEBUG") {
+			t.Errorf("dark month logged above debug: %s", line)
+		}
+	}
 	if !strings.Contains(logs.String(), `level=WARN msg="primegov: dropped a meeting of the board's committee whose title is not the board's" host=sbcta.primegov.com meeting=118 title="TEST Board PLEASE IGNORE" committee=1 type=2`) {
 		t.Errorf("no warning for the test meeting filed under the board:\n%s", logs)
 	}
