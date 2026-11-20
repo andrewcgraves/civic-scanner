@@ -99,13 +99,13 @@ func TestCheckAgencyCommandEnqueuesManualChecks(t *testing.T) {
 		t.Fatalf("check-agency --all: %v", err)
 	}
 	queued = queuedChecks(t, pool, queue)
-	for _, slug := range []string{"la-metro", "metrolink", "octa", "vctc"} {
+	for _, slug := range []string{"la-metro", "metrolink", "octa", "rctc", "vctc"} {
 		if c, ok := queued[slug]; !ok || !c.args.Manual {
 			t.Errorf("no manual check queued for %s: %+v", slug, queued)
 		}
 	}
-	if len(queued) != 4 {
-		t.Errorf("queued checks = %d, want 4 (one per live agency with an adapter)", len(queued))
+	if len(queued) != 5 {
+		t.Errorf("queued checks = %d, want 5 (one per live agency with an adapter)", len(queued))
 	}
 	if queued["la-metro"].id != first.id {
 		t.Errorf("la-metro was queued again while its manual check was waiting")
@@ -113,9 +113,9 @@ func TestCheckAgencyCommandEnqueuesManualChecks(t *testing.T) {
 	for _, want := range []string{
 		"la-metro: not enqueued again, manual check job " + strconv.FormatInt(first.id, 10) + " is still available\n",
 		"metrolink: enqueued manual check, job ",
-		"rctc: skipped, no source adapter\n",
+		"rctc: enqueued manual check, job ",
 		"sbcta: skipped, no source adapter\n",
-		"3 manual check(s) enqueued on queue \"" + queue + "\", 1 already waiting or running",
+		"4 manual check(s) enqueued on queue \"" + queue + "\", 1 already waiting or running",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("--all output lacks %q:\n%s", want, out)
@@ -141,9 +141,9 @@ func TestCheckAgencyCommandRefusesAndEnqueuesNothing(t *testing.T) {
 		args []string
 		want string
 	}{
-		"unknown slug":       {[]string{"no-such-agency"}, `agency "no-such-agency" is unknown or not live; nothing enqueued (live agencies with a source adapter: la-metro, metrolink, octa, vctc)`},
+		"unknown slug":       {[]string{"no-such-agency"}, `agency "no-such-agency" is unknown or not live; nothing enqueued (live agencies with a source adapter: la-metro, metrolink, octa, rctc, vctc)`},
 		"pending agency":     {[]string{pending}, `agency "` + pending + `" is unknown or not live; nothing enqueued`},
-		"live, no adapter":   {[]string{"rctc"}, `agency "rctc" is live but has no source adapter; nothing enqueued`},
+		"live, no adapter":   {[]string{"sbcta"}, `agency "sbcta" is live but has no source adapter; nothing enqueued`},
 		"two slugs at once":  {[]string{"la-metro", "octa"}, errCheckUsage.Error()},
 		"unknown flag style": {[]string{"--octa"}, errCheckUsage.Error()},
 	}
