@@ -145,6 +145,11 @@ func TestTruncatedAndCorruptedResponsesNeverPanic(t *testing.T) {
 					if verr := sources.Validate(got); verr != nil {
 						t.Fatalf("cut %d: invalid result: %v", cut, verr)
 					}
+					for _, m := range got {
+						if m.AgendaURL != "" && !strings.HasPrefix(m.AgendaURL, packetURL) {
+							t.Fatalf("cut %d: agenda %q is off the PrimeGov host", cut, m.AgendaURL)
+						}
+					}
 				} else if !errors.Is(err, primegov.ErrMalformed) {
 					t.Fatalf("cut %d: err = %v, want ErrMalformed", cut, err)
 				}
@@ -162,6 +167,16 @@ func corrupt(body []byte, at int) []byte {
 func TestInvalidConfigs(t *testing.T) {
 	cases := map[string]func(*primegov.Config){
 		"host with path":        func(c *primegov.Config) { c.Host = "sbcta.primegov.com/api" },
+		"host off primegov":     func(c *primegov.Config) { c.Host = "sbcta.example.com" },
+		"no agenda host":        func(c *primegov.Config) { c.AgendaHost = "" },
+		"agenda host elsewhere": func(c *primegov.Config) { c.AgendaHost = "pgwest.blob.core.windows.net" },
+		"agenda host lookalike": func(c *primegov.Config) { c.AgendaHost = "sbcta.primegov.com.evil.example" },
+		"agenda host suffix":    func(c *primegov.Config) { c.AgendaHost = "evilprimegov.com" },
+		"agenda host bare":      func(c *primegov.Config) { c.AgendaHost = "primegov.com" },
+		"agenda host scheme":    func(c *primegov.Config) { c.AgendaHost = "https://sbcta.primegov.com" },
+		"agenda host port":      func(c *primegov.Config) { c.AgendaHost = "sbcta.primegov.com:8443" },
+		"agenda host case":      func(c *primegov.Config) { c.AgendaHost = "SBCTA.primegov.com" },
+		"agenda host userinfo":  func(c *primegov.Config) { c.AgendaHost = "user@sbcta.primegov.com" },
 		"no host":               func(c *primegov.Config) { c.Host = "" },
 		"no committee":          func(c *primegov.Config) { c.CommitteeIDs = nil },
 		"zero committee":        func(c *primegov.Config) { c.CommitteeIDs = []int{0} },
@@ -194,5 +209,32 @@ func TestInvalidConfigs(t *testing.T) {
 	}
 	if primegov.Constructor(primegov.SBCTA)(deps) == nil {
 		t.Error("Constructor(SBCTA) returned nil")
+	}
+}
+
+func TestAgendaURLIsAlwaysHTTPSOnTheAgendaHost(t *testing.T) {
+	body := []byte(`[{"id": 1, "committeeId": 1, "title": "Board of Directors", "dateTime": "2026-12-02T10:00:00", "documentList": [` +
+		`{"templateId": 645, "templateName": "Packet", "compileOutputType": 1, "publishDate": "2026-11-25T10:00:00", "link": "https://evil.example/agenda.pdf"},` +
+		`{"templateId": "646@evil.example", "templateName": "Packet", "compileOutputType": 1, "publishDate": "2026-11-26T10:00:00"},` +
+		`{"templateId": 647.5, "templateName": "Packet", "compileOutputType": 1, "publishDate": "2026-11-27T10:00:00"},` +
+		`{"templateId": -648, "templateName": "Packet", "compileOutputType": -1, "publishDate": "2026-11-28T10:00:00"},` +
+		`{"templateId": 649, "templateName": "Packet\u0000//evil.example", "compileOutputType": 1, "publishDate": "2026-11-29T10:00:00"}` +
+		`]}]`)
+	got, err := adapter(t, primegov.SBCTA, serving(body, nil), rulesNow).Meetings(t.Context(), checkWindow(rulesNow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := one(t, got); m.AgendaURL != packetURL+"645&compileOutputType=1" {
+		t.Errorf("agenda %q, want the packet on sbcta.primegov.com and nothing from the tampered documents", m.AgendaURL)
+	}
+
+	cfg := primegov.SBCTA
+	cfg.AgendaHost = "files.primegov.com"
+	got, err = adapter(t, cfg, serving(body, nil), rulesNow).Meetings(t.Context(), checkWindow(rulesNow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := one(t, got); m.AgendaURL != "https://files.primegov.com/Public/CompiledDocument?meetingTemplateId=645&compileOutputType=1" {
+		t.Errorf("agenda %q, want it on the configured agenda host", m.AgendaURL)
 	}
 }

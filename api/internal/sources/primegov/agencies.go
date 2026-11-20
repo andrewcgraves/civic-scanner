@@ -2,6 +2,7 @@ package primegov
 
 var SBCTA = Config{
 	Host:              "sbcta.primegov.com",
+	AgendaHost:        "sbcta.primegov.com",
 	CommitteeIDs:      []int{1},
 	BoardName:         "Board of Directors",
 	AgendaTemplates:   []string{"Packet"},

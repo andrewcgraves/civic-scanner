@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +23,8 @@ var (
 	ErrMalformed     = errors.New("primegov: malformed response")
 )
 
+var primeGovHost = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+primegov\.com$`)
+
 const (
 	MaxListBytes    = 16 << 20
 	maxArchiveYears = 5
@@ -30,6 +33,7 @@ const (
 
 type Config struct {
 	Host              string
+	AgendaHost        string
 	CommitteeIDs      []int
 	BoardName         string
 	AgendaTemplates   []string
@@ -82,8 +86,10 @@ func (c Config) adapter() (Adapter, error) {
 	c.CancelTemplates = slices.Clone(c.CancelTemplates)
 	blank := func(s string) bool { return normalize(s) == "" }
 	switch {
-	case c.Host == "" || strings.ContainsAny(c.Host, "/?#:@ "):
+	case !primeGovHost.MatchString(c.Host):
 		return Adapter{}, fmt.Errorf("%w: host %q", ErrInvalidConfig, c.Host)
+	case !primeGovHost.MatchString(c.AgendaHost):
+		return Adapter{}, fmt.Errorf("%w: agenda host %q is not a lower-case host under primegov.com", ErrInvalidConfig, c.AgendaHost)
 	case len(c.CommitteeIDs) == 0 || slices.ContainsFunc(c.CommitteeIDs, func(id int) bool { return id <= 0 }):
 		return Adapter{}, fmt.Errorf("%w: committee ids %v", ErrInvalidConfig, c.CommitteeIDs)
 	case blank(c.BoardName) || parseTitle(c.BoardName).name != normalize(c.BoardName):
@@ -117,7 +123,7 @@ func (a *Adapter) ArchivedURL(year int) string {
 }
 
 func (a *Adapter) AgendaURL(templateID, outputType int) string {
-	return fmt.Sprintf("https://%s/Public/CompiledDocument?meetingTemplateId=%d&compileOutputType=%d", a.cfg.Host, templateID, outputType)
+	return fmt.Sprintf("https://%s/Public/CompiledDocument?meetingTemplateId=%d&compileOutputType=%d", a.cfg.AgendaHost, templateID, outputType)
 }
 
 type item struct {
