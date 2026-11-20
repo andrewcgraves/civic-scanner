@@ -90,6 +90,24 @@ func (e MeetingStatus) Valid() bool {
 	}
 }
 
+// Defines values for UserRole.
+const (
+	UserRoleAdmin UserRole = "admin"
+	UserRoleUser  UserRole = "user"
+)
+
+// Valid indicates whether the value is a known member of the UserRole enum.
+func (e UserRole) Valid() bool {
+	switch e {
+	case UserRoleAdmin:
+		return true
+	case UserRoleUser:
+		return true
+	default:
+		return false
+	}
+}
+
 // Agency defines model for Agency.
 type Agency struct {
 	Id   openapi_types.UUID `json:"id"`
@@ -148,6 +166,12 @@ type Agenda struct {
 
 	// Version The version number, 1 for the first agenda published.
 	Version int64 `json:"version"`
+}
+
+// BillingRedirect defines model for BillingRedirect.
+type BillingRedirect struct {
+	// Url An `https` URL on Stripe. Single use; do not store it.
+	Url string `json:"url"`
 }
 
 // Error defines model for Error.
@@ -265,7 +289,13 @@ type User struct {
 
 	// Id The user's id in this service.
 	Id openapi_types.UUID `json:"id"`
+
+	// Role What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.
+	Role UserRole `json:"role"`
 }
+
+// UserRole What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.
+type UserRole string
 
 // ValidationError defines model for ValidationError.
 type ValidationError struct {
@@ -293,6 +323,15 @@ type AuthUnavailable = Error
 
 // BadRequest defines model for BadRequest.
 type BadRequest = Error
+
+// BillingConflict defines model for BillingConflict.
+type BillingConflict = Error
+
+// BillingFailed defines model for BillingFailed.
+type BillingFailed = Error
+
+// BillingUnavailable defines model for BillingUnavailable.
+type BillingUnavailable = Error
 
 // InvalidSubmission defines model for InvalidSubmission.
 type InvalidSubmission = ValidationError
@@ -359,6 +398,12 @@ type ServerInterface interface {
 	// CreateAgencySubmission Submit an agency for review
 	// (POST /agency-submissions)
 	CreateAgencySubmission(w http.ResponseWriter, r *http.Request)
+	// CreateCheckoutSession Start checkout for the paid plan
+	// (POST /billing/checkout-session)
+	CreateCheckoutSession(w http.ResponseWriter, r *http.Request)
+	// CreateBillingPortalSession Open the Stripe billing portal
+	// (POST /billing/portal-session)
+	CreateBillingPortalSession(w http.ResponseWriter, r *http.Request)
 	// GetHealth Liveness and readiness probe
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
@@ -407,6 +452,18 @@ func (_ Unimplemented) ListAgencyMeetings(w http.ResponseWriter, r *http.Request
 // CreateAgencySubmission Submit an agency for review
 // (POST /agency-submissions)
 func (_ Unimplemented) CreateAgencySubmission(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateCheckoutSession Start checkout for the paid plan
+// (POST /billing/checkout-session)
+func (_ Unimplemented) CreateCheckoutSession(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateBillingPortalSession Open the Stripe billing portal
+// (POST /billing/portal-session)
+func (_ Unimplemented) CreateBillingPortalSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -646,6 +703,34 @@ func (siw *ServerInterfaceWrapper) CreateAgencySubmission(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
+// CreateCheckoutSession operation middleware
+func (siw *ServerInterfaceWrapper) CreateCheckoutSession(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateCheckoutSession(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateBillingPortalSession operation middleware
+func (siw *ServerInterfaceWrapper) CreateBillingPortalSession(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateBillingPortalSession(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetHealth operation middleware
 func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Request) {
 
@@ -840,6 +925,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/agency-submissions", wrapper.CreateAgencySubmission)
 	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/billing/checkout-session", wrapper.CreateCheckoutSession)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/billing/portal-session", wrapper.CreateBillingPortalSession)
+	})
 
 	return r
 }
@@ -874,6 +965,42 @@ type AuthUnavailableJSONResponse struct {
 }
 
 type BadRequestJSONResponse Error
+
+type BillingConflictResponseHeaders struct {
+	CacheControl *string
+}
+type BillingConflictJSONResponse struct {
+	Body Error
+
+	Headers BillingConflictResponseHeaders
+}
+
+type BillingFailedResponseHeaders struct {
+	CacheControl *string
+}
+type BillingFailedJSONResponse struct {
+	Body Error
+
+	Headers BillingFailedResponseHeaders
+}
+
+type BillingRedirectResponseHeaders struct {
+	CacheControl *string
+}
+type BillingRedirectJSONResponse struct {
+	Body BillingRedirect
+
+	Headers BillingRedirectResponseHeaders
+}
+
+type BillingUnavailableResponseHeaders struct {
+	CacheControl *string
+}
+type BillingUnavailableJSONResponse struct {
+	Body Error
+
+	Headers BillingUnavailableResponseHeaders
+}
 
 type InvalidSubmissionResponseHeaders struct {
 	CacheControl *string
@@ -1526,11 +1653,293 @@ func (response CreateAgencySubmission503JSONResponse) VisitCreateAgencySubmissio
 }
 
 type CreateAgencySubmissiondefaultJSONResponse struct {
-	Body       Error
+	Body       interface{}
 	StatusCode int
 }
 
 func (response CreateAgencySubmissiondefaultJSONResponse) VisitCreateAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckoutSessionRequestObject struct {
+}
+
+type CreateCheckoutSessionResponseObject interface {
+	VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error
+}
+
+type CreateCheckoutSession200JSONResponse struct{ BillingRedirectJSONResponse }
+
+func (response CreateCheckoutSession200JSONResponse) VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckoutSession401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response CreateCheckoutSession401JSONResponse) VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckoutSession404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response CreateCheckoutSession404JSONResponse) VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckoutSession405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response CreateCheckoutSession405JSONResponse) VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckoutSession409JSONResponse struct{ BillingConflictJSONResponse }
+
+func (response CreateCheckoutSession409JSONResponse) VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckoutSession502JSONResponse struct{ BillingFailedJSONResponse }
+
+func (response CreateCheckoutSession502JSONResponse) VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(502)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckoutSession503JSONResponse struct{ BillingUnavailableJSONResponse }
+
+func (response CreateCheckoutSession503JSONResponse) VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateCheckoutSessiondefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response CreateCheckoutSessiondefaultJSONResponse) VisitCreateCheckoutSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateBillingPortalSessionRequestObject struct {
+}
+
+type CreateBillingPortalSessionResponseObject interface {
+	VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error
+}
+
+type CreateBillingPortalSession200JSONResponse struct{ BillingRedirectJSONResponse }
+
+func (response CreateBillingPortalSession200JSONResponse) VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateBillingPortalSession401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response CreateBillingPortalSession401JSONResponse) VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateBillingPortalSession404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response CreateBillingPortalSession404JSONResponse) VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateBillingPortalSession405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response CreateBillingPortalSession405JSONResponse) VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateBillingPortalSession409JSONResponse struct{ BillingConflictJSONResponse }
+
+func (response CreateBillingPortalSession409JSONResponse) VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateBillingPortalSession502JSONResponse struct{ BillingFailedJSONResponse }
+
+func (response CreateBillingPortalSession502JSONResponse) VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(502)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateBillingPortalSession503JSONResponse struct{ BillingUnavailableJSONResponse }
+
+func (response CreateBillingPortalSession503JSONResponse) VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateBillingPortalSessiondefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response CreateBillingPortalSessiondefaultJSONResponse) VisitCreateBillingPortalSessionResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -1812,6 +2221,12 @@ type StrictServerInterface interface {
 	// CreateAgencySubmission Submit an agency for review
 	// (POST /agency-submissions)
 	CreateAgencySubmission(ctx context.Context, request CreateAgencySubmissionRequestObject) (CreateAgencySubmissionResponseObject, error)
+	// CreateCheckoutSession Start checkout for the paid plan
+	// (POST /billing/checkout-session)
+	CreateCheckoutSession(ctx context.Context, request CreateCheckoutSessionRequestObject) (CreateCheckoutSessionResponseObject, error)
+	// CreateBillingPortalSession Open the Stripe billing portal
+	// (POST /billing/portal-session)
+	CreateBillingPortalSession(ctx context.Context, request CreateBillingPortalSessionRequestObject) (CreateBillingPortalSessionResponseObject, error)
 	// GetHealth Liveness and readiness probe
 	// (GET /healthz)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
@@ -2017,6 +2432,54 @@ func (sh *strictHandler) CreateAgencySubmission(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateAgencySubmissionResponseObject); ok {
 		if err := validResponse.VisitCreateAgencySubmissionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateCheckoutSession operation middleware
+func (sh *strictHandler) CreateCheckoutSession(w http.ResponseWriter, r *http.Request) {
+	var request CreateCheckoutSessionRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateCheckoutSession(ctx, request.(CreateCheckoutSessionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateCheckoutSession")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateCheckoutSessionResponseObject); ok {
+		if err := validResponse.VisitCreateCheckoutSessionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateBillingPortalSession operation middleware
+func (sh *strictHandler) CreateBillingPortalSession(w http.ResponseWriter, r *http.Request) {
+	var request CreateBillingPortalSessionRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateBillingPortalSession(ctx, request.(CreateBillingPortalSessionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateBillingPortalSession")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateBillingPortalSessionResponseObject); ok {
+		if err := validResponse.VisitCreateBillingPortalSessionResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

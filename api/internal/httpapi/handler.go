@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
+	"github.com/andrewcgraves/civic-scanner/api/internal/billing"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
@@ -35,6 +36,7 @@ type Handler struct {
 	enabled func(ctx context.Context, flag string) bool
 	webURL  string
 	feeds   *feedCache
+	billing Biller
 }
 
 var _ v1.StrictServerInterface = (*Handler)(nil)
@@ -48,7 +50,7 @@ func WithFlags(enabled func(ctx context.Context, flag string) bool) HandlerOptio
 }
 
 func NewHandler(s Store, logger *slog.Logger, version string, opts ...HandlerOption) *Handler {
-	h := &Handler{store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled, feeds: newFeedCache()}
+	h := &Handler{store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled, feeds: newFeedCache(), billing: &billing.Service{}}
 	for _, opt := range opts {
 		opt(h)
 	}

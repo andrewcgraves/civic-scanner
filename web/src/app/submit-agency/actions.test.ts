@@ -132,7 +132,7 @@ describe("submitAgency", () => {
     ["failed", { status: "failed" }, { kind: "unavailable", values: VALUES }],
     [
       "a 409",
-      { status: "rejected", httpStatus: 409, error: {} },
+      { status: "conflict", error: { code: "already_on_file" } },
       { kind: "on-file", values: VALUES },
     ],
     [
@@ -153,6 +153,20 @@ describe("submitAgency", () => {
         },
       },
       { kind: "invalid", values: VALUES, errors: { website: "No IPs." } },
+    ],
+    [
+      "a 415",
+      {
+        status: "rejected",
+        httpStatus: 415,
+        error: { code: "unsupported_media_type" },
+      },
+      {
+        kind: "invalid",
+        values: VALUES,
+        errors: {},
+        message: "Check the name and website and try again.",
+      },
     ],
     [
       "a 413",

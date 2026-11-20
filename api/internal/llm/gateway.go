@@ -23,6 +23,9 @@ type gateway struct {
 }
 
 func New(cfg config.LLM) Client {
+	if cfg.Provider == config.LLMAnthropic {
+		return newAnthropic(cfg)
+	}
 	return &gateway{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout}}
 }
 
@@ -51,41 +54,75 @@ type chatResponse struct {
 
 type errorBody struct {
 	Error struct {
-		Message string `json:"message"`
+		Message string          `json:"message"`
+		Type    string          `json:"type"`
+		Code    json.RawMessage `json:"code"`
 	} `json:"error"`
 }
 
-func statusError(resp *http.Response, raw []byte) *Error {
+func statusError(resp *http.Response, raw []byte, model string) *Error {
 	message := http.StatusText(resp.StatusCode)
 	var parsed errorBody
 	if json.Unmarshal(raw, &parsed) == nil && parsed.Error.Message != "" {
 		message = parsed.Error.Message
 	}
-	e := &Error{
+	account := accountStatus(resp.StatusCode)
+	return &Error{
 		StatusCode: resp.StatusCode,
-		Retryable:  retryableStatus(resp.StatusCode),
+		Retryable:  retryableStatus(resp.StatusCode) && !account,
+		Account:    account,
+		RetryAfter: retryAfter(resp.Header),
+		Provider:   config.LLMGateway,
+		Model:      model,
+		Type:       label(parsed.Error.Type),
+		Code:       label(errorCode(parsed.Error.Code)),
 		Err:        fmt.Errorf("gateway returned %d: %s", resp.StatusCode, message),
 	}
-	if seconds, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && seconds > 0 {
-		e.RetryAfter = time.Duration(seconds) * time.Second
+}
+
+const maxLabelBytes = 64
+
+func label(s string) string {
+	if len(s) > maxLabelBytes || strings.ContainsFunc(s, func(r rune) bool { return r < ' ' || r == 0x7f }) {
+		return "unrecognized"
 	}
-	return e
+	return s
+}
+
+func errorCode(raw json.RawMessage) string {
+	var s string
+	if len(raw) == 0 || json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func retryAfter(h http.Header) time.Duration {
+	if seconds, err := strconv.Atoi(h.Get("Retry-After")); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return 0
 }
 
 func retryableStatus(code int) bool {
 	switch code {
-	case http.StatusPaymentRequired, http.StatusRequestTimeout, http.StatusTooManyRequests:
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
 		return true
 	}
 	return code >= http.StatusInternalServerError
 }
 
-func (g *gateway) model(tier Tier) (string, error) {
+func (g *gateway) Route(tier Tier) (string, string) {
+	model, _ := modelFor(g.cfg, tier)
+	return config.LLMGateway, model
+}
+
+func modelFor(cfg config.LLM, tier Tier) (string, error) {
 	switch tier {
 	case TierRoutine:
-		return g.cfg.RoutineModel, nil
+		return cfg.RoutineModel, nil
 	case TierStrong:
-		return g.cfg.StrongModel, nil
+		return cfg.StrongModel, nil
 	default:
 		return "", fmt.Errorf("%w %q", ErrUnknownTier, tier)
 	}
@@ -95,7 +132,7 @@ func (g *gateway) Complete(ctx context.Context, req Request) (Response, error) {
 	if g.cfg.APIKey == "" {
 		return Response{}, ErrNotConfigured
 	}
-	model, err := g.model(req.Tier)
+	model, err := modelFor(g.cfg, req.Tier)
 	if err != nil {
 		return Response{}, err
 	}
@@ -126,7 +163,7 @@ func (g *gateway) Complete(ctx context.Context, req Request) (Response, error) {
 		return Response{}, &Error{StatusCode: httpResp.StatusCode, Retryable: true, Err: err}
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return Response{}, statusError(httpResp, raw)
+		return Response{}, statusError(httpResp, raw, model)
 	}
 	if len(raw) > maxResponseBytes {
 		return Response{}, fmt.Errorf("%w: over %d bytes", ErrResponseTooLarge, maxResponseBytes)

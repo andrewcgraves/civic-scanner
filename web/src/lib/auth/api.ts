@@ -20,6 +20,7 @@ export type UserApiResult<T> =
   | { status: "signed-out" }
   | { status: "unavailable" }
   | { status: "not-found" }
+  | { status: "conflict"; error: unknown }
   | { status: "rejected"; httpStatus: number; error: unknown }
   | { status: "failed" };
 
@@ -27,7 +28,7 @@ export type UserApiCall<T> = (
   client: UserApiClient,
 ) => Promise<{ data?: T; error?: unknown; response: Response }>;
 
-const REJECTED_STATUSES = new Set([400, 409, 413, 422, 429]);
+const REJECTED_STATUSES = new Set([400, 413, 415, 422, 429]);
 
 const API_TIMEOUT_MS = 10_000;
 
@@ -91,6 +92,9 @@ async function attempt<T>(
   }
   if (status === 404) {
     return { status: "not-found" };
+  }
+  if (status === 409) {
+    return { status: "conflict", error: result.error };
   }
   if (REJECTED_STATUSES.has(status)) {
     return { status: "rejected", httpStatus: status, error: result.error };

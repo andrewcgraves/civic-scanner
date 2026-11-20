@@ -75,4 +75,6 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
   );
 }
 
-export const config = { matcher: ["/auth/session", "/submit-agency"] };
+export const config = {
+  matcher: ["/auth/session", "/billing", "/submit-agency"],
+};

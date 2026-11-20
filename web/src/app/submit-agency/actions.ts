@@ -53,10 +53,9 @@ export async function submitAgency(
       return redirect(SIGN_IN_PATH);
     case "not-found":
       return { kind: "closed", values };
+    case "conflict":
+      return { kind: "on-file", values };
     case "rejected":
-      if (result.httpStatus === 409) {
-        return { kind: "on-file", values };
-      }
       if (result.httpStatus === 429) {
         return { kind: "limit", values };
       }

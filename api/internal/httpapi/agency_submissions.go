@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
@@ -12,8 +14,9 @@ import (
 )
 
 const (
-	FlagAgencySubmissions = "agency-submissions"
-	maxRequestBodyBytes   = 16 << 10
+	FlagAgencySubmissions    = "agency-submissions"
+	agencySubmissionsPattern = "/v1/agency-submissions"
+	maxRequestBodyBytes      = 16 << 10
 )
 
 var (
@@ -51,7 +54,11 @@ func (h *Handler) submissionGate(ctx context.Context) v1.CreateAgencySubmissionR
 	return nil
 }
 
-func (h *Handler) requestBodyError(w http.ResponseWriter, r *http.Request, _ error) {
+func (h *Handler) requestBodyError(w http.ResponseWriter, r *http.Request, err error) {
+	if routeContext := chi.RouteContext(r.Context()); routeContext == nil || routeContext.RoutePattern() != agencySubmissionsPattern {
+		invalidBody(w, r, err)
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	response := h.submissionGate(r.Context())
 	if response == nil {

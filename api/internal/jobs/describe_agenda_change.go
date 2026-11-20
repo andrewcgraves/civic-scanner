@@ -186,7 +186,13 @@ func (w *DescribeAgendaChangeWorker) note(ctx context.Context, logger *slog.Logg
 		"input_tokens", result.Response.Usage.InputTokens, "output_tokens", result.Response.Usage.OutputTokens,
 		"input_bytes", result.Input.Bytes, "input_truncated", result.Input.Truncated,
 	}
-	if err != nil {
+	switch {
+	case isLLMPaused(err):
+		logger.InfoContext(ctx, "agenda change not sent to the model after an account or configuration failure, using the word diff")
+		return fallback, store.NoteFromDiff, "llm_paused", nil
+	case logLLMAccountFailure(ctx, logger.With("tier", w.tier), err, "note_source", store.NoteFromDiff):
+		return fallback, store.NoteFromDiff, "llm_account_failure", nil
+	case err != nil:
 		logger.WarnContext(ctx, "agenda change not described by the model, using the word diff", append(attrs, "error", err)...)
 		return fallback, store.NoteFromDiff, "model_failed", nil
 	}

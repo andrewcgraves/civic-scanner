@@ -33,7 +33,7 @@ var (
 	authUnavailable   = v1.AuthUnavailableJSONResponse{Body: v1.Error{Code: "auth_unavailable", Message: "sign-in cannot be checked right now, try again shortly"}}
 )
 
-var privateOperations = map[string]bool{"GetMe": true, "CreateAgencySubmission": true}
+var privateOperations = map[string]bool{"GetMe": true, "CreateCheckoutSession": true, "CreateBillingPortalSession": true, "CreateAgencySubmission": true}
 
 func noStore(f v1.StrictHandlerFunc, operationID string) v1.StrictHandlerFunc {
 	if !privateOperations[operationID] {
@@ -129,5 +129,12 @@ func (h *Handler) GetMe(ctx context.Context, _ v1.GetMeRequestObject) (v1.GetMeR
 		h.logger.ErrorContext(ctx, "get me failed", "error", err)
 		return v1.GetMedefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	}
-	return v1.GetMe200JSONResponse{Body: v1.User{Id: user.ID, Email: user.Email, CreatedAt: user.CreatedAt.UTC()}}, nil
+	return v1.GetMe200JSONResponse{Body: v1.User{Id: user.ID, Email: user.Email, Role: apiRole(user.Role), CreatedAt: user.CreatedAt.UTC()}}, nil
+}
+
+func apiRole(r store.Role) v1.UserRole {
+	if r.IsAdmin() {
+		return v1.UserRoleAdmin
+	}
+	return v1.UserRoleUser
 }

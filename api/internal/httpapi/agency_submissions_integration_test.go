@@ -19,7 +19,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/testdb"
 )
 
-func postWithToken(t *testing.T, url, token, body string) (int, http.Header, []byte) {
+func postJSONWithToken(t *testing.T, url, token, body string) (int, http.Header, []byte) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
@@ -57,12 +57,12 @@ DELETE FROM agencies WHERE id IN (
 	token := signedToken(t, s.key, "k1", s.claims(s.users, 5*time.Minute))
 	host := "civ38-" + uuid.NewString() + ".example.org"
 
-	status, _, _ := postWithToken(t, s.url+"/v1/agency-submissions", "", `{"name":"Big Bear Transit","website":"`+host+`"}`)
+	status, _, _ := postJSONWithToken(t, s.url+"/v1/agency-submissions", "", `{"name":"Big Bear Transit","website":"`+host+`"}`)
 	if status != http.StatusUnauthorized {
 		t.Fatalf("without a token: status %d, want 401", status)
 	}
 
-	status, header, raw := postWithToken(t, s.url+"/v1/agency-submissions", token, `{"name":" Big Bear  Transit ","website":"HTTPS://WWW.`+strings.ToUpper(host)+`/board/?ref=1"}`)
+	status, header, raw := postJSONWithToken(t, s.url+"/v1/agency-submissions", token, `{"name":" Big Bear  Transit ","website":"HTTPS://WWW.`+strings.ToUpper(host)+`/board/?ref=1"}`)
 	if status != http.StatusCreated {
 		t.Fatalf("status = %d, body %s", status, raw)
 	}
@@ -89,16 +89,16 @@ WHERE s.agency_id = $1`, created.Id).Scan(&by, &status2); err != nil {
 	}
 
 	for _, website := range []string{"http://" + host, host + ":443/", "https://www." + host + "/other/page"} {
-		status, _, raw := postWithToken(t, s.url+"/v1/agency-submissions", token, `{"name":"Again","website":"`+website+`"}`)
+		status, _, raw := postJSONWithToken(t, s.url+"/v1/agency-submissions", token, `{"name":"Again","website":"`+website+`"}`)
 		if status != http.StatusConflict || !strings.Contains(string(raw), `"already_on_file"`) || strings.Contains(string(raw), "Big Bear") {
 			t.Errorf("%s: status %d, body %s, want 409 already_on_file", website, status, raw)
 		}
 	}
-	status, _, raw = postWithToken(t, s.url+"/v1/agency-submissions", token, `{"name":"Metro copy","website":"https://www.metro.net/about"}`)
+	status, _, raw = postJSONWithToken(t, s.url+"/v1/agency-submissions", token, `{"name":"Metro copy","website":"https://www.metro.net/about"}`)
 	if status != http.StatusConflict {
 		t.Errorf("a live agency's site: status %d, body %s", status, raw)
 	}
-	status, _, raw = postWithToken(t, s.url+"/v1/agency-submissions", token, `{"name":"x","website":"http://192.168.1.1"}`)
+	status, _, raw = postJSONWithToken(t, s.url+"/v1/agency-submissions", token, `{"name":"x","website":"http://192.168.1.1"}`)
 	if status != http.StatusBadRequest || !strings.Contains(string(raw), `"too_short"`) || !strings.Contains(string(raw), `"ip_address"`) {
 		t.Errorf("invalid: status %d, body %s", status, raw)
 	}

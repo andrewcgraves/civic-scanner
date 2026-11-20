@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
@@ -43,7 +44,7 @@ func newSubmissionFixture(a *fakeAuth, flags func(context.Context, string) bool)
 	return f
 }
 
-func post(t *testing.T, h *Handler, path, authorization, body string) *httptest.ResponseRecorder {
+func postJSON(t *testing.T, h *Handler, path, authorization, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	return postAs(t, h, path, authorization, "application/json", body)
 }
@@ -82,7 +83,7 @@ func TestCreateAgencySubmission(t *testing.T) {
 		SubmittedBy: f.users.user.ID, SubmittedAt: submitted,
 	}
 
-	rec := post(t, f.handler, "/v1/agency-submissions", "Bearer good", goodSubmission)
+	rec := postJSON(t, f.handler, "/v1/agency-submissions", "Bearer good", goodSubmission)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
 	}
@@ -133,7 +134,7 @@ func TestCreateAgencySubmissionChecksTheTokenFirst(t *testing.T) {
 			for flagName, flags := range map[string]func(context.Context, string) bool{"flags on": submissionFlags, "flags off": flagsSet()} {
 				t.Run(tt.name+"/"+bodyName+"/"+flagName, func(t *testing.T) {
 					f := newSubmissionFixture(tt.auth, flags)
-					rec := post(t, f.handler, "/v1/agency-submissions", tt.authorization, body)
+					rec := postJSON(t, f.handler, "/v1/agency-submissions", tt.authorization, body)
 					if rec.Code != tt.status {
 						t.Fatalf("status = %d, want %d, body %s", rec.Code, tt.status, rec.Body)
 					}
@@ -164,7 +165,7 @@ func TestCreateAgencySubmissionBehindFlags(t *testing.T) {
 		for _, body := range []string{goodSubmission, `not json`, `{"name":"x"}`} {
 			t.Run(name+"/"+body, func(t *testing.T) {
 				f := newSubmissionFixture(nil, flags)
-				rec := post(t, f.handler, "/v1/agency-submissions", "Bearer good", body)
+				rec := postJSON(t, f.handler, "/v1/agency-submissions", "Bearer good", body)
 				if rec.Code != http.StatusNotFound || decodeError(t, rec).Code != "not_found" {
 					t.Fatalf("status = %d, body %s, want 404 not_found", rec.Code, rec.Body)
 				}
@@ -230,7 +231,7 @@ func TestCreateAgencySubmissionRejectsBadBodies(t *testing.T) {
 func TestCreateAgencySubmissionReportsEachInvalidField(t *testing.T) {
 	f := newSubmissionFixture(nil, submissionFlags)
 	zeroWidthSpace := string(rune(0x200b))
-	rec := post(t, f.handler, "/v1/agency-submissions", "Bearer good", `{"name":"Metro`+zeroWidthSpace+`","website":"http://127.0.0.1/"}`)
+	rec := postJSON(t, f.handler, "/v1/agency-submissions", "Bearer good", `{"name":"Metro`+zeroWidthSpace+`","website":"http://127.0.0.1/"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
 	}
@@ -247,7 +248,7 @@ func TestCreateAgencySubmissionReportsEachInvalidField(t *testing.T) {
 		t.Errorf("store was called for an invalid submission")
 	}
 
-	rec = post(t, f.handler, "/v1/agency-submissions", "Bearer good", `{"website":"metro.net"}`)
+	rec = postJSON(t, f.handler, "/v1/agency-submissions", "Bearer good", `{"website":"metro.net"}`)
 	if body := decodeValidation(t, rec); rec.Code != http.StatusBadRequest || body.Fields == nil || len(*body.Fields) != 1 || (*body.Fields)[0].Code != "required" {
 		t.Errorf("missing name: %d %s", rec.Code, rec.Body)
 	}
@@ -271,7 +272,7 @@ func TestCreateAgencySubmissionStoreOutcomes(t *testing.T) {
 			f := newSubmissionFixture(nil, submissionFlags)
 			f.users.err = tt.userErr
 			f.submissions.err = tt.storeErr
-			rec := post(t, f.handler, "/v1/agency-submissions", "Bearer good", goodSubmission)
+			rec := postJSON(t, f.handler, "/v1/agency-submissions", "Bearer good", goodSubmission)
 			if rec.Code != tt.status {
 				t.Fatalf("status = %d, want %d, body %s", rec.Code, tt.status, rec.Body)
 			}
@@ -323,7 +324,7 @@ func TestCreateAgencySubmissionRefusesReplacementCharacters(t *testing.T) {
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			f := newSubmissionFixture(nil, submissionFlags)
-			rec := post(t, f.handler, "/v1/agency-submissions", "Bearer good", tt.body)
+			rec := postJSON(t, f.handler, "/v1/agency-submissions", "Bearer good", tt.body)
 			body := decodeValidation(t, rec)
 			if rec.Code != http.StatusBadRequest || body.Fields == nil || len(*body.Fields) != 1 ||
 				string((*body.Fields)[0].Field) != tt.field || (*body.Fields)[0].Code != tt.code {
@@ -353,9 +354,15 @@ func TestCreateAgencySubmissionWhenTheBodyCannotBeRead(t *testing.T) {
 	}
 }
 
+func onSubmissionRoute(ctx context.Context) context.Context {
+	routeContext := chi.NewRouteContext()
+	routeContext.RoutePatterns = []string{agencySubmissionsPattern}
+	return context.WithValue(ctx, chi.RouteCtxKey, routeContext)
+}
+
 func TestRequestBodyErrorWithABodyTheStrictParserAccepts(t *testing.T) {
 	f := newSubmissionFixture(nil, submissionFlags)
-	ctx := context.WithValue(signedInContext(t), bodyContextKey{}, capturedBody{contentType: "application/json", data: []byte(goodSubmission)})
+	ctx := onSubmissionRoute(context.WithValue(signedInContext(t), bodyContextKey{}, capturedBody{contentType: "application/json", data: []byte(goodSubmission)}))
 	rec := httptest.NewRecorder()
 	f.handler.requestBodyError(rec, httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/agency-submissions", nil), errors.New("decoder disagreed"))
 	if body := decodeValidation(t, rec); rec.Code != http.StatusBadRequest || body.Code != "invalid_body" {
@@ -381,10 +388,34 @@ func (w *brokenResponseWriter) WriteHeader(int)           {}
 
 func TestRequestBodyErrorWithAFailingWriter(t *testing.T) {
 	f := newSubmissionFixture(nil, submissionFlags)
-	req := httptest.NewRequest(http.MethodPost, "/v1/agency-submissions", nil)
+	req := httptest.NewRequestWithContext(onSubmissionRoute(t.Context()), http.MethodPost, "/v1/agency-submissions", nil)
 	w := &brokenResponseWriter{header: http.Header{}}
 	f.handler.requestBodyError(w, req, errors.New("bad"))
 	if got := w.header.Get("Cache-Control"); got != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+}
+
+func TestRequestBodyErrorOnOtherRoutesUsesTheSharedInvalidBody(t *testing.T) {
+	f := newSubmissionFixture(nil, submissionFlags)
+	for name, ctx := range map[string]context.Context{"no route": t.Context(), "another route": func() context.Context {
+		routeContext := chi.NewRouteContext()
+		routeContext.RoutePatterns = []string{"/v1/test-open/{id}"}
+		return context.WithValue(t.Context(), chi.RouteCtxKey, routeContext)
+	}()} {
+		rec := httptest.NewRecorder()
+		f.handler.requestBodyError(rec, httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/x", nil), errors.New("can't decode JSON body: boom"))
+		if body := decodeError(t, rec); rec.Code != http.StatusBadRequest || body.Code != "invalid_body" || body.Message != "can't decode JSON body: boom" {
+			t.Errorf("%s: status %d, body %s", name, rec.Code, rec.Body)
+		}
+	}
+}
+
+func TestAgencySubmissionIsPrivateAndNotAdminOnly(t *testing.T) {
+	if _, ok := adminOperations["CreateAgencySubmission"]; ok {
+		t.Error("CreateAgencySubmission is admin-only")
+	}
+	if !privateOperations["CreateAgencySubmission"] {
+		t.Error("CreateAgencySubmission is not in privateOperations")
 	}
 }
