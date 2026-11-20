@@ -198,6 +198,7 @@ func (a *Adapter) items(ctx context.Context, window sources.Window, now time.Tim
 		targets = append(targets, a.ArchivedURL(year))
 	}
 	byID := map[int]int{}
+	from := map[int]string{}
 	var out []item
 	total, decoded, wellFormed, board := 0, 0, 0, 0
 	for _, target := range targets {
@@ -222,10 +223,12 @@ func (a *Adapter) items(ctx context.Context, window sources.Window, now time.Tim
 				board++
 			}
 			if at, ok := byID[it.ID]; ok {
-				out[at] = it
+				out[at] = a.duplicate(ctx, out[at], it, from[it.ID] == target, target)
+				from[it.ID] = target
 				continue
 			}
 			byID[it.ID] = len(out)
+			from[it.ID] = target
 			out = append(out, it)
 		}
 	}
@@ -238,6 +241,18 @@ func (a *Adapter) items(ctx context.Context, window sources.Window, now time.Tim
 		return nil, fmt.Errorf("%w: %s: none of the %d meetings belongs to committee %v; the board's committee id may have changed", ErrMalformed, a.cfg.Host, wellFormed, a.cfg.CommitteeIDs)
 	}
 	return out, nil
+}
+
+func (a *Adapter) duplicate(ctx context.Context, kept, next item, sameList bool, target string) item {
+	keptBoard, nextBoard := a.board(kept, parseTitle(kept.Title)), a.board(next, parseTitle(next.Title))
+	chosen := next
+	if keptBoard && !nextBoard {
+		chosen = kept
+	}
+	if sameList || keptBoard != nextBoard {
+		a.logger.WarnContext(ctx, "primegov: one meeting id appears twice; keeping the board meeting, else the later entry", "url", target, "meeting", next.ID, "titles", kept.Title+" | "+next.Title, "kept", chosen.Title)
+	}
+	return chosen
 }
 
 func (a *Adapter) archiveYears(ctx context.Context, window sources.Window, now time.Time) []int {
@@ -270,7 +285,11 @@ func (a *Adapter) list(ctx context.Context, target string) ([]json.RawMessage, e
 }
 
 func (a *Adapter) board(it item, t title) bool {
-	return slices.Contains(a.cfg.CommitteeIDs, it.CommitteeID) && strings.EqualFold(t.name, normalize(a.cfg.BoardName))
+	return slices.Contains(a.cfg.CommitteeIDs, it.CommitteeID) && !t.test && strings.EqualFold(t.name, normalize(a.cfg.BoardName))
+}
+
+func darkMonthIsCancelled(t title) bool {
+	return t.dark
 }
 
 func (a *Adapter) logDropped(ctx context.Context, it item, t title, inWindow bool) {
@@ -315,10 +334,15 @@ func (a *Adapter) start(it item) (time.Time, []note, error) {
 		if statedOK && !sameDay(stated, at) {
 			notes = append(notes, note{slog.LevelWarn, "primegov: the meeting's date field names another day than its dateTime; using dateTime", []any{"date", it.Date, "date_time", it.DateTime}})
 		}
+		midnight := at.Hour() == 0 && at.Minute() == 0
 		if clockOK && (clock.Hour() != at.Hour() || clock.Minute() != at.Minute()) {
+			if midnight {
+				notes = append(notes, note{slog.LevelWarn, "primegov: the meeting's dateTime is at midnight but its time field states a time; using the time field", []any{"time", it.Time, "date_time", it.DateTime}})
+				return time.Date(at.Year(), at.Month(), at.Day(), clock.Hour(), clock.Minute(), 0, 0, a.loc).UTC(), notes, nil
+			}
 			notes = append(notes, note{slog.LevelWarn, "primegov: the meeting's time field names another time than its dateTime; using dateTime", []any{"time", it.Time, "date_time", it.DateTime}})
 		}
-		if clockText != "" || at.Hour() != 0 || at.Minute() != 0 {
+		if clockText != "" || !midnight {
 			return at.UTC(), notes, nil
 		}
 		notes = append(notes, note{slog.LevelInfo, "primegov: board meeting has no start time; using the configured start time", []any{"date_time", it.DateTime, "start_time", a.cfg.StartTime}})
@@ -348,7 +372,7 @@ func sameDay(x, y time.Time) bool {
 
 func (a *Adapter) meeting(ctx context.Context, it item, t title, startsAt, now time.Time) sources.Meeting {
 	docs := a.documents(ctx, it)
-	cancelled := t.cancelled || t.dark || hasTemplate(docs, a.cfg.CancelTemplates)
+	cancelled := t.cancelled || t.postponed || darkMonthIsCancelled(t) || hasTemplate(docs, a.cfg.CancelTemplates)
 	status := sources.StatusScheduled
 	switch {
 	case cancelled:

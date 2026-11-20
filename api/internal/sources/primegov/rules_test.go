@@ -104,9 +104,22 @@ func TestOnlyTheFullBoardIsKept(t *testing.T) {
 		{"special meeting of the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Special Meeting of the Board of Directors"), true, ""},
 		{"special, trailing", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors - Special Meeting"), true, ""},
 		{"special, in parentheses", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors (Special Meeting)"), true, ""},
+		{"special board meeting", boardMeeting(1, "2026-12-02T10:00:00").titled("Special Board of Directors Meeting"), true, ""},
+		{"board meeting", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors Meeting"), true, ""},
+		{"regular board meeting", boardMeeting(1, "2026-12-02T10:00:00").titled("Regular Board of Directors Meeting"), true, ""},
+		{"regular meeting of the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Regular Meeting of the Board of Directors"), true, ""},
+		{"postponed", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors - POSTPONED"), true, ""},
+		{"rescheduled", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors (RESCHEDULED)"), true, ""},
 		{"case and spacing", boardMeeting(1, "2026-12-02T10:00:00").titled("  BOARD   of directors "), true, ""},
 		{"entities", boardMeeting(1, "2026-12-02T10:00:00").titled("Board&#32;of Directors"), true, ""},
 		{"test meeting under the board", boardMeeting(1, "2026-12-02T10:00:00").titled("TEST Board PLEASE IGNORE"), false, "level=WARN msg=\"primegov: dropped a meeting of the board's committee whose title is not the board's\""},
+		{"budget workshop under the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors - Budget Workshop"), false, "level=WARN"},
+		{"workshop meeting under the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors Workshop Meeting"), false, "level=WARN"},
+		{"study session meeting under the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors Metro Valley Study Session Meeting"), false, "level=WARN"},
+		{"committee under the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors Committee Meeting"), false, "level=WARN"},
+		{"test suffix under the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors - TEST"), false, "level=WARN"},
+		{"please ignore under the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Special Board of Directors Meeting (please ignore)"), false, "level=WARN"},
+		{"just a meeting", boardMeeting(1, "2026-12-02T10:00:00").titled("Special Meeting"), false, "level=WARN"},
 		{"workshop under the board", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors Workshop"), false, "level=WARN"},
 		{"study session", boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors Metro Valley Study Session").in(7), false, "level=INFO msg=\"primegov: dropped a meeting that names the board but is not of the board's committee\""},
 		{"board title under a committee", boardMeeting(1, "2026-12-02T10:00:00").in(6), false, "level=INFO"},
@@ -141,6 +154,12 @@ func TestTitleKeepsSpecialAndDropsCancelMarkers(t *testing.T) {
 		"leading cancelled":   {"CANCELLED: Board of Directors", "Board of Directors", sources.StatusCancelled},
 		"dark":                {"Board of Directors (DARK)", "Board of Directors", sources.StatusCancelled},
 		"special cancelled":   {"Special Board of Directors - CANCELLED", "Special Board of Directors", sources.StatusCancelled},
+		"special meeting":     {"Special Board of Directors Meeting", "Special Board of Directors Meeting", sources.StatusScheduled},
+		"regular meeting":     {"Regular Board of Directors Meeting", "Regular Board of Directors Meeting", sources.StatusScheduled},
+		"postponed":           {"Board of Directors - POSTPONED", "Board of Directors", sources.StatusCancelled},
+		"leading postponed":   {"POSTPONED: Board of Directors Meeting", "Board of Directors Meeting", sources.StatusCancelled},
+		"rescheduled":         {"Board of Directors (RESCHEDULED)", "Board of Directors", sources.StatusScheduled},
+		"leading rescheduled": {"Rescheduled - Board of Directors", "Board of Directors", sources.StatusScheduled},
 		"cancel word inside":  {"Board of Directors Cancelled Items Review", "", ""},
 		"dark word is a name": {"Dark Sky Board of Directors", "", ""},
 	}
@@ -224,6 +243,16 @@ func TestMeetingWithoutAStatedTimeStartsAtTheBoardsUsualTime(t *testing.T) {
 	}
 	if !strings.Contains(logs, `level=INFO msg="primegov: board meeting has no start time; using the configured start time"`) {
 		t.Errorf("no info log:\n%s", logs)
+	}
+
+	stated := boardMeeting(1, "2026-12-02T00:00:00")
+	stated.Time = "10:00 AM"
+	got, logs = run(t, rulesNow, checkWindow(rulesNow), []mtg{stated})
+	if s := one(t, got).StartsAt; !s.Equal(time.Date(2026, 12, 2, 18, 0, 0, 0, time.UTC)) {
+		t.Errorf("midnight dateTime with a stated 10:00 AM starts at %s, want 10:00 local", s)
+	}
+	if !strings.Contains(logs, `level=WARN msg="primegov: the meeting's dateTime is at midnight but its time field states a time; using the time field" host=sbcta.primegov.com meeting=1`) {
+		t.Errorf("no warning for the midnight dateTime:\n%s", logs)
 	}
 
 	midnight := boardMeeting(1, "2026-12-02T00:00:00")
@@ -388,6 +417,45 @@ func TestMeetingInBothListsIsOneMeetingAndTheArchivedEntryWins(t *testing.T) {
 	}
 }
 
+func TestDuplicateIDKeepsTheBoardMeeting(t *testing.T) {
+	boardEntry := boardMeeting(5, "2026-12-02T10:00:00", packet(645, "2026-11-25T10:00:00"))
+	committee := boardMeeting(5, "2026-12-09T09:00:00").titled("General Policy Committee").in(4)
+	later := boardMeeting(5, "2026-12-03T10:00:00")
+	cases := []struct {
+		name     string
+		upcoming []mtg
+		archived []mtg
+		want     time.Time
+		warn     bool
+	}{
+		{"board first in one list", []mtg{boardEntry, committee}, nil, time.Date(2026, 12, 2, 18, 0, 0, 0, time.UTC), true},
+		{"board second in one list", []mtg{committee, boardEntry}, nil, time.Date(2026, 12, 2, 18, 0, 0, 0, time.UTC), true},
+		{"non-board in the archive", []mtg{boardEntry}, []mtg{committee}, time.Date(2026, 12, 2, 18, 0, 0, 0, time.UTC), true},
+		{"two board entries in one list", []mtg{boardEntry, later}, nil, time.Date(2026, 12, 3, 18, 0, 0, 0, time.UTC), true},
+		{"board in both lists", []mtg{boardEntry}, []mtg{later}, time.Date(2026, 12, 3, 18, 0, 0, 0, time.UTC), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, logs := run(t, rulesNow, checkWindow(rulesNow), c.upcoming, c.archived...)
+			m := one(t, got)
+			if m.SourceID != "5" || !m.StartsAt.Equal(c.want) {
+				t.Errorf("kept %+v, want meeting 5 at %s", m, c.want)
+			}
+			warned := strings.Contains(logs, "level=WARN msg=\"primegov: one meeting id appears twice; keeping the board meeting, else the later entry\"")
+			if warned != c.warn {
+				t.Errorf("warned = %v, want %v:\n%s", warned, c.warn, logs)
+			}
+		})
+	}
+}
+
+func TestDarkMonthIsCancelledInOnePlace(t *testing.T) {
+	got, _ := run(t, rulesNow, checkWindow(rulesNow), []mtg{boardMeeting(1, "2026-12-02T10:00:00").titled("Board of Directors (DARK)")})
+	if m := one(t, got); m.Status != sources.StatusCancelled || m.Title != "Board of Directors" {
+		t.Errorf("dark month = %+v, want cancelled Board of Directors", m)
+	}
+}
+
 func TestTwoBoardMeetingsOnOneDayAreBothKeptWithAWarning(t *testing.T) {
 	got, logs := run(t, rulesNow, checkWindow(rulesNow), []mtg{boardMeeting(1, "2026-12-02T10:00:00"), boardMeeting(2, "2026-12-02T13:00:00").titled("Special Board of Directors")})
 	if len(got) != 2 {
@@ -416,7 +484,7 @@ func TestSourceIDsAreStableAcrossDailyRuns(t *testing.T) {
 	scheduled.Documents = nil
 	posted := recordedBoard
 	posted.Documents = recordedBoard.Documents[1:2]
-	rescheduled := posted
+	rescheduled := posted.titled("Board of Directors (RESCHEDULED)")
 	rescheduled.DateTime, rescheduled.Date, rescheduled.Time = "2026-11-05T13:30:00", "Nov 05, 2026", "01:30 PM"
 	renamed := posted.titled("Special Board of Directors")
 	cancelled := posted.titled("Board of Directors - CANCELLED")
