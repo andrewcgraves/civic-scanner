@@ -71,6 +71,7 @@
   body {
     background-color: var(--color-canvas);
     color: var(--color-ink);
+    overflow-wrap: break-word;
   }
 
   :focus-visible {

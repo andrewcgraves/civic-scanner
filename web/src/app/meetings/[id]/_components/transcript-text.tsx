@@ -55,7 +55,7 @@ export function TranscriptText({
               <span className="sr-only">Link to </span>
               <Offset ms={block.startMs} />
             </a>
-            <p className="max-w-[70ch] leading-7">{block.text}</p>
+            <p className="max-w-[70ch] leading-7 wrap-anywhere">{block.text}</p>
           </div>
         ))}
         {untimed === null ? null : (
@@ -64,7 +64,9 @@ export function TranscriptText({
             className="grid gap-x-4 gap-y-1 py-3 sm:grid-cols-[5.5rem_1fr]"
           >
             <p className="text-sm text-ink-muted">No usable time</p>
-            <p className="max-w-[70ch] leading-7">{untimed.text}</p>
+            <p className="max-w-[70ch] leading-7 wrap-anywhere">
+              {untimed.text}
+            </p>
           </div>
         )}
       </div>

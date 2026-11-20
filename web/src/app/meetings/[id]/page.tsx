@@ -100,7 +100,11 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
           </Notice>
         </div>
       ) : null}
-      <AgendaSection agenda={data.agenda} agencyName={data.agency.name} />
+      <AgendaSection
+        agenda={data.agenda}
+        agencyName={data.agency.name}
+        status={data.status}
+      />
       <TranscriptSection meeting={data} />
     </>
   );

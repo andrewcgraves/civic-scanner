@@ -4,7 +4,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ExternalLink, isWebUrl } from "@/components/ui/external-link";
 import { Notice } from "@/components/ui/notice";
 import { Section } from "@/components/ui/section";
-import type { Agenda } from "@/lib/api/client";
+import type { Agenda, MeetingStatus } from "@/lib/api/client";
 
 export const AGENDA_SECTION_ID = "agenda";
 
@@ -97,7 +97,8 @@ function Summary({ agenda }: { agenda: Agenda }) {
       {agenda.summary === null ? (
         <Notice>
           The AI summary of this agenda has not been written yet. Until it is,
-          the original agenda above is the place to read what will be discussed.
+          the original agenda above is the place to read what the meeting
+          covers.
         </Notice>
       ) : (
         <AiSummary
@@ -109,20 +110,36 @@ function Summary({ agenda }: { agenda: Agenda }) {
   );
 }
 
+function NoAgenda({ status }: { status: MeetingStatus }) {
+  if (status === "cancelled") {
+    return (
+      <EmptyState title="No agenda">
+        Civic Scanner did not find an agenda for this meeting before it was
+        cancelled.
+      </EmptyState>
+    );
+  }
+  return (
+    <EmptyState title="No agenda yet">
+      Civic Scanner has not found an agenda for this meeting. When the agency
+      publishes one, a link to it and a summary will appear here.
+    </EmptyState>
+  );
+}
+
 export function AgendaSection({
   agenda,
   agencyName,
+  status,
 }: {
   agenda: Agenda | null;
   agencyName: string;
+  status: MeetingStatus;
 }) {
   return (
     <Section id={AGENDA_SECTION_ID} title="Agenda">
       {agenda === null ? (
-        <EmptyState title="No agenda yet">
-          Civic Scanner has not found an agenda for this meeting. When the
-          agency publishes one, a link to it and a summary will appear here.
-        </EmptyState>
+        <NoAgenda status={status} />
       ) : (
         <div>
           <OriginalAgendaLink agenda={agenda} agencyName={agencyName} />

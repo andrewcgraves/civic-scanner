@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import type { Agenda } from "@/lib/api/client";
+import type { Agenda, MeetingStatus } from "@/lib/api/client";
 
 import { AGENDA_SECTION_ID, AgendaSection } from "./agenda-section";
 
@@ -14,8 +14,13 @@ const AGENDA: Agenda = {
   foundAt: "2027-01-13T18:30:00Z",
 };
 
-function renderAgenda(agenda: Agenda | null) {
-  render(<AgendaSection agenda={agenda} agencyName="LA Metro" />);
+function renderAgenda(
+  agenda: Agenda | null,
+  status: MeetingStatus = "scheduled",
+) {
+  render(
+    <AgendaSection agenda={agenda} agencyName="LA Metro" status={status} />,
+  );
   return screen.getByRole("region", { name: "Agenda" });
 }
 
@@ -37,6 +42,18 @@ describe("AgendaSection", () => {
       ),
     ).toBeInTheDocument();
     expect(within(section).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("does not promise an agenda for a cancelled meeting without one", () => {
+    const section = renderAgenda(null, "cancelled");
+
+    expect(within(section).getByText("No agenda")).toBeInTheDocument();
+    expect(
+      within(section).getByText(
+        "Civic Scanner did not find an agenda for this meeting before it was cancelled.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(section).queryByText(/will appear here/)).toBeNull();
   });
 
   it("shows the AI summary with a link to the original agenda", () => {

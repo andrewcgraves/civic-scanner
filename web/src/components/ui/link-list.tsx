@@ -36,7 +36,7 @@ function RowContent({
   return (
     <>
       <span className="flex items-start justify-between gap-4">
-        <span className={`min-w-0 break-words ${titleClassName}`}>{title}</span>
+        <span className={`min-w-0 ${titleClassName}`}>{title}</span>
         {aside === undefined ? null : <span className="shrink-0">{aside}</span>}
       </span>
       {meta === undefined ? null : (
