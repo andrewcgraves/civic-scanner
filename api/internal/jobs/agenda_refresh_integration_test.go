@@ -313,11 +313,30 @@ func TestDailyCheckFetchesAPastAgendaAgainOnlyWhenItsURLChanges(t *testing.T) {
 	r.day(4, false, m).expect(t, "back to the first version's url", []string{first}, 0, "applied")
 	r.day(5, false, m).expect(t, "the first url again", nil, 1, "applied")
 
+	meetingID := meetingsOf(t, r.pool, r.agency)["moved"].ID
+	if moves := r.logs.records("agenda source url moved"); len(moves) != 0 {
+		t.Errorf("source url moves logged before any move: %v", moves)
+	}
+
 	m.AgendaURL = copied
 	r.day(6, false, m).expect(t, "a new url with unchanged text", []string{copied}, 0, "applied")
 	r.day(7, false, m).expect(t, "the copy again", nil, 1, "applied")
 
-	meetingID := meetingsOf(t, r.pool, r.agency)["moved"].ID
+	moves := r.logs.records("agenda source url moved")
+	if len(moves) != 1 || moves[0]["level"] != "INFO" || moves[0]["source_url_moved"] != true || moves[0]["version"] != float64(3) ||
+		moves[0]["meeting_id"] != meetingID.String() || moves[0]["agenda_url"] != copied || moves[0]["previous_source_url"] != first {
+		t.Errorf("source url moves logged = %v, want one at info for version 3 of %s from %s to %s", moves, meetingID, first, copied)
+	}
+	processed := r.logs.records("agenda processed")
+	moved := 0
+	for _, rec := range processed {
+		if rec["source_url_moved"] == true {
+			moved++
+		}
+	}
+	if len(processed) != 4 || moved != 1 {
+		t.Errorf("agenda processed lines = %d with %d marked source_url_moved, want 4 with 1", len(processed), moved)
+	}
 	versions, err := st.ListAgendaVersions(t.Context(), meetingID)
 	if err != nil {
 		t.Fatal(err)

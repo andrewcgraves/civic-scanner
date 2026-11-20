@@ -64,6 +64,7 @@ type AgendaVersion struct {
 
 	ChangeEventPending bool
 	RefreshedInPlace   bool
+	MovedFromURL       string
 }
 
 const agendaVersionColumns = `id, meeting_id, version, source_url, extracted_text, content_hash, summary, change_note, created_at, updated_at, change_event_pending`
@@ -123,7 +124,7 @@ func addAgendaVersion(ctx context.Context, q querier, in AgendaVersionInput) (Ag
 	case err == nil && latest.ContentHash == in.ContentHash && latest.SourceURL == in.SourceURL:
 		return latest, false, nil
 	case err == nil && latest.ContentHash == in.ContentHash:
-		return moveAgendaVersion(ctx, q, latest.ID, in.SourceURL)
+		return moveAgendaVersion(ctx, q, latest, in.SourceURL)
 	case err == nil && in.Equivalent != nil && in.Equivalent(latest.Text):
 		return refreshAgendaVersion(ctx, q, latest.ID, in)
 	case err != nil && !errors.Is(err, ErrNotFound):
@@ -172,15 +173,16 @@ RETURNING `+agendaVersionColumns, versionID, in.Text, in.ContentHash.String(), i
 	return v, false, nil
 }
 
-func moveAgendaVersion(ctx context.Context, q querier, versionID uuid.UUID, sourceURL string) (AgendaVersion, bool, error) {
+func moveAgendaVersion(ctx context.Context, q querier, latest AgendaVersion, sourceURL string) (AgendaVersion, bool, error) {
 	v, err := scanAgendaVersion(q.QueryRow(ctx, `
 UPDATE agenda_versions
 SET source_url = $2, updated_at = clock_timestamp()
 WHERE id = $1
-RETURNING `+agendaVersionColumns, versionID, sourceURL))
+RETURNING `+agendaVersionColumns, latest.ID, sourceURL))
 	if err != nil {
 		return AgendaVersion{}, false, fmt.Errorf("move agenda version: %w", err)
 	}
+	v.MovedFromURL = latest.SourceURL
 	return v, false, nil
 }
 

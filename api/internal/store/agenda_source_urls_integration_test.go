@@ -78,7 +78,7 @@ func TestTheSameTextFromAnotherURLMovesTheLatestVersion(t *testing.T) {
 	events := eventTypes(t, s, meetingID)
 
 	same, created, err := s.AddAgendaVersion(ctx, agendaInput(meetingID, "1. Call to Order"))
-	if err != nil || created || same.ID != first.ID || same.SourceURL != first.SourceURL || !same.UpdatedAt.Equal(summarized.UpdatedAt) {
+	if err != nil || created || same.ID != first.ID || same.SourceURL != first.SourceURL || same.MovedFromURL != "" || !same.UpdatedAt.Equal(summarized.UpdatedAt) {
 		t.Errorf("same text and url = (%+v, created %v, %v), want a no-op", same, created, err)
 	}
 
@@ -88,7 +88,7 @@ func TestTheSameTextFromAnotherURLMovesTheLatestVersion(t *testing.T) {
 	if err != nil || created || got.RefreshedInPlace {
 		t.Fatalf("same text from another url = (created %v, refreshed %v, %v), want neither", created, got.RefreshedInPlace, err)
 	}
-	if got.ID != first.ID || got.Version != 1 || got.SourceURL != moved.SourceURL || got.ContentHash != first.ContentHash ||
+	if got.ID != first.ID || got.Version != 1 || got.SourceURL != moved.SourceURL || got.MovedFromURL != first.SourceURL || got.ContentHash != first.ContentHash ||
 		got.Summary == nil || *got.Summary != "The board meets." || !got.CreatedAt.Equal(first.CreatedAt) || !got.UpdatedAt.After(summarized.UpdatedAt) {
 		t.Errorf("moved version = %+v, want version 1 with the new url, its summary kept", got)
 	}
