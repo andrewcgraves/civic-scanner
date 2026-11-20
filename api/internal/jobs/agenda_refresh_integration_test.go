@@ -4,13 +4,13 @@ package jobs_test
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,22 +71,9 @@ func (s *agendaSite) requests() map[string]int {
 	return maps.Clone(s.hits)
 }
 
-type syncBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
 func (b *syncBuffer) records(msg string) []map[string]any {
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	var out []map[string]any
-	sc := bufio.NewScanner(bytes.NewReader(b.buf.Bytes()))
+	sc := bufio.NewScanner(strings.NewReader(b.String()))
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for sc.Scan() {
 		var rec map[string]any
@@ -129,7 +116,7 @@ func newRefreshRun(t *testing.T, cfg jobs.Config) (*refreshRun, *store.Store) {
 	if cfg.AgendaFollowUp == nil {
 		cfg.AgendaFollowUp = &recordingAgendaFollowUp{}
 	}
-	r.h = startLogging(t, pool, cfg, slog.New(slog.NewJSONHandler(r.logs, nil)))
+	r.h = startLogged(t, pool, cfg, slog.New(slog.NewJSONHandler(r.logs, nil)))
 	return r, store.New(pool)
 }
 

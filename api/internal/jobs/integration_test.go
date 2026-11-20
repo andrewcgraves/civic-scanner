@@ -67,10 +67,10 @@ type harness struct {
 
 func start(t *testing.T, pool *pgxpool.Pool, cfg jobs.Config) *harness {
 	t.Helper()
-	return startLogging(t, pool, cfg, slog.New(slog.DiscardHandler))
+	return startLogged(t, pool, cfg, slog.New(slog.DiscardHandler))
 }
 
-func startLogging(t *testing.T, pool *pgxpool.Pool, cfg jobs.Config, logger *slog.Logger) *harness {
+func startLogged(t *testing.T, pool *pgxpool.Pool, cfg jobs.Config, logger *slog.Logger) *harness {
 	t.Helper()
 	ctx := context.WithoutCancel(t.Context())
 	cfg.Queue = "jobs_test_" + randomSuffix(t)

@@ -223,6 +223,81 @@ func TestLoadLLMBaseURLErrors(t *testing.T) {
 	}
 }
 
+func TestLoadLLMAnthropicBaseURLMustNotRepeatTheAPIPath(t *testing.T) {
+	for _, v := range []string{
+		"https://api.anthropic.com/v1",
+		"https://api.anthropic.com/v1/",
+		"https://api.anthropic.com/v1/messages",
+		"https://api.anthropic.com/v1/messages/",
+		"https://proxy.example/anthropic/v1",
+		"https://api.anthropic.com?beta=1",
+		"https://api.anthropic.com/#x",
+	} {
+		t.Run(v, func(t *testing.T) {
+			clearLLMEnv(t)
+			t.Setenv("LLM_PROVIDER", LLMAnthropic)
+			t.Setenv("ANTHROPIC_BASE_URL", v)
+			_, err := Load()
+			if err == nil || !strings.HasPrefix(err.Error(), "ANTHROPIC_BASE_URL:") {
+				t.Fatalf("err = %v, want an error naming ANTHROPIC_BASE_URL", err)
+			}
+		})
+	}
+	for _, v := range []string{
+		"https://api.anthropic.com",
+		"https://api.anthropic.com/",
+		"http://127.0.0.1:4010",
+		"https://proxy.example/anthropic",
+		"https://proxy.example/anthropic/",
+		"https://proxy.example/v1beta",
+		"https://proxy.example/v1/proxy",
+	} {
+		t.Run("accepts "+v, func(t *testing.T) {
+			clearLLMEnv(t)
+			t.Setenv("LLM_PROVIDER", LLMAnthropic)
+			t.Setenv("ANTHROPIC_BASE_URL", v)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if cfg.LLM.BaseURL != v {
+				t.Errorf("BaseURL = %q, want %q", cfg.LLM.BaseURL, v)
+			}
+		})
+	}
+}
+
+func TestLoadLLMGatewayIgnoresTheAnthropicBaseURLPath(t *testing.T) {
+	for _, v := range []string{"https://api.anthropic.com/v1", "https://proxy.example/v1/messages?x=1"} {
+		t.Run(v, func(t *testing.T) {
+			clearLLMEnv(t)
+			t.Setenv("ANTHROPIC_BASE_URL", v)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load with the gateway provider: %v", err)
+			}
+			if cfg.LLM.Provider != LLMGateway {
+				t.Errorf("provider = %q", cfg.LLM.Provider)
+			}
+		})
+	}
+}
+
+func TestLoadLLMAnthropicBaseURLErrorSuggestsTheBase(t *testing.T) {
+	for v, want := range map[string]string{
+		"https://api.anthropic.com/v1":                 "use https://api.anthropic.com\"",
+		"https://proxy.example/anthropic/v1/messages/": "use https://proxy.example/anthropic",
+	} {
+		clearLLMEnv(t)
+		t.Setenv("LLM_PROVIDER", LLMAnthropic)
+		t.Setenv("ANTHROPIC_BASE_URL", v)
+		_, err := Load()
+		if err == nil || !strings.Contains(err.Error()+"\"", want) || !strings.Contains(err.Error(), "v1/messages") {
+			t.Errorf("%s: err = %v, want %q and the reason", v, err, want)
+		}
+	}
+}
+
 func TestLoadLLMTimeoutErrors(t *testing.T) {
 	clearLLMEnv(t)
 	for _, v := range []string{"soon", "0s", "-5s"} {

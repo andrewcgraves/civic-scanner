@@ -51,7 +51,7 @@ func agencies(slugs ...string) []store.Agency {
 }
 
 func TestPlanChecks(t *testing.T) {
-	live := agencies("vctc", "rctc", "la-metro", "octa")
+	live := agencies("vctc", "no-adapter", "la-metro", "octa")
 	withAdapters := []string{"la-metro", "metrolink", "octa", "vctc"}
 
 	plan, err := planChecks(checkTarget{all: true}, live, withAdapters)
@@ -61,7 +61,7 @@ func TestPlanChecks(t *testing.T) {
 	if want := []string{"la-metro", "octa", "vctc"}; !slices.Equal(plan.slugs, want) {
 		t.Errorf("--all slugs = %v, want %v (live with an adapter; metrolink is not live)", plan.slugs, want)
 	}
-	if want := []string{"rctc"}; !slices.Equal(plan.noAdapter, want) {
+	if want := []string{"no-adapter"}; !slices.Equal(plan.noAdapter, want) {
 		t.Errorf("--all skipped = %v, want %v", plan.noAdapter, want)
 	}
 
@@ -71,16 +71,16 @@ func TestPlanChecks(t *testing.T) {
 	}
 
 	for slug, want := range map[string]string{
-		"metrolink": `agency "metrolink" is unknown or not live; nothing enqueued (live agencies with a source adapter: la-metro, octa, vctc)`,
-		"nope":      `agency "nope" is unknown or not live; nothing enqueued (live agencies with a source adapter: la-metro, octa, vctc)`,
-		"rctc":      `agency "rctc" is live but has no source adapter; nothing enqueued`,
+		"metrolink":  `agency "metrolink" is unknown or not live; nothing enqueued (live agencies with a source adapter: la-metro, octa, vctc)`,
+		"nope":       `agency "nope" is unknown or not live; nothing enqueued (live agencies with a source adapter: la-metro, octa, vctc)`,
+		"no-adapter": `agency "no-adapter" is live but has no source adapter; nothing enqueued`,
 	} {
 		if _, err := planChecks(checkTarget{slug: slug}, live, withAdapters); err == nil || err.Error() != want {
 			t.Errorf("planChecks(%s) error = %v, want %q", slug, err, want)
 		}
 	}
 
-	if _, err := planChecks(checkTarget{all: true}, agencies("rctc"), withAdapters); !errors.Is(err, errNothingToDo) {
+	if _, err := planChecks(checkTarget{all: true}, agencies("no-adapter"), withAdapters); !errors.Is(err, errNothingToDo) {
 		t.Errorf("--all with nothing checkable: error = %v", err)
 	}
 	if _, err := planChecks(checkTarget{slug: "octa"}, nil, withAdapters); err == nil || !strings.Contains(err.Error(), "adapter: none)") {
@@ -89,8 +89,14 @@ func TestPlanChecks(t *testing.T) {
 }
 
 func TestAdapterSlugsAreTheRegisteredAdapters(t *testing.T) {
-	if got, want := adapterSlugs(), []string{"la-metro", "metrolink", "octa", "vctc"}; !slices.Equal(got, want) {
-		t.Errorf("adapterSlugs() = %v, want %v", got, want)
+	got := adapterSlugs()
+	if !slices.IsSorted(got) || len(got) != len(adapters) {
+		t.Errorf("adapterSlugs() = %v, want every registered slug once, sorted", got)
+	}
+	for slug := range adapters {
+		if !slices.Contains(got, slug) {
+			t.Errorf("adapterSlugs() = %v, lacks %s", got, slug)
+		}
 	}
 }
 
@@ -100,12 +106,12 @@ func TestReport(t *testing.T) {
 		{AgencySlug: "la-metro", JobID: 12},
 		{AgencySlug: "octa", JobID: 9, State: rivertype.JobStateRunning, Duplicate: true},
 	}
-	if err := report(&b, "default", checks, []string{"rctc"}, true); err != nil {
+	if err := report(&b, "default", checks, []string{"no-adapter"}, true); err != nil {
 		t.Fatal(err)
 	}
 	want := "la-metro: enqueued manual check, job 12\n" +
 		"octa: not enqueued again, manual check job 9 is still running\n" +
-		"rctc: skipped, no source adapter\n" +
+		"no-adapter: skipped, no source adapter\n" +
 		"1 manual check(s) enqueued on queue \"default\", 1 already waiting or running; the worker logs \"agency check triggered manually\" when each one starts\n"
 	if b.String() != want {
 		t.Errorf("report =\n%s\nwant\n%s", b.String(), want)
