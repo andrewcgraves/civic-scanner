@@ -56,6 +56,9 @@ func TestRunServesUntilCanceled(t *testing.T) {
 		t.Fatal(err)
 	}
 	setupEnv(t, port)
+	t.Setenv("PUBLIC_WEB_URL", "https://civic.example")
+	t.Setenv("STRIPE_SECRET_KEY", "sk_test_FAKE")
+	t.Setenv("STRIPE_PRICE_ID", "price_FAKE")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

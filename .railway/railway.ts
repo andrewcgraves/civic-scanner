@@ -37,6 +37,7 @@ export default defineRailway(() => {
       APP_ENV: "production",
       LOG_LEVEL: "info",
       PORT: "8080",
+      STRIPE_SECRET_KEY: preserve(),
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
       STORAGE_REGION: "${{audio.REGION}}",
       STORAGE_BUCKET: "${{audio.BUCKET}}",

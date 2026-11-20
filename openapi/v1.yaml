@@ -20,6 +20,8 @@ tags:
     description: Meetings of tracked agencies.
   - name: users
     description: Signed-in users.
+  - name: billing
+    description: The paid plan, through Stripe.
 paths:
   /healthz:
     get:
@@ -280,6 +282,75 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /billing/checkout-session:
+    post:
+      operationId: createCheckoutSession
+      summary: Start checkout for the paid plan
+      description: >-
+        Creates a Stripe Checkout Session for the paid plan and returns its
+        URL; the client redirects the browser there. The first call creates
+        the user's Stripe customer. Returning from Checkout does not make the
+        user paid: the plan changes only when Stripe confirms the payment. The
+        token is checked first, as for `GET /me`; a valid token for whom
+        billing is turned off is a 404. Every response carries
+        `Cache-Control: no-store`.
+      tags: [billing]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/BillingRedirect"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "409":
+          $ref: "#/components/responses/BillingConflict"
+        "502":
+          $ref: "#/components/responses/BillingFailed"
+        "503":
+          $ref: "#/components/responses/BillingUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /billing/portal-session:
+    post:
+      operationId: createBillingPortalSession
+      summary: Open the Stripe billing portal
+      description: >-
+        Creates a Stripe billing portal session for the user's Stripe customer
+        and returns its URL; the client redirects the browser there. A user
+        who has never started checkout has no Stripe customer and gets a 409.
+        Checks and caching are the same as for the checkout session.
+      tags: [billing]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/BillingRedirect"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "409":
+          $ref: "#/components/responses/BillingConflict"
+        "502":
+          $ref: "#/components/responses/BillingFailed"
+        "503":
+          $ref: "#/components/responses/BillingUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     AgencySlug:
@@ -383,6 +454,52 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    BillingRedirect:
+      description: The Stripe page to send the browser to.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/BillingRedirect"
+    BillingConflict:
+      description: >-
+        The request cannot be done for this user. `code` is
+        `already_subscribed` when the user already has a live Stripe
+        subscription (send them to the billing portal instead) and
+        `no_billing_customer` when the user has never started checkout.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BillingFailed:
+      description: >-
+        Stripe did not answer or refused the request. `code` is
+        `billing_unavailable`; the client may retry later.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BillingUnavailable:
+      description: >-
+        Billing cannot be used right now. `code` is `billing_not_configured`
+        when the API has no Stripe configuration, or `auth_not_configured` or
+        `auth_unavailable` when the token cannot be checked (see
+        `AuthUnavailable`). A client must not sign the user out on it.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     BadRequest:
       description: >-
         A parameter or the request body is invalid. `code` is
@@ -412,6 +529,14 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    BillingRedirect:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: An `https` URL on Stripe. Single use; do not store it.
     Health:
       type: object
       required: [status]
