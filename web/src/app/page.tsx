@@ -9,7 +9,7 @@ import { isFlagEnabled } from "@/lib/flags/server";
 
 export const metadata: Metadata = {
   description:
-    "Civic Scanner follows the board meetings of public transit agencies: their agendas, short AI-written summaries and what changed when an agenda is revised, always with a link to the agency's own documents.",
+    "Civic Scanner follows the board meetings of transportation agencies: their agendas, short AI-written summaries and what changed when an agenda is revised, always with a link to the agency's own documents.",
 };
 
 const WHAT_IT_DOES = [
@@ -45,8 +45,8 @@ export default async function HomePage() {
   return (
     <>
       <PageHeader
-        title="Follow your transit agency's board meetings"
-        description="Public transit agencies decide on fares, service and spending at public board meetings. Civic Scanner gathers those meetings' agendas in one place and explains them in plain language."
+        title="Follow your transportation agency's board meetings"
+        description="Transportation agencies decide on fares, service and spending at public board meetings. Civic Scanner gathers those meetings' agendas in one place and explains them in plain language."
       />
       <Section title="What Civic Scanner does">
         <PlainList items={WHAT_IT_DOES} />

@@ -14,14 +14,17 @@ export function Breadcrumb({ items }: { items: readonly BreadcrumbItem[] }) {
           return (
             <li
               key={`${item.label}-${String(index)}`}
-              className="flex items-center gap-x-2"
+              className="flex min-w-0 items-center gap-x-2"
             >
               {last || item.href === undefined ? (
-                <span aria-current={last ? "page" : undefined}>
+                <span
+                  aria-current={last ? "page" : undefined}
+                  className="min-w-0 wrap-anywhere"
+                >
                   {item.label}
                 </span>
               ) : (
-                <Link href={item.href} className="link">
+                <Link href={item.href} className="link min-w-0 wrap-anywhere">
                   {item.label}
                 </Link>
               )}

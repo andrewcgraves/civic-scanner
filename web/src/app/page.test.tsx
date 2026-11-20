@@ -63,7 +63,7 @@ describe("HomePage", () => {
     expect(
       screen.getByRole("heading", {
         level: 1,
-        name: "Follow your transit agency's board meetings",
+        name: "Follow your transportation agency's board meetings",
       }),
     ).toBeVisible();
     const whatItDoes = screen.getByRole("region", {

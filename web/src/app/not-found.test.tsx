@@ -1,9 +1,13 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import NotFound from "./not-found";
+import NotFound, { metadata } from "./not-found";
 
 describe("NotFound", () => {
+  it("is titled Page not found", () => {
+    expect(metadata.title).toBe("Page not found");
+  });
+
   it("says the page was not found and links onward", () => {
     render(<NotFound />);
 

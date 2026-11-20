@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 
 import type { BreadcrumbItem } from "@/components/ui/breadcrumb";
 import { MeetingTime } from "@/components/ui/date-time";
-import { ExternalLink } from "@/components/ui/external-link";
+import { ExternalLink, isWebUrl } from "@/components/ui/external-link";
 import { MeetingStatusBadge } from "@/components/ui/meeting-status-badge";
 import { Notice, UnavailableNotice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
@@ -49,7 +49,7 @@ function breadcrumbFor(
     agencyPagesOn
       ? {
           label: meeting.agency.name,
-          href: `/agencies/${meeting.agency.slug}`,
+          href: `/agencies/${encodeURIComponent(meeting.agency.slug)}`,
         }
       : { label: meeting.agency.name },
     { label: meeting.title },
@@ -86,7 +86,7 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
       >
         <MeetingStatusBadge status={data.status} />
         <MeetingTime value={data.startsAt} />
-        {data.sourceUrl === undefined ? null : (
+        {!isWebUrl(data.sourceUrl) ? null : (
           <ExternalLink href={data.sourceUrl}>
             This meeting on {data.agency.name}&apos;s site
           </ExternalLink>

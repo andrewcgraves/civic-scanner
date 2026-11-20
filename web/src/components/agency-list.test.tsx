@@ -36,6 +36,20 @@ describe("AgencyList", () => {
       expect(within(list).getAllByRole("link")).toHaveLength(2);
     });
 
+    it("encodes the slug in the link", () => {
+      render(
+        <AgencyList
+          agencies={[{ ...laMetro, slug: "../x?y#z" }]}
+          linkToAgencyPages
+        />,
+      );
+
+      expect(screen.getByRole("link", { name: /LA Metro/ })).toHaveAttribute(
+        "href",
+        "/agencies/..%2Fx%3Fy%23z",
+      );
+    });
+
     it("leaves out a website that is not a web URL", () => {
       render(
         <AgencyList

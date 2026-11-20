@@ -52,7 +52,7 @@ describe("AgenciesPage", () => {
     const { metadata } = await import("./page");
 
     expect(metadata.title).toBe("Agencies");
-    expect(metadata.description).toMatch(/transit agencies/);
+    expect(metadata.description).toMatch(/transportation agencies/);
   });
 
   it("lists agencies from the API", async () => {

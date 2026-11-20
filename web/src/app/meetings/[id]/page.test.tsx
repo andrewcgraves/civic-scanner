@@ -142,6 +142,35 @@ describe("MeetingPage", () => {
     expect(screen.queryByText(/This meeting on/)).not.toBeInTheDocument();
   });
 
+  it("leaves out the agency's meeting link when its address is not a web link", async () => {
+    await renderPage(
+      respondWith({ ...MEETING, sourceUrl: "data:text/html,<p>x</p>" }),
+    );
+
+    expect(screen.queryByText(/This meeting on/)).not.toBeInTheDocument();
+  });
+
+  it("encodes the agency slug in the breadcrumb link", async () => {
+    await renderPage(
+      respondWith({
+        ...MEETING,
+        agency: { ...MEETING.agency, slug: "../../x?y=<z>#w" },
+      }),
+    );
+
+    const trail = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(
+      within(trail).getByRole("link", { name: "LA Metro" }),
+    ).toHaveAttribute("href", "/agencies/..%2F..%2Fx%3Fy%3D%3Cz%3E%23w");
+  });
+
+  it("shows an unknown status neutrally and does not call it cancelled", async () => {
+    await renderPage(respondWith({ ...MEETING, status: "postponed" }));
+
+    expect(screen.getByText("Postponed")).toHaveClass("bg-surface-muted");
+    expect(screen.queryByText(/has been cancelled/)).not.toBeInTheDocument();
+  });
+
   it("says prominently that a cancelled meeting is cancelled", async () => {
     await renderPage(respondWith({ ...MEETING, status: "cancelled" }));
 

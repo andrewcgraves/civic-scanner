@@ -9,7 +9,7 @@ import { isFlagEnabled } from "@/lib/flags/server";
 export const metadata: Metadata = {
   title: "Agencies",
   description:
-    "The public transit agencies whose board meetings Civic Scanner follows.",
+    "The transportation agencies whose board meetings Civic Scanner follows.",
 };
 
 export default async function AgenciesPage() {
@@ -22,7 +22,7 @@ export default async function AgenciesPage() {
     <>
       <PageHeader
         title="Agencies"
-        description="The public transit agencies whose board meetings Civic Scanner follows."
+        description="The transportation agencies whose board meetings Civic Scanner follows."
       />
       {agencies.ok ? (
         <AgencyList

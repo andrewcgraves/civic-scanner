@@ -2,7 +2,10 @@ import type { ReactNode } from "react";
 
 export const EXTERNAL_LINK_NOTE = "(leaves Civic Scanner)";
 
-export function isWebUrl(href: string): boolean {
+export function isWebUrl(href: unknown): href is string {
+  if (typeof href !== "string") {
+    return false;
+  }
   try {
     const { protocol } = new URL(href);
     return protocol === "https:" || protocol === "http:";

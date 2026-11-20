@@ -66,4 +66,34 @@ describe("AgencyMeetingList", () => {
     expect(items[1]).toHaveTextContent("Finance CommitteeHeld");
     expect(within(items[1]!).queryByRole("link")).not.toBeInTheDocument();
   });
+
+  it("encodes meeting ids in links", () => {
+    render(
+      <AgencyMeetingList
+        label="Past meetings"
+        meetings={[{ ...MEETINGS[1]!, id: "../../evil?x=1#y" }]}
+        linkToMeetings
+      />,
+    );
+
+    expect(screen.getByRole("link")).toHaveAttribute(
+      "href",
+      "/meetings/..%2F..%2Fevil%3Fx%3D1%23y",
+    );
+  });
+
+  it("leaves out a meeting's own page when its address is not a web link", () => {
+    render(
+      <AgencyMeetingList
+        label="Past meetings"
+        meetings={[{ ...MEETINGS[0]!, sourceUrl: "javascript:alert(1)" }]}
+        linkToMeetings={false}
+      />,
+    );
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Meeting page on the agency/),
+    ).not.toBeInTheDocument();
+  });
 });

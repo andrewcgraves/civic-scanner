@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { ExternalLink } from "@/components/ui/external-link";
+import { ExternalLink, isWebUrl } from "@/components/ui/external-link";
 import { UnavailableNotice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 import { loadAgency } from "@/lib/api/load";
@@ -18,7 +18,7 @@ const SITE_NAME = "Civic Scanner";
 const RSS_TYPE = "application/rss+xml";
 
 function feedHref(slug: string): string {
-  return `/agencies/${slug}/feed.xml`;
+  return `/agencies/${encodeURIComponent(slug)}/feed.xml`;
 }
 
 export async function generateMetadata({
@@ -70,6 +70,10 @@ export default async function AgencyPage({
   ]);
 
   const name = agency.ok ? agency.data.name : "Agency";
+  const website =
+    agency.ok && isWebUrl(agency.data.website)
+      ? agency.data.website
+      : undefined;
 
   return (
     <>
@@ -77,13 +81,11 @@ export default async function AgencyPage({
         title={name}
         breadcrumb={[{ label: "Agencies", href: "/agencies" }, { label: name }]}
       >
-        {agency.ok || feedOn ? (
+        {website !== undefined || feedOn ? (
           <>
-            {agency.ok ? (
-              <ExternalLink href={agency.data.website}>
-                Agency website
-              </ExternalLink>
-            ) : null}
+            {website === undefined ? null : (
+              <ExternalLink href={website}>Agency website</ExternalLink>
+            )}
             {feedOn ? (
               <a href={feedHref(slug)} type={RSS_TYPE} className="link">
                 RSS feed

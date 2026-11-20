@@ -221,7 +221,7 @@ describe("AgencyPage", () => {
         [`${API}/meetings`]: { meetings: [PAST_HELD], nextCursor: null },
       }),
     );
-    expect(screen.getByText("No upcoming meetings are posted.")).toBeVisible();
+    expect(screen.getByText("No upcoming meetings on record.")).toBeVisible();
 
     await renderPage(
       routes({
@@ -251,6 +251,36 @@ describe("AgencyPage", () => {
       screen.queryByRole("link", { name: /Agency website/ }),
     ).not.toBeInTheDocument();
     expect(rowTitles("Past meetings")).toEqual(["Meeting 6"]);
+  });
+
+  it("leaves out the agency website when its address is not a web link", async () => {
+    await renderPage((url) =>
+      url === API
+        ? json({ ...AGENCY, website: " javascript:alert(2)" })
+        : json({ meetings: [PAST_HELD], nextCursor: null }),
+    );
+
+    expect(
+      screen.queryByRole("link", { name: /Agency website/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Agency website")).not.toBeInTheDocument();
+  });
+
+  it("keeps the meetings that loaded when a further page fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await renderPage(
+      routes({
+        [`${API}/meetings`]: { meetings: [FUTURE_LATE], nextCursor: "c2" },
+      }),
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Some meetings could not be loaded, so this list may be incomplete.",
+    );
+    expect(rowTitles("Upcoming meetings")).toEqual(["Meeting 1"]);
+    expect(
+      screen.getByRole("link", { name: "Older meetings" }),
+    ).toHaveAttribute("href", "/agencies/la-metro?cursor=c2");
   });
 
   it("links the RSS feed when feeds are on", async () => {

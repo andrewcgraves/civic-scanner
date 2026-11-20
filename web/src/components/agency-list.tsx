@@ -26,7 +26,7 @@ function AgencyRows({
           return (
             <LinkListItem
               key={agency.id}
-              href={`/agencies/${agency.slug}`}
+              href={`/agencies/${encodeURIComponent(agency.slug)}`}
               title={agency.name}
               meta={hostname ?? undefined}
             />

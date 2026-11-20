@@ -40,6 +40,20 @@ describe("Breadcrumb", () => {
     );
   });
 
+  it("lets long unbroken labels wrap", () => {
+    const long = "A".repeat(400);
+    render(
+      <Breadcrumb
+        items={[{ label: "Agencies", href: "/agencies" }, { label: long }]}
+      />,
+    );
+
+    expect(screen.getByText(long)).toHaveClass("min-w-0", "wrap-anywhere");
+    expect(screen.getByRole("link", { name: "Agencies" })).toHaveClass(
+      "wrap-anywhere",
+    );
+  });
+
   it("shows an ancestor without an href as text", () => {
     render(<Breadcrumb items={[{ label: "Meetings" }, { label: "One" }]} />);
 

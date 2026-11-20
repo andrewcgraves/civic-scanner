@@ -16,7 +16,8 @@ const SITE_NAME = "Civic Scanner";
 
 export const metadata: Metadata = {
   title: { default: SITE_NAME, template: `%s | ${SITE_NAME}` },
-  description: "Track public agency meetings, agendas, and transcripts.",
+  description:
+    "Follow the public meetings and agendas of Southern California transportation agencies.",
 };
 
 const posthog = readPostHogProject();
@@ -72,8 +73,7 @@ export default async function RootLayout({
             >
               <p>
                 {SITE_NAME} follows the public meetings of Southern California
-                transportation agencies: their agendas, recordings and
-                transcripts.
+                transportation agencies and their agendas.
               </p>
               <p>
                 Summaries are written by AI and can be wrong. The agency&apos;s
