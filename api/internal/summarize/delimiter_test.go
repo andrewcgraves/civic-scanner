@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm/llmtest"
@@ -22,6 +23,30 @@ func TestAChangeRequestWithoutADelimiterIsAnError(t *testing.T) {
 	fake := llmtest.Returning("never")
 	if _, err := AgendaChange(context.Background(), fake, llm.TierRoutine, diff); err == nil || len(fake.Calls()) != 0 {
 		t.Errorf("err = %v, calls = %d", err, len(fake.Calls()))
+	}
+}
+
+func TestATranscriptRequestWithoutADelimiterCallsNoModel(t *testing.T) {
+	speech := strings.Repeat("The board votes on the budget. ", 10)
+	long := make([]TranscriptSegment, 2500)
+	for i := range long {
+		long[i] = TranscriptSegment{Text: strings.Repeat("word ", 24)}
+	}
+	for name, segments := range map[string][]TranscriptSegment{"one part": {{Text: speech}}, "several parts": long} {
+		fake := llmtest.Returning("never")
+		if _, err := transcript(context.Background(), fake, llm.TierRoutine, segments, "", bytes.NewReader(nil)); err == nil || len(fake.Calls()) != 0 {
+			t.Errorf("%s: err = %v, calls = %d", name, err, len(fake.Calls()))
+		}
+	}
+	parts := SplitTranscript(long, "")
+	if _, err := combineRequest(llm.TierRoutine, parts, make([]string, len(parts)), bytes.NewReader(nil)); err == nil {
+		t.Error("combine request without a delimiter: err = nil")
+	}
+	if got := clock(-time.Second); got != "0:00:00" {
+		t.Errorf("clock(-1s) = %q", got)
+	}
+	if got := clock(4*time.Hour + 5*time.Minute + 6*time.Second); got != "4:05:06" {
+		t.Errorf("clock = %q", got)
 	}
 }
 
