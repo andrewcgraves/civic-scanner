@@ -4,6 +4,7 @@ import { AgencyList } from "@/components/agency-list";
 import { UnavailableNotice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 import { Section } from "@/components/ui/section";
+import { findComingSoon } from "@/lib/api/coming-soon";
 import { loadAgencies } from "@/lib/api/load";
 import { isFlagEnabled } from "@/lib/flags/server";
 
@@ -13,7 +14,7 @@ export const metadata: Metadata = {
 };
 
 const WHAT_IT_DOES = [
-  "Checks each agency's website for its board meetings, both upcoming and past.",
+  "Every day, it checks each agency's website for board meetings, upcoming and past.",
   "Collects each meeting's agenda and links to the agency's own copy.",
   "Writes a short summary of each agenda with AI, so you can see what a meeting will cover at a glance.",
   "Notes what changed when an agency revises an agenda after first publishing it.",
@@ -24,6 +25,7 @@ const GOOD_TO_KNOW = [
   "The agency's own documents are the official record. Wherever we show an agenda or a summary, we link to the agency's original.",
   "Summaries are written by AI. They can be wrong or leave out something important, so check the original agenda before relying on one.",
   "We cover only the agencies listed below. Meetings of other agencies, or other meetings of these agencies, are not here.",
+  "Civic Scanner is independent and is not run by any of these agencies.",
 ] as const;
 
 function PlainList({ items }: { items: readonly string[] }) {
@@ -41,6 +43,9 @@ export default async function HomePage() {
     loadAgencies(),
     isFlagEnabled("agency-pages"),
   ]);
+  const comingSoon = agencies.ok
+    ? await findComingSoon(agencies.data)
+    : new Set<string>();
 
   return (
     <>
@@ -59,6 +64,7 @@ export default async function HomePage() {
           <AgencyList
             agencies={agencies.data}
             linkToAgencyPages={linkToAgencyPages}
+            comingSoon={comingSoon}
           />
         ) : (
           <UnavailableNotice what="Agencies are" />

@@ -2,10 +2,17 @@ import { render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const flags = vi.hoisted(() => ({ on: [] as string[] }));
+const comingSoon = vi.hoisted(() => ({
+  ids: new Set<string>(),
+  find: vi.fn(),
+}));
 
 vi.mock("next/server", () => ({ connection: () => Promise.resolve() }));
 vi.mock("@/lib/flags/server", () => ({
   isFlagEnabled: (flag: string) => Promise.resolve(flags.on.includes(flag)),
+}));
+vi.mock("@/lib/api/coming-soon", () => ({
+  findComingSoon: comingSoon.find,
 }));
 
 const agencies = [
@@ -41,6 +48,8 @@ const alertText = "Agencies are unavailable right now. Please try again later.";
 describe("AgenciesPage", () => {
   beforeEach(() => {
     flags.on = [];
+    comingSoon.ids = new Set();
+    comingSoon.find.mockImplementation(() => Promise.resolve(comingSoon.ids));
   });
 
   afterEach(() => {
@@ -66,6 +75,33 @@ describe("AgenciesPage", () => {
     const [request] = fetchMock.mock.calls[0] ?? [];
     expect(request).toBeInstanceOf(Request);
     expect((request as Request).url).toBe("http://localhost:8080/v1/agencies");
+  });
+
+  it("marks agencies without meetings as coming soon, still linked", async () => {
+    flags.on = ["agency-pages"];
+    comingSoon.ids = new Set([agencies[1]!.id]);
+    await respondWithAgencies();
+
+    expect(comingSoon.find).toHaveBeenCalledWith(agencies);
+    expect(
+      screen.getByText(/Agencies marked "Coming soon" are not connected yet/),
+    ).toBeVisible();
+    const metrolink = screen.getByRole("link", { name: /Metrolink/ });
+    expect(metrolink).toHaveAttribute("href", "/agencies/metrolink");
+    expect(within(metrolink).getByText("Coming soon")).toBeVisible();
+    expect(
+      within(screen.getByRole("link", { name: /LA Metro/ })).queryByText(
+        "Coming soon",
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not look for coming-soon agencies when agencies are unavailable", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await renderWithFetch(() => Promise.reject(new TypeError("fetch failed")));
+
+    expect(comingSoon.find).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Coming soon/)).not.toBeInTheDocument();
   });
 
   it("links agencies to their pages when agency pages are on", async () => {

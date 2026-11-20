@@ -409,6 +409,8 @@ Every page, `_components` file and helper gets a Vitest test beside it, and cove
 
 `/` (`web/src/app/page.tsx`) explains the service in fixed copy (what it does, what to keep in mind) and lists every agency the API returns. `/agencies` lists the same agencies under its own heading. Neither has a flag. Each agency row shows its name and its website's host name. With `agency-pages` on, the whole row links to `/agencies/{slug}`; with it off, the row is plain and the host name links to the agency's own site. No agencies gives an empty state; an unavailable API gives an `UnavailableNotice` in place of the list, and the rest of the page still renders.
 
+An agency with no meetings yet is marked "Coming soon", with a line above the list saying such agencies are not connected yet; it still links to its page when `agency-pages` is on. `findComingSoon` in `web/src/lib/api/coming-soon.ts` decides this from data: it asks the API for one meeting per agency (`limit=1`), all in parallel under one shared 10-second deadline, so both list pages make at most one extra request per agency. With more than 25 agencies (`MAX_COMING_SOON_LOOKUPS`) it skips the lookups and marks none. A lookup that fails, times out or returns a malformed response leaves that agency unmarked; it never blocks the list or shows the unavailable notice.
+
 ### Agency page
 
 `/agencies/{slug}` (`web/src/app/agencies/[slug]/`), behind `agency-pages`. The header has the agency's name, a link to its website and, with `agency-rss-feeds` on, an "RSS feed" link (see [Agency RSS feeds](#agency-rss-feeds)). An unknown slug is a 404; an unavailable agency keeps the page with the title "Agency" and a notice, and the meetings still load.

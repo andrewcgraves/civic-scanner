@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { Agency } from "@/lib/api/client";
 
-import { AgencyList } from "./agency-list";
+import { AgencyList, COMING_SOON_NOTE } from "./agency-list";
 
 const laMetro: Agency = {
   id: "7f1c1f0e-5d1b-4c62-9d55-0d6b6c2d9a01",
@@ -61,6 +61,35 @@ describe("AgencyList", () => {
       const link = screen.getByRole("link", { name: "LA Metro" });
       expect(link).toHaveAttribute("href", "/agencies/la-metro");
       expect(link).toHaveTextContent(/^LA Metro$/);
+    });
+  });
+
+  describe("coming soon", () => {
+    it("marks only the listed agencies and explains the label", () => {
+      render(
+        <AgencyList
+          agencies={[laMetro, metrolink]}
+          linkToAgencyPages={false}
+          comingSoon={new Set([metrolink.id])}
+        />,
+      );
+
+      const [first, second] = screen.getAllByRole("listitem");
+      expect(second).toHaveTextContent("Coming soon");
+      expect(first).not.toHaveTextContent("Coming soon");
+      expect(screen.getByText(COMING_SOON_NOTE)).toBeVisible();
+    });
+
+    it("says nothing about coming soon when no agency is marked", () => {
+      render(
+        <AgencyList
+          agencies={[laMetro]}
+          linkToAgencyPages
+          comingSoon={new Set(["another-id"])}
+        />,
+      );
+
+      expect(screen.queryByText(/Coming soon/)).not.toBeInTheDocument();
     });
   });
 

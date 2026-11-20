@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { AgencyList } from "@/components/agency-list";
 import { UnavailableNotice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
+import { findComingSoon } from "@/lib/api/coming-soon";
 import { loadAgencies } from "@/lib/api/load";
 import { isFlagEnabled } from "@/lib/flags/server";
 
@@ -17,6 +18,9 @@ export default async function AgenciesPage() {
     loadAgencies(),
     isFlagEnabled("agency-pages"),
   ]);
+  const comingSoon = agencies.ok
+    ? await findComingSoon(agencies.data)
+    : new Set<string>();
 
   return (
     <>
@@ -28,6 +32,7 @@ export default async function AgenciesPage() {
         <AgencyList
           agencies={agencies.data}
           linkToAgencyPages={linkToAgencyPages}
+          comingSoon={comingSoon}
         />
       ) : (
         <UnavailableNotice what="Agencies are" />
