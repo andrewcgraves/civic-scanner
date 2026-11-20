@@ -24,6 +24,12 @@ const shortFormat = new Intl.DateTimeFormat(LOCALE, {
   year: "numeric",
 });
 
+export const UNKNOWN_DATE = "Date unknown";
+
+function isValidDate(iso: string): boolean {
+  return !Number.isNaN(Date.parse(iso));
+}
+
 function partsOf(format: Intl.DateTimeFormat, iso: string): Parts {
   const parts = {} as Parts;
   for (const part of format.formatToParts(new Date(iso))) {
@@ -33,25 +39,40 @@ function partsOf(format: Intl.DateTimeFormat, iso: string): Parts {
 }
 
 export function formatMeetingDate(iso: string): string {
+  if (!isValidDate(iso)) {
+    return UNKNOWN_DATE;
+  }
   const p = partsOf(longFormat, iso);
   return `${p.weekday}, ${p.month} ${p.day}, ${p.year}`;
 }
 
 export function formatMeetingTime(iso: string): string {
+  if (!isValidDate(iso)) {
+    return UNKNOWN_DATE;
+  }
   const p = partsOf(longFormat, iso);
   return `${p.hour}:${p.minute} ${p.dayPeriod.toUpperCase()} ${p.timeZoneName}`;
 }
 
 export function formatMeetingDateTime(iso: string): string {
+  if (!isValidDate(iso)) {
+    return UNKNOWN_DATE;
+  }
   return `${formatMeetingDate(iso)} at ${formatMeetingTime(iso)}`;
 }
 
 export function formatShortDate(iso: string): string {
+  if (!isValidDate(iso)) {
+    return UNKNOWN_DATE;
+  }
   const p = partsOf(shortFormat, iso);
   return `${p.weekday}, ${p.month} ${p.day}, ${p.year}`;
 }
 
 export function formatShortDateTime(iso: string): string {
+  if (!isValidDate(iso)) {
+    return UNKNOWN_DATE;
+  }
   return `${formatShortDate(iso)}, ${formatMeetingTime(iso)}`;
 }
 

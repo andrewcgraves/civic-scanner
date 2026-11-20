@@ -10,6 +10,7 @@ import {
   isUpcoming,
   MEETING_TIME_ZONE,
   offsetDuration,
+  UNKNOWN_DATE,
 } from "./datetime";
 
 const WINTER = "2027-01-20T17:00:00Z";
@@ -51,6 +52,26 @@ describe("meeting dates", () => {
   it("formats noon and midnight on the twelve-hour clock", () => {
     expect(formatMeetingTime("2026-11-19T20:00:00Z")).toBe("12:00 PM PST");
     expect(formatMeetingTime("2026-11-19T08:00:00Z")).toBe("12:00 AM PST");
+  });
+});
+
+describe("invalid dates", () => {
+  it("format as an unknown date instead of throwing", () => {
+    for (const format of [
+      formatMeetingDate,
+      formatMeetingTime,
+      formatMeetingDateTime,
+      formatShortDate,
+      formatShortDateTime,
+    ]) {
+      expect(format("not a date")).toBe(UNKNOWN_DATE);
+    }
+  });
+
+  it("are never upcoming", () => {
+    expect(isUpcoming("not a date", new Date("2027-01-01T00:00:00Z"))).toBe(
+      false,
+    );
   });
 });
 

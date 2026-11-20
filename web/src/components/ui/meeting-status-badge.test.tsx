@@ -13,4 +13,18 @@ describe("MeetingStatusBadge", () => {
 
     expect(screen.getByText(label)).toHaveClass(surface);
   });
+
+  it.each([
+    ["postponed", "Postponed"],
+    ["in_recess", "In recess"],
+    ["<b>odd</b>", "Status unknown"],
+    ["", "Status unknown"],
+    ["constructor", "Constructor"],
+  ])("shows the unknown status %j neutrally as %j", (status, label) => {
+    render(<MeetingStatusBadge status={status} />);
+
+    const badge = screen.getByText(label);
+    expect(badge).toHaveClass("bg-surface-muted");
+    expect(badge.className).not.toContain("undefined");
+  });
 });

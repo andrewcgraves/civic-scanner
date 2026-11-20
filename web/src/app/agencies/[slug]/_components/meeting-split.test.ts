@@ -27,6 +27,20 @@ describe("isUpcomingMeeting", () => {
       isUpcomingMeeting(meeting("d", "2027-01-15T17:59:59Z", "scheduled"), NOW),
     ).toBe(false);
   });
+
+  it("decides an unknown status by its date", () => {
+    const postponed = (startsAt: string) => ({
+      ...meeting("p", startsAt, "scheduled"),
+      status: "postponed" as unknown as "scheduled",
+    });
+
+    expect(isUpcomingMeeting(postponed("2027-02-01T17:00:00Z"), NOW)).toBe(
+      true,
+    );
+    expect(isUpcomingMeeting(postponed("2027-01-01T17:00:00Z"), NOW)).toBe(
+      false,
+    );
+  });
 });
 
 describe("splitMeetings", () => {
