@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch/fetchtest"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
@@ -87,8 +88,13 @@ func TestRCTCIsRegisteredForTheMeetingsPage(t *testing.T) {
 	}
 }
 
-func TestVCTCIsRegisteredForTheCommissionPostsOnly(t *testing.T) {
-	fake := fetchtest.Returning("[]")
+func TestVCTCIsRegisteredForTheCommissionPostsAndItsYouTubeFeed(t *testing.T) {
+	fake := &fetchtest.Fake{Respond: func(req fetch.Request) (fetch.Response, error) {
+		if strings.HasPrefix(req.URL, "https://www.youtube.com/") {
+			return fetch.Response{Status: 200, ContentType: "text/xml", Body: []byte(`<feed xmlns="http://www.w3.org/2005/Atom"></feed>`), FinalURL: req.URL}, nil
+		}
+		return fetch.Response{Status: 200, ContentType: "application/json", Body: []byte("[]"), FinalURL: req.URL}, nil
+	}}
 	now := time.Date(2026, 11, 18, 13, 0, 0, 0, time.UTC)
 	registry := sources.NewRegistry(sources.Deps{Fetcher: fake, Clock: sourcestest.NewClock(now)}, adapters)
 
@@ -99,9 +105,13 @@ func TestVCTCIsRegisteredForTheCommissionPostsOnly(t *testing.T) {
 	if _, err := adapter.Meetings(t.Context(), sources.Window{From: now, To: now.AddDate(0, 0, 1)}); err != nil {
 		t.Fatal(err)
 	}
-	calls := fake.Calls()
-	if len(calls) != 1 || !strings.HasPrefix(calls[0].URL, "https://www.goventura.org/wp-json/wp/v2/meeting?") || !strings.Contains(calls[0].URL, "meeting_type=25%2C33") {
-		t.Errorf("requests = %+v, want one to the goventura.org meeting posts of types 25 and 33 and none to YouTube", calls)
+	var urls []string
+	for _, c := range fake.Calls() {
+		urls = append(urls, c.URL)
+	}
+	if len(urls) != 2 || !strings.HasPrefix(urls[0], "https://www.goventura.org/wp-json/wp/v2/meeting?") || !strings.Contains(urls[0], "meeting_type=25%2C33") ||
+		urls[1] != "https://www.youtube.com/feeds/videos.xml?channel_id=UCer8W37pepfQH8mhDbTBRjg" {
+		t.Errorf("requests = %q, want the goventura.org meeting posts of types 25 and 33, then the VCTC channel feed", urls)
 	}
 }
 

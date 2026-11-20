@@ -11,6 +11,7 @@ var VCTC = Config{
 	CommitteeWords: []string{"TRANSCOM", "TTAC", "CTAC", "SSTAC", "HVPAC", "HVTAC", "CEPAC", "CETAC", "SPBLAC", "CALVANS", "Committee"},
 	TimeZone:       "America/Los_Angeles",
 	StartTime:      "09:00",
+	YouTube:        VCTCYouTube,
 }
 
 var VCTCYouTube = YouTube{

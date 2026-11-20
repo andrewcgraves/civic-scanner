@@ -57,6 +57,18 @@ func withYouTube() vctc.Config {
 	return cfg
 }
 
+func agendasOnly() vctc.Config {
+	cfg := vctc.VCTC
+	cfg.YouTube = vctc.YouTube{}
+	return cfg
+}
+
+func TestVCTCMatchesRecordingsOnItsYouTubeChannel(t *testing.T) {
+	if vctc.VCTC.YouTube != vctc.VCTCYouTube {
+		t.Errorf("VCTC.YouTube = %+v, want %+v", vctc.VCTC.YouTube, vctc.VCTCYouTube)
+	}
+}
+
 func adapter(t *testing.T, cfg vctc.Config, fetcher fetch.Fetcher, now time.Time) *vctc.Adapter {
 	t.Helper()
 	a, err := vctc.New(cfg, sources.Deps{Fetcher: fetcher, Clock: sourcestest.NewClock(now)})
@@ -134,7 +146,7 @@ func assertMeetings(t *testing.T, got, want []sources.Meeting) {
 
 func TestCommissionMeetingsFromRecordedResponse(t *testing.T) {
 	fake := serving(fixture(t, "vctc_commission_meetings.json"), nil)
-	a, logs := logged(t, vctc.VCTC, fake, recordedAt)
+	a, logs := logged(t, agendasOnly(), fake, recordedAt)
 
 	got, err := a.Meetings(t.Context(), sinceApril)
 	if err != nil {
@@ -153,7 +165,7 @@ func TestCommissionMeetingsFromRecordedResponse(t *testing.T) {
 }
 
 func TestDailyCheckWindowOnTheRecordingDay(t *testing.T) {
-	got, err := adapter(t, vctc.VCTC, serving(fixture(t, "vctc_commission_meetings.json"), nil), recordedAt).Meetings(t.Context(), checkWindow(recordedAt))
+	got, err := adapter(t, agendasOnly(), serving(fixture(t, "vctc_commission_meetings.json"), nil), recordedAt).Meetings(t.Context(), checkWindow(recordedAt))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +195,7 @@ func TestRecordingsFromRecordedYouTubeFeed(t *testing.T) {
 }
 
 func TestUpcomingPostFromRecordedResponse(t *testing.T) {
-	cfg := vctc.VCTC
+	cfg := agendasOnly()
 	cfg.Boards = []vctc.Board{{TypeID: 28, Name: "TTAC"}}
 	cfg.CommitteeWords = nil
 	capturedAt := time.Date(2026, 11, 18, 20, 43, 0, 0, time.UTC)
@@ -207,13 +219,13 @@ func TestCommitteesInTheResponseAreDropped(t *testing.T) {
 
 func TestRecordedSpecialMeetingDatedFromItsAgendaLink(t *testing.T) {
 	body := fixture(t, "vctc_special_meetings.json")
-	got, err := adapter(t, vctc.VCTC, serving(body, nil), recordedAt).Meetings(t.Context(), checkWindow(recordedAt))
+	got, err := adapter(t, agendasOnly(), serving(body, nil), recordedAt).Meetings(t.Context(), checkWindow(recordedAt))
 	if err != nil || len(got) != 0 {
 		t.Errorf("Meetings in 2026 = %+v, %v; want none and no error", got, err)
 	}
 
 	nov2023 := sources.Window{From: time.Date(2023, 10, 15, 0, 0, 0, 0, time.UTC), To: time.Date(2023, 12, 15, 0, 0, 0, 0, time.UTC)}
-	got, err = adapter(t, vctc.VCTC, serving(body, nil), recordedAt).Meetings(t.Context(), nov2023)
+	got, err = adapter(t, agendasOnly(), serving(body, nil), recordedAt).Meetings(t.Context(), nov2023)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +236,7 @@ func TestRecordedSpecialMeetingDatedFromItsAgendaLink(t *testing.T) {
 
 func TestConstructorRegistersTheAdapter(t *testing.T) {
 	registry := sources.NewRegistry(sources.Deps{Fetcher: serving(fixture(t, "vctc_commission_meetings.json"), nil), Clock: sourcestest.NewClock(recordedAt)},
-		map[string]sources.Constructor{"vctc": vctc.Constructor(vctc.VCTC)})
+		map[string]sources.Constructor{"vctc": vctc.Constructor(agendasOnly())})
 	a, ok := registry.Lookup("vctc")
 	if !ok {
 		t.Fatal("vctc not registered")

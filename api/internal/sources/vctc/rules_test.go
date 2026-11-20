@@ -118,7 +118,7 @@ func TestStartTimeIsTheMeetingTimeInTheAgencyZone(t *testing.T) {
 		commission(4, "April 2027", "2027-04-09", "13:30", ""),
 		commission(5, "February 2027", "2027-02-05", "08:30:00", ""),
 	)
-	got := byID(meetingsOf(t, vctc.VCTC, body, nil, now))
+	got := byID(meetingsOf(t, agendasOnly(), body, nil, now))
 	want := map[string]time.Time{
 		"1": time.Date(2027, 3, 12, 17, 0, 0, 0, time.UTC),
 		"2": time.Date(2027, 3, 19, 16, 0, 0, 0, time.UTC),
@@ -144,7 +144,7 @@ func TestMissingOrUnreadableTimeUsesTheConfiguredStart(t *testing.T) {
 			return b
 		}(),
 	)
-	a, logs := logged(t, vctc.VCTC, serving(body, nil), now)
+	a, logs := logged(t, agendasOnly(), serving(body, nil), now)
 	got, err := a.Meetings(t.Context(), checkWindow(now))
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +171,7 @@ func TestTitleMonthThatDisagreesWithTheMeetingDateIsLogged(t *testing.T) {
 		commission(2, "December 2026", "2026-12-04", "09:00", "").titled("Commission Meeting – December 11, 2026"),
 		commission(3, "January 2027", "2027-01-08", "09:00", ""),
 	)
-	a, logs := logged(t, vctc.VCTC, serving(body, nil), now)
+	a, logs := logged(t, agendasOnly(), serving(body, nil), now)
 	got, err := a.Meetings(t.Context(), checkWindow(now))
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestCancellationMarkers(t *testing.T) {
 	for i, c := range cases {
 		p := base
 		p.ID = i + 1
-		got := meetingsOf(t, vctc.VCTC, posts(t, p.titled(c.title)), nil, now)
+		got := meetingsOf(t, agendasOnly(), posts(t, p.titled(c.title)), nil, now)
 		if len(got) != 1 {
 			t.Errorf("%q: got %+v, want one meeting", c.title, got)
 			continue
@@ -237,7 +237,7 @@ func TestOnlyFullCommissionMeetingsAreKept(t *testing.T) {
 		commission(8, "December 2026", "2026-12-18", "09:00", "").typed(),
 		commission(9, "December 2026", "2026-12-19", "17:00", "").titled("SPBL Community Meeting – December 2026").typed(33),
 	)
-	a, logs := logged(t, vctc.VCTC, serving(body, nil), now)
+	a, logs := logged(t, agendasOnly(), serving(body, nil), now)
 	got, err := a.Meetings(t.Context(), checkWindow(now))
 	if err != nil {
 		t.Fatal(err)
@@ -292,7 +292,7 @@ func TestAgendaLinkUnderTheCurrentAgendaHeading(t *testing.T) {
 		{"empty agenda section then one with a link", `<h3>Current agenda</h3><h3>Amended agenda</h3><a href="` + uploads + `b.pdf">Agenda</a>`, uploads + "b.pdf"},
 	}
 	for _, c := range cases {
-		got := meetingsOf(t, vctc.VCTC, posts(t, p.content(c.content)), nil, now)
+		got := meetingsOf(t, agendasOnly(), posts(t, p.content(c.content)), nil, now)
 		if len(got) != 1 || got[0].AgendaURL != c.want {
 			t.Errorf("%s: got %+v, want agenda %q", c.name, got, c.want)
 		}
@@ -305,7 +305,7 @@ func TestDuplicatePostsForOneDayAreBothKeptAndLogged(t *testing.T) {
 		commission(1, "December 2026", "2026-12-04", "09:00", ""),
 		commission(2, "December 2026", "2026-12-04", "09:00", "").titled("Commission Meeting – December 2026 (2)"),
 	)
-	a, logs := logged(t, vctc.VCTC, serving(body, nil), now)
+	a, logs := logged(t, agendasOnly(), serving(body, nil), now)
 	got, err := a.Meetings(t.Context(), checkWindow(now))
 	if err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestMissingAgendaIsLoggedWhenTheMeetingIsNearOrPast(t *testing.T) {
 		{"heading the adapter cannot read", commission(1, "December 2026", "2026-12-04", "09:00", "").content(`<h3>Agenda for the meeting</h3><a href="` + uploads + `a.pdf">Agenda</a>`), time.Date(2026, 12, 2, 12, 0, 0, 0, time.UTC), true},
 	}
 	for _, c := range cases {
-		a, logs := logged(t, vctc.VCTC, serving(posts(t, c.post), nil), c.now)
+		a, logs := logged(t, agendasOnly(), serving(posts(t, c.post), nil), c.now)
 		if _, err := a.Meetings(t.Context(), checkWindow(c.now)); err != nil {
 			t.Fatal(err)
 		}
@@ -473,7 +473,7 @@ func TestPresentationsAfterAPastMeetingMeanHeld(t *testing.T) {
 		{"empty presentations heading", commission(1, "December 2026", "2026-12-04", "09:00", "").content(agendaSection(uploads+"a.pdf") + `<h3>Presentations</h3>`), time.Date(2026, 12, 5, 12, 0, 0, 0, time.UTC), sources.StatusScheduled},
 	}
 	for _, c := range cases {
-		got := meetingsOf(t, vctc.VCTC, posts(t, c.post), nil, c.now)
+		got := meetingsOf(t, agendasOnly(), posts(t, c.post), nil, c.now)
 		if len(got) != 1 || got[0].Status != c.want || got[0].RecordingURL != "" {
 			t.Errorf("%s: got %+v, want %s with no recording", c.name, got, c.want)
 		}
@@ -506,7 +506,7 @@ func TestPostWithoutAMeetingDateIsDatedFromItsAgendaLink(t *testing.T) {
 		{"unparseable meta date", stage2, []any{badDate, november}, []string{"25100"}, `meeting_date=2026-12-xx`},
 	}
 	for _, c := range cases {
-		a, logs := logged(t, vctc.VCTC, serving(posts(t, c.posts...), nil), c.now)
+		a, logs := logged(t, agendasOnly(), serving(posts(t, c.posts...), nil), c.now)
 		got, err := a.Meetings(t.Context(), checkWindow(c.now))
 		if err != nil {
 			t.Errorf("%s: %v", c.name, err)
@@ -532,7 +532,7 @@ func TestBoardPostWithACommitteeAgendaIsDropped(t *testing.T) {
 	now := time.Date(2021, 12, 10, 12, 0, 0, 0, time.UTC)
 	transcom := commission(1126, "December 2021", "", "", uploads+"2021/12/AGENDA-PACKET-December-8-2021-TRANSCOM.pdf").titled("Commission Meeting – December 2021 (2)")
 	regular := commission(1127, "December 2021", "", "", uploads+"2021/12/VCTC-AGENDA-REPORTS-DECEMBER-3-2021.pdf")
-	a, logs := logged(t, vctc.VCTC, serving(posts(t, transcom, regular), nil), now)
+	a, logs := logged(t, agendasOnly(), serving(posts(t, transcom, regular), nil), now)
 	got, err := a.Meetings(t.Context(), checkWindow(now))
 	if err != nil {
 		t.Fatal(err)

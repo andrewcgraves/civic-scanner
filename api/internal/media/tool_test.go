@@ -248,6 +248,17 @@ func TestYouTubeAudioURL(t *testing.T) {
 	}
 }
 
+func TestNewDownloaderSendsTheMediaUserAgentOnlyToMediaHosts(t *testing.T) {
+	d := NewDownloader(config.Audio{MediaUserAgent: "Mozilla/5.0 media"}, "CivicScanner/1.0")
+	if d.Tool.UserAgent != "Mozilla/5.0 media" {
+		t.Errorf("media user agent = %q, want the configured one", d.Tool.UserAgent)
+	}
+	pages, ok := d.Resolver.Fetcher.(PageFetcher)
+	if !ok || pages.UserAgent != "CivicScanner/1.0" {
+		t.Errorf("player page fetcher = %#v, want the fetch user agent", d.Resolver.Fetcher)
+	}
+}
+
 func TestNewDownloaderUsesConfigAndDefaultHosts(t *testing.T) {
 	cfg := config.Audio{LimitBinary: "/opt/limit", FFmpegBinary: "/usr/bin/ffmpeg", FFprobeBinary: "/usr/bin/ffprobe", YTDLPBinary: "/usr/bin/yt-dlp", Timeout: time.Minute, MaxDuration: time.Hour, MaxMemory: 1, MaxBytes: 2}
 	d := NewDownloader(cfg, "ua")
