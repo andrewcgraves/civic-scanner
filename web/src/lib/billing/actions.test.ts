@@ -109,7 +109,7 @@ describe.each(actions)("%s", (_name, action, apiPath) => {
 describe("conflicts", () => {
   beforeEach(() => {
     mocks.enabled = true;
-    mocks.result = { status: "conflict" };
+    mocks.result = { status: "conflict", error: {} };
   });
 
   it("tells a subscribed user to use the portal", async () => {
