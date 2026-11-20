@@ -134,6 +134,9 @@ func (w *SummarizeAgendaWorker) Work(ctx context.Context, job *river.Job[Summari
 		logger.WarnContext(ctx, "agenda summary skipped: LLM not configured", attrs...)
 		return nil
 	}
+	if snooze := llmAccountSnoozeFor(ctx, logger.With("tier", w.tier), err); snooze != nil {
+		return snooze
+	}
 	if err != nil {
 		logger.WarnContext(ctx, "agenda not summarized", append(attrs, "error", err)...)
 		return summaryError(err)

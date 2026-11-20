@@ -75,6 +75,16 @@ func anthropicServer(t *testing.T, status int, header http.Header, body string) 
 }
 
 func messageBody(model, stopReason, text string) string {
+	return messageBodyWithUsage(model, stopReason, text, map[string]any{
+		"input_tokens":                15,
+		"cache_creation_input_tokens": 3,
+		"cache_read_input_tokens":     2,
+		"output_tokens":               28,
+		"output_tokens_details":       map[string]any{"thinking_tokens": 9},
+	})
+}
+
+func messageBodyWithUsage(model, stopReason, text string, usage map[string]any) string {
 	content := []map[string]any{{"type": "thinking", "thinking": "", "signature": "sig"}}
 	if text != "" {
 		content = append(content, map[string]any{"type": "text", "text": text})
@@ -88,13 +98,7 @@ func messageBody(model, stopReason, text string) string {
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
 		"stop_details":  nil,
-		"usage": map[string]any{
-			"input_tokens":                15,
-			"cache_creation_input_tokens": 3,
-			"cache_read_input_tokens":     2,
-			"output_tokens":               28,
-			"output_tokens_details":       map[string]any{"thinking_tokens": 9},
-		},
+		"usage":         usage,
 	})
 	return string(body)
 }
@@ -210,20 +214,73 @@ func TestAnthropicSendsConfiguredEffort(t *testing.T) {
 	}
 }
 
+func maxTokensServer(t *testing.T, output, thinking int) *fakeAnthropic {
+	usage := map[string]any{"input_tokens": 15, "output_tokens": output}
+	if thinking >= 0 {
+		usage["output_tokens_details"] = map[string]any{"thinking_tokens": thinking}
+	}
+	return anthropicServer(t, http.StatusOK, nil, messageBodyWithUsage("claude-haiku-5-5", "max_tokens", "The meeting began with", usage))
+}
+
 func TestAnthropicMaxTokensStopIsTruncated(t *testing.T) {
-	for _, stopReason := range []string{"max_tokens", "model_context_window_exceeded"} {
-		t.Run(stopReason, func(t *testing.T) {
-			srv := okServer(t, stopReason, "The meeting began with")
+	maxTokens := 1024 + llm.AnthropicThinkingHeadroom
+	for name, tc := range map[string]struct {
+		output, thinking, requested int
+	}{
+		"little thinking":                 {maxTokens, 40, 1024},
+		"reply reached half the request":  {maxTokens, maxTokens - 512, 1024},
+		"thinking tokens not reported":    {maxTokens, -1, 1024},
+		"no MaxOutputTokens requested":    {llm.AnthropicDefaultMaxTokens, llm.AnthropicDefaultMaxTokens - 10, 0},
+		"long reply after heavy thinking": {maxTokens, 8000, 1024},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := maxTokensServer(t, tc.output, tc.thinking)
 
-			resp, err := llm.New(anthropicConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u", MaxOutputTokens: 1024})
+			resp, err := llm.New(anthropicConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u", MaxOutputTokens: tc.requested})
 
-			if !errors.Is(err, llm.ErrTruncated) || llm.IsRetryable(err) {
+			if !errors.Is(err, llm.ErrTruncated) || llm.IsRetryable(err) || errors.Is(err, llm.ErrThinkingBudget) {
 				t.Fatalf("err = %v, want permanent ErrTruncated", err)
 			}
-			if resp.FinishReason != "length" || resp.Usage.OutputTokens != 28 || resp.Model != "claude-haiku-5-5" {
+			if resp.FinishReason != "length" || resp.Usage.OutputTokens != tc.output || resp.Model != "claude-haiku-5-5" {
 				t.Errorf("resp = %+v, want finish reason length with model and usage kept", resp)
 			}
 		})
+	}
+}
+
+func TestAnthropicMaxTokensStopAfterThinkingIsRetryable(t *testing.T) {
+	maxTokens := 1024 + llm.AnthropicThinkingHeadroom
+	for name, tc := range map[string]struct{ output, thinking int }{
+		"no reply at all":           {maxTokens, maxTokens},
+		"a few words":               {maxTokens, maxTokens - 30},
+		"one token short of half":   {maxTokens, maxTokens - 511},
+		"more thinking than output": {100, 200},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := maxTokensServer(t, tc.output, tc.thinking)
+
+			resp, err := llm.New(anthropicConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u", MaxOutputTokens: 1024})
+
+			if !errors.Is(err, llm.ErrThinkingBudget) || !llm.IsRetryable(err) || errors.Is(err, llm.ErrTruncated) || llm.IsAccountFailure(err) {
+				t.Fatalf("err = %v, want a retryable ErrThinkingBudget", err)
+			}
+			if !strings.Contains(err.Error(), "thinking") || strings.Contains(err.Error(), "llm: llm:") {
+				t.Errorf("err = %v, want one message saying thinking used the budget", err)
+			}
+			if resp.FinishReason != "length" || resp.Usage.OutputTokens != tc.output {
+				t.Errorf("resp = %+v, want finish reason length with usage kept", resp)
+			}
+		})
+	}
+}
+
+func TestAnthropicContextWindowStopIsTruncated(t *testing.T) {
+	srv := okServer(t, "model_context_window_exceeded", "The meeting began with")
+
+	_, err := llm.New(anthropicConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u", MaxOutputTokens: 1024})
+
+	if !errors.Is(err, llm.ErrTruncated) || llm.IsRetryable(err) {
+		t.Fatalf("err = %v, want permanent ErrTruncated", err)
 	}
 }
 
@@ -278,19 +335,20 @@ func TestAnthropicClassifiesStatusWithoutSDKRetries(t *testing.T) {
 		status    int
 		errType   string
 		retryable bool
+		account   bool
 	}{
-		{http.StatusBadRequest, "invalid_request_error", false},
-		{http.StatusUnauthorized, "authentication_error", false},
-		{http.StatusForbidden, "permission_error", false},
-		{http.StatusNotFound, "not_found_error", false},
-		{http.StatusRequestEntityTooLarge, "request_too_large", false},
-		{http.StatusPaymentRequired, "billing_error", true},
-		{http.StatusRequestTimeout, "timeout_error", true},
-		{http.StatusTooManyRequests, "rate_limit_error", true},
-		{http.StatusInternalServerError, "api_error", true},
-		{http.StatusBadGateway, "api_error", true},
-		{http.StatusServiceUnavailable, "api_error", true},
-		{529, "overloaded_error", true},
+		{http.StatusBadRequest, "invalid_request_error", false, false},
+		{http.StatusUnauthorized, "authentication_error", false, true},
+		{http.StatusForbidden, "permission_error", false, true},
+		{http.StatusNotFound, "not_found_error", false, true},
+		{http.StatusRequestEntityTooLarge, "request_too_large", false, false},
+		{http.StatusPaymentRequired, "billing_error", false, true},
+		{http.StatusRequestTimeout, "timeout_error", true, false},
+		{http.StatusTooManyRequests, "rate_limit_error", true, false},
+		{http.StatusInternalServerError, "api_error", true, false},
+		{http.StatusBadGateway, "api_error", true, false},
+		{http.StatusServiceUnavailable, "api_error", true, false},
+		{529, "overloaded_error", true, false},
 	} {
 		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
 			header := http.Header{"X-Should-Retry": {"true"}, "Request-Id": {"req_1"}}
@@ -302,8 +360,14 @@ func TestAnthropicClassifiesStatusWithoutSDKRetries(t *testing.T) {
 			if !errors.As(err, &e) {
 				t.Fatalf("err = %v, want *llm.Error", err)
 			}
-			if e.StatusCode != tc.status || e.Retryable != tc.retryable {
-				t.Errorf("status %d retryable %v, want %d %v", e.StatusCode, e.Retryable, tc.status, tc.retryable)
+			if e.StatusCode != tc.status || e.Retryable != tc.retryable || e.Account != tc.account {
+				t.Errorf("status %d retryable %v account %v, want %d %v %v", e.StatusCode, e.Retryable, e.Account, tc.status, tc.retryable, tc.account)
+			}
+			if llm.IsAccountFailure(err) != tc.account {
+				t.Errorf("IsAccountFailure = %v, want %v", llm.IsAccountFailure(err), tc.account)
+			}
+			if e.Provider != config.LLMAnthropic || e.Model != "claude-haiku-5-5" || e.Type != tc.errType {
+				t.Errorf("error fields = %q %q %q, want provider, model and the API's type", e.Provider, e.Model, e.Type)
 			}
 			if !strings.Contains(err.Error(), "the reason") || !strings.Contains(err.Error(), tc.errType) {
 				t.Errorf("err = %v, want the API's type and message", err)
@@ -315,6 +379,77 @@ func TestAnthropicClassifiesStatusWithoutSDKRetries(t *testing.T) {
 				t.Errorf("requests = %d, want 1: the SDK must not retry", n)
 			}
 		})
+	}
+}
+
+func TestAnthropicClassifiesAccountFailuresByTypeAndCode(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		body      string
+		code      string
+		retryable bool
+		account   bool
+	}{
+		{
+			"monthly spend cap", http.StatusTooManyRequests,
+			`{"type":"error","error":{"type":"rate_limit_error","message":"cap","details":{"error_code":"enforced_spend_limit_reached"}}}`,
+			"enforced_spend_limit_reached", false, true,
+		},
+		{
+			"contract spend limit", http.StatusTooManyRequests,
+			`{"type":"error","error":{"type":"rate_limit_error","message":"cap","details":{"error_code":"contract_spend_limit_reached"}}}`,
+			"contract_spend_limit_reached", false, true,
+		},
+		{
+			"ramp limit", http.StatusTooManyRequests,
+			`{"type":"error","error":{"type":"rate_limit_error","message":"slow down","details":{"error_code":"ramp_limit_exceeded"}}}`,
+			"ramp_limit_exceeded", true, false,
+		},
+		{
+			"organization on hold", http.StatusBadRequest,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"hold","details":{"error_code":"organization_on_hold"}}}`,
+			"organization_on_hold", false, true,
+		},
+		{
+			"billing type on another status", http.StatusBadRequest,
+			`{"type":"error","error":{"type":"billing_error","message":"credit"}}`,
+			"", false, true,
+		},
+		{
+			"too large after decoding", http.StatusRequestEntityTooLarge,
+			`{"type":"error","error":{"type":"request_too_large","message":"big","details":{"error_code":"request_body_too_large_after_decoding"}}}`,
+			"request_body_too_large_after_decoding", false, false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := anthropicServer(t, tc.status, nil, tc.body)
+
+			_, err := llm.New(anthropicConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u"})
+
+			var e *llm.Error
+			if !errors.As(err, &e) {
+				t.Fatalf("err = %v, want *llm.Error", err)
+			}
+			if e.Retryable != tc.retryable || e.Account != tc.account || e.Code != tc.code {
+				t.Errorf("retryable %v account %v code %q, want %v %v %q", e.Retryable, e.Account, e.Code, tc.retryable, tc.account, tc.code)
+			}
+		})
+	}
+}
+
+func TestAnthropicNetworkAndReplyErrorsAreNotAccountFailures(t *testing.T) {
+	srv := okServer(t, "refusal", "no")
+
+	_, err := llm.New(anthropicConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u"})
+
+	if err == nil || llm.IsAccountFailure(err) {
+		t.Errorf("refusal: err = %v, want a per-item failure", err)
+	}
+	srv.Close()
+	_, err = llm.New(anthropicConfig(srv.URL)).Complete(t.Context(), llm.Request{Tier: llm.TierRoutine, User: "u"})
+	if llm.IsAccountFailure(err) || !llm.IsRetryable(err) {
+		t.Errorf("network failure: err = %v, want retryable and not an account failure", err)
 	}
 }
 

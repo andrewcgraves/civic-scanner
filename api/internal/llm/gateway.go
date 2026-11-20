@@ -54,22 +54,47 @@ type chatResponse struct {
 
 type errorBody struct {
 	Error struct {
-		Message string `json:"message"`
+		Message string          `json:"message"`
+		Type    string          `json:"type"`
+		Code    json.RawMessage `json:"code"`
 	} `json:"error"`
 }
 
-func statusError(resp *http.Response, raw []byte) *Error {
+func statusError(resp *http.Response, raw []byte, model string) *Error {
 	message := http.StatusText(resp.StatusCode)
 	var parsed errorBody
 	if json.Unmarshal(raw, &parsed) == nil && parsed.Error.Message != "" {
 		message = parsed.Error.Message
 	}
+	account := accountStatus(resp.StatusCode)
 	return &Error{
 		StatusCode: resp.StatusCode,
-		Retryable:  retryableStatus(resp.StatusCode),
+		Retryable:  retryableStatus(resp.StatusCode) && !account,
+		Account:    account,
 		RetryAfter: retryAfter(resp.Header),
+		Provider:   config.LLMGateway,
+		Model:      model,
+		Type:       label(parsed.Error.Type),
+		Code:       label(errorCode(parsed.Error.Code)),
 		Err:        fmt.Errorf("gateway returned %d: %s", resp.StatusCode, message),
 	}
+}
+
+const maxLabelBytes = 64
+
+func label(s string) string {
+	if len(s) > maxLabelBytes || strings.ContainsFunc(s, func(r rune) bool { return r < ' ' || r == 0x7f }) {
+		return "unrecognized"
+	}
+	return s
+}
+
+func errorCode(raw json.RawMessage) string {
+	var s string
+	if len(raw) == 0 || json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 func retryAfter(h http.Header) time.Duration {
@@ -81,7 +106,7 @@ func retryAfter(h http.Header) time.Duration {
 
 func retryableStatus(code int) bool {
 	switch code {
-	case http.StatusPaymentRequired, http.StatusRequestTimeout, http.StatusTooManyRequests:
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
 		return true
 	}
 	return code >= http.StatusInternalServerError
@@ -133,7 +158,7 @@ func (g *gateway) Complete(ctx context.Context, req Request) (Response, error) {
 		return Response{}, &Error{StatusCode: httpResp.StatusCode, Retryable: true, Err: err}
 	}
 	if httpResp.StatusCode != http.StatusOK {
-		return Response{}, statusError(httpResp, raw)
+		return Response{}, statusError(httpResp, raw, model)
 	}
 	if len(raw) > maxResponseBytes {
 		return Response{}, fmt.Errorf("%w: over %d bytes", ErrResponseTooLarge, maxResponseBytes)

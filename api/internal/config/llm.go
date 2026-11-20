@@ -40,7 +40,7 @@ func loadLLM() (LLM, error) {
 		return LLM{}, fmt.Errorf("AI_GATEWAY_BASE_URL: %w", err)
 	}
 	anthropicURL := envOr("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-	if err := checkHTTPURL(anthropicURL); err != nil {
+	if err := checkAnthropicURL(anthropicURL); err != nil {
 		return LLM{}, fmt.Errorf("ANTHROPIC_BASE_URL: %w", err)
 	}
 	effort := envOr("ANTHROPIC_EFFORT", "low")
@@ -88,6 +88,20 @@ func checkModelID(provider, id string) error {
 		if strings.ContainsAny(id, "/.") {
 			return fmt.Errorf("model ids for the Anthropic API have no provider prefix and no dots (for example claude-haiku-5-5), got %q, which looks like a gateway id", id)
 		}
+	}
+	return nil
+}
+
+func checkAnthropicURL(raw string) error {
+	if err := checkHTTPURL(raw); err != nil {
+		return err
+	}
+	u, _ := url.Parse(raw)
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("must have no path, since the SDK adds /v1/messages itself: got %q, use %s://%s", raw, u.Scheme, u.Host)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("must have no query or fragment, got %q", raw)
 	}
 	return nil
 }

@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	AnthropicThinkingHeadroom = 4096
+	AnthropicThinkingHeadroom = 8192
 	AnthropicDefaultMaxTokens = 16000
 	AnthropicMaxRetries       = 0
 )
@@ -65,7 +65,7 @@ func (a *anthropicClient) Complete(ctx context.Context, req Request) (Response, 
 
 	msg, err := a.client.Messages.New(ctx, params)
 	if err != nil {
-		return Response{}, anthropicError(err)
+		return Response{}, anthropicError(err, model)
 	}
 
 	var text strings.Builder
@@ -86,7 +86,15 @@ func (a *anthropicClient) Complete(ctx context.Context, req Request) (Response, 
 	switch msg.StopReason {
 	case anthropic.StopReasonRefusal:
 		return resp, fmt.Errorf("%w: the model declined the request (category %q)", ErrContentFiltered, msg.StopDetails.Category)
-	case anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence, anthropic.StopReasonMaxTokens, anthropic.StopReasonModelContextWindowExceeded:
+	case anthropic.StopReasonMaxTokens:
+		if thinkingUsedBudget(msg.Usage, req.MaxOutputTokens) {
+			thinking := msg.Usage.OutputTokensDetails.ThinkingTokens
+			return resp, &Error{Retryable: true, Provider: config.LLMAnthropic, Model: model, Err: fmt.Errorf(
+				"%w: %d of %d output tokens were thinking, leaving %d for a reply of up to %d",
+				ErrThinkingBudget, thinking, msg.Usage.OutputTokens, max(msg.Usage.OutputTokens-thinking, 0), req.MaxOutputTokens)}
+		}
+		return resp, CheckReply(resp)
+	case anthropic.StopReasonEndTurn, anthropic.StopReasonStopSequence, anthropic.StopReasonModelContextWindowExceeded:
 		return resp, CheckReply(resp)
 	default:
 		return resp, &Error{Retryable: true, Err: fmt.Errorf("unexpected stop_reason %q", msg.StopReason)}
@@ -106,18 +114,49 @@ func finishReason(reason anthropic.StopReason) string {
 	}
 }
 
-func anthropicError(err error) error {
+func thinkingUsedBudget(usage anthropic.Usage, requested int) bool {
+	if requested <= 0 || !usage.OutputTokensDetails.JSON.ThinkingTokens.Valid() {
+		return false
+	}
+	visible := usage.OutputTokens - usage.OutputTokensDetails.ThinkingTokens
+	return visible*2 < int64(requested)
+}
+
+func anthropicAccountFailure(apiErr *anthropic.Error) bool {
+	if accountStatus(apiErr.StatusCode) {
+		return true
+	}
+	switch apiErr.Type() {
+	case anthropic.ErrorTypeAuthenticationError, anthropic.ErrorTypeBillingError,
+		anthropic.ErrorTypePermissionError, anthropic.ErrorTypeNotFoundError:
+		return true
+	}
+	switch apiErr.ErrorCode() {
+	case anthropic.ErrorCodeOrganizationOnHold, anthropic.ErrorCodeEnforcedSpendLimitReached,
+		anthropic.ErrorCodeContractSpendLimitReached:
+		return true
+	}
+	return false
+}
+
+func anthropicError(err error, model string) error {
 	var apiErr *anthropic.Error
 	if !errors.As(err, &apiErr) {
-		return &Error{Retryable: true, Err: err}
+		return &Error{Retryable: true, Provider: config.LLMAnthropic, Model: model, Err: err}
 	}
 	message := apiErr.Message
 	if message == "" {
 		message = http.StatusText(apiErr.StatusCode)
 	}
+	account := anthropicAccountFailure(apiErr)
 	e := &Error{
 		StatusCode: apiErr.StatusCode,
-		Retryable:  retryableStatus(apiErr.StatusCode),
+		Retryable:  retryableStatus(apiErr.StatusCode) && !account,
+		Account:    account,
+		Provider:   config.LLMAnthropic,
+		Model:      model,
+		Type:       label(string(apiErr.Type())),
+		Code:       label(string(apiErr.ErrorCode())),
 		Err:        fmt.Errorf("anthropic returned %d %s: %s (request %s)", apiErr.StatusCode, apiErr.Type(), message, apiErr.RequestID),
 	}
 	if apiErr.Response != nil {
