@@ -3,7 +3,11 @@ import type { Metadata } from "next";
 import type { BreadcrumbItem } from "@/components/ui/breadcrumb";
 import { MeetingTime } from "@/components/ui/date-time";
 import { ExternalLink, isWebUrl } from "@/components/ui/external-link";
-import { MeetingStatusBadge } from "@/components/ui/meeting-status-badge";
+import {
+  type MeetingDisplayKind,
+  MeetingStatusBadge,
+  meetingDisplay,
+} from "@/components/ui/meeting-status-badge";
 import { Notice, UnavailableNotice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 import type { MeetingDetail } from "@/lib/api/client";
@@ -30,14 +34,31 @@ export async function generateMetadata({
     return { title: "Meeting" };
   }
   const { title, agency, startsAt, status } = meeting.data;
-  const date = formatMeetingDate(startsAt);
   return {
     title: `${title} — ${agency.name}`,
-    description:
-      status === "cancelled"
-        ? `${title}, a meeting of ${agency.name} scheduled for ${date}, has been cancelled.`
-        : `${title}, a meeting of ${agency.name} on ${date}.`,
+    description: describeMeeting(
+      title,
+      agency.name,
+      startsAt,
+      meetingDisplay(status, startsAt, new Date()).kind,
+    ),
   };
+}
+
+function describeMeeting(
+  title: string,
+  agencyName: string,
+  startsAt: string,
+  kind: MeetingDisplayKind,
+): string {
+  const date = formatMeetingDate(startsAt);
+  if (kind === "cancelled") {
+    return `${title}, a meeting of ${agencyName} scheduled for ${date}, has been cancelled.`;
+  }
+  if (kind === "date-passed") {
+    return `${title}, a meeting of ${agencyName} scheduled for ${date}. The date has passed; Civic Scanner has no confirmation that it took place.`;
+  }
+  return `${title}, a meeting of ${agencyName} on ${date}.`;
 }
 
 function breadcrumbFor(
@@ -77,6 +98,7 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
   }
 
   const data = meeting.data;
+  const display = meetingDisplay(data.status, data.startsAt, new Date());
   return (
     <>
       <PageHeader
@@ -84,7 +106,7 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
         eyebrow={data.agency.name}
         breadcrumb={breadcrumbFor(data, agencyPagesOn)}
       >
-        <MeetingStatusBadge status={data.status} />
+        <MeetingStatusBadge display={display} />
         <MeetingTime value={data.startsAt} />
         {!isWebUrl(data.sourceUrl) ? null : (
           <ExternalLink href={data.sourceUrl}>
@@ -92,11 +114,19 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
           </ExternalLink>
         )}
       </PageHeader>
-      {data.status === "cancelled" ? (
+      {display.kind === "cancelled" ? (
         <div className="mb-10">
           <Notice title="This meeting has been cancelled">
             {data.agency.name} lists this meeting as cancelled. It had been
             scheduled for <MeetingTime value={data.startsAt} />.
+          </Notice>
+        </div>
+      ) : null}
+      {display.kind === "date-passed" ? (
+        <div className="mb-10">
+          <Notice>
+            The date of this meeting has passed, and Civic Scanner has no
+            confirmation from {data.agency.name}&apos;s site that it took place.
           </Notice>
         </div>
       ) : null}
@@ -105,7 +135,7 @@ export default async function MeetingPage({ params }: MeetingPageProps) {
         agencyName={data.agency.name}
         status={data.status}
       />
-      <TranscriptSection meeting={data} />
+      <TranscriptSection meeting={data} display={display.kind} />
     </>
   );
 }

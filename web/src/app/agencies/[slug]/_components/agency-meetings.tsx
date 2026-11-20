@@ -109,6 +109,7 @@ export function AgencyMeetings({
               label="Upcoming meetings"
               meetings={upcoming}
               linkToMeetings={linkToMeetings}
+              now={now}
             />
           )}
         </Section>
@@ -128,6 +129,7 @@ export function AgencyMeetings({
               label={pastTitle}
               meetings={past}
               linkToMeetings={linkToMeetings}
+              now={now}
             />
           )}
         </Section>
