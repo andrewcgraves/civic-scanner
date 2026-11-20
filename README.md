@@ -1974,10 +1974,10 @@ Without a key for the selected provider the binaries start normally, and every `
 
 The REST response is `{text, segments, language, durationInSeconds, warnings, providerMetadata}`, where each segment is `{text, startSecond, endSecond}`. Segments carry no speaker, so speaker data is read from `providerMetadata`:
 
-- `elevenlabs.words` (`text`, `type` of `word`, `spacing` or `audio_event`, `start`, `end`, `speaker_id`). When `segments` is empty, segments are built from the words: a new segment starts on a speaker change, a pause of 1.5 s or more, after a word ending in `.`, `?` or `!`, or when a segment would pass 30 s. When `segments` is present, each takes the speaker of the word at its midpoint.
+- `elevenlabs.words` (`text`, `type` of `word`, `spacing` or `audio_event`, `start`, `end`, `speaker_id`). Whenever the reply has words, the segments are built from them and the reply's own `segments` are ignored: a new segment starts on a speaker change, a pause of 1.5 s or more, after a word ending in `.`, `?` or `!`, or when a segment would pass 30 s. Through the gateway, `elevenlabs/scribe-v2` fills `segments` with one entry per word and one per space, so using them would store one segment per word and put any recording over about an hour of speech past the 10,000-segment cap.
 - `azure.phrases` (`text`, `offsetMilliseconds`, `durationMilliseconds`, `speaker`). Phrases become the segments, since they carry the speaker.
 
-Models that return neither get segments from `segments`, or none (the `Text` is still set), and no speakers. The request and response shapes follow the docs and the `@ai-sdk/gateway` source; the committed tests run only against `httptest`.
+Models that return neither get segments from `segments`, or none (the `Text` is still set), and no speakers. The request and response shapes follow the docs and the `@ai-sdk/gateway` source. They were checked against the live gateway with `elevenlabs/scribe-v2` on 2026-11-20, on a 15-second two-voice clip sent as one request; that reply is `internal/transcribe/testdata/gateway_elevenlabs_scribe_v2.json`, and `TestGatewayBuildsSegmentsFromWordsWhenTheReplyHasOnePerWord` runs against it. Chunked uploads have not been run live. The committed tests run only against `httptest`.
 
 ### Speakers
 

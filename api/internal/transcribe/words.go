@@ -88,18 +88,6 @@ func endsSentence(text string) bool {
 	return strings.HasSuffix(trimmed, ".") || strings.HasSuffix(trimmed, "?") || strings.HasSuffix(trimmed, "!")
 }
 
-func labelSpeakers(segments []Segment, words []elevenLabsWord) {
-	for i := range segments {
-		mid := segments[i].Start + (segments[i].End-segments[i].Start)/2
-		for _, w := range words {
-			if w.Type != "spacing" && seconds(w.Start) <= mid && mid <= seconds(w.End) {
-				segments[i].Speaker = w.SpeakerID
-				break
-			}
-		}
-	}
-}
-
 func gatewayWords(words []elevenLabsWord) []Word {
 	var out []Word
 	for _, w := range words {

@@ -194,14 +194,12 @@ func TestGatewaySplitsWordsOnSpeakerChangeAndLongPauses(t *testing.T) {
 	}
 }
 
-func TestGatewayLabelsExistingSegmentsFromWordSpeakers(t *testing.T) {
-	srv := gatewayServer(t, `{"text":"hi there","segments":[
-    {"text":"hi","startSecond":0,"endSecond":1},
-    {"text":"there","startSecond":1,"endSecond":2}
-  ],"providerMetadata":{"elevenlabs":{"words":[
-    {"text":"hi","type":"word","start":0,"end":1,"speaker_id":"speaker_3"},
-    {"text":"there","type":"word","start":1,"end":2,"speaker_id":"speaker_4"}
-  ]}}}`)
+func TestGatewayBuildsSegmentsFromWordsWhenTheReplyHasOnePerWord(t *testing.T) {
+	reply, err := os.ReadFile(filepath.Join("testdata", "gateway_elevenlabs_scribe_v2.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := gatewayServer(t, string(reply))
 	defer srv.Close()
 
 	got, err := transcribe.New(gatewayConfig(srv.URL)).Transcribe(t.Context(), audioFile(t, "x"))
@@ -209,8 +207,30 @@ func TestGatewayLabelsExistingSegmentsFromWordSpeakers(t *testing.T) {
 		t.Fatalf("Transcribe: %v", err)
 	}
 
-	if len(got.Segments) != 2 || got.Segments[0].Speaker != "c0/speaker_3" || got.Segments[1].Speaker != "c0/speaker_4" {
-		t.Errorf("segments = %+v", got.Segments)
+	var texts []string
+	for _, s := range got.Segments {
+		texts = append(texts, s.Speaker+"="+s.Text)
+	}
+	want := []string{
+		"c0/speaker_0=Good evening.",
+		"c0/speaker_0=The board of directors will now come to order.",
+		"c0/speaker_0=The first item on the agenda is the approval of the minutes from the October meeting.",
+		"c0/speaker_1=Thank you, Madam Chair.",
+		"c0/speaker_1=I move that we approve the minutes as presented and that we continue the bus fare discussion to December",
+	}
+	if strings.Join(texts, "\n") != strings.Join(want, "\n") {
+		t.Errorf("segments =\n%s\nwant\n%s", strings.Join(texts, "\n"), strings.Join(want, "\n"))
+	}
+	if len(got.Words) != 50 {
+		t.Errorf("words = %d, want 50", len(got.Words))
+	}
+	if got.Text != strings.Join([]string{
+		"Good evening. The board of directors will now come to order.",
+		"The first item on the agenda is the approval of the minutes from the October meeting.",
+		"Thank you, Madam Chair.",
+		"I move that we approve the minutes as presented and that we continue the bus fare discussion to December",
+	}, " ") {
+		t.Errorf("text = %q", got.Text)
 	}
 }
 
