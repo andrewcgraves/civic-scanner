@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	ErrNotConfigured    = errors.New("llm: not configured, set AI_GATEWAY_API_KEY")
+	ErrNotConfigured    = errors.New("llm: not configured, set AI_GATEWAY_API_KEY, or ANTHROPIC_API_KEY with LLM_PROVIDER=anthropic")
 	ErrUnknownTier      = errors.New("llm: unknown tier")
 	ErrTruncated        = errors.New("llm: reply truncated at the output token limit")
 	ErrContentFiltered  = errors.New("llm: reply blocked by the content filter")

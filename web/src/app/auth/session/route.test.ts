@@ -82,19 +82,27 @@ describe("GET /auth/session", () => {
       "x-civic-session-state": "unverified",
     });
 
-    expect((await session()).body).toEqual({ signedIn: true, email: null });
+    expect((await session()).body).toEqual({
+      signedIn: true,
+      email: null,
+      role: null,
+    });
     expect(mocks.callApiAsUser).not.toHaveBeenCalled();
   });
 
   it("shows the email the API has for the user", async () => {
     mocks.callApiAsUser.mockResolvedValue({
       status: "ok",
-      data: { id: "u", email: "api@example.com", createdAt: "x" },
+      data: { id: "u", email: "api@example.com", role: "user", createdAt: "x" },
     });
 
     const { response, body, text } = await session();
 
-    expect(body).toEqual({ signedIn: true, email: "api@example.com" });
+    expect(body).toEqual({
+      signedIn: true,
+      email: "api@example.com",
+      role: "user",
+    });
     expect(response.headers.get("vary")).toBe("Cookie");
     expect(text).not.toContain(ACCESS_TOKEN);
     expect(text).not.toContain(REFRESH_TOKEN);
@@ -117,10 +125,27 @@ describe("GET /auth/session", () => {
   it("has no email when the API has none", async () => {
     mocks.callApiAsUser.mockResolvedValue({
       status: "ok",
-      data: { id: "u", email: null, createdAt: "x" },
+      data: { id: "u", email: null, role: "user", createdAt: "x" },
     });
 
-    expect((await session()).body).toEqual({ signedIn: true, email: null });
+    expect((await session()).body).toEqual({
+      signedIn: true,
+      email: null,
+      role: "user",
+    });
+  });
+
+  it("passes on the role the API has for the user", async () => {
+    mocks.callApiAsUser.mockResolvedValue({
+      status: "ok",
+      data: { id: "u", email: null, role: "admin", createdAt: "x" },
+    });
+
+    expect((await session()).body).toEqual({
+      signedIn: true,
+      email: null,
+      role: "admin",
+    });
   });
 
   it("is signed out when the API rejects the token after a refresh", async () => {
@@ -130,11 +155,15 @@ describe("GET /auth/session", () => {
   });
 
   it.each([["unavailable"], ["not-found"], ["failed"]])(
-    "stays signed in, without an email, when the API answers %s",
+    "stays signed in, without an email or role, when the API answers %s",
     async (status) => {
       mocks.callApiAsUser.mockResolvedValue({ status });
 
-      expect((await session()).body).toEqual({ signedIn: true, email: null });
+      expect((await session()).body).toEqual({
+        signedIn: true,
+        email: null,
+        role: null,
+      });
     },
   );
 });
