@@ -24,7 +24,7 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 		w.Header().Set("Allow", allowedMethods(r, req.URL.Path))
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	})
-	v1.HandlerWithOptions(v1.NewStrictHandler(h, []v1.StrictMiddlewareFunc{noStore}), v1.ChiServerOptions{
+	v1.HandlerWithOptions(v1.NewStrictHandler(h, []v1.StrictMiddlewareFunc{noStore, h.adminOnly(adminOperations)}), v1.ChiServerOptions{
 		BaseURL:    "/v1",
 		BaseRouter: r,
 		ErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {

@@ -4,13 +4,35 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-var ErrInvalidUser = errors.New("invalid user")
+var (
+	ErrInvalidUser   = errors.New("invalid user")
+	ErrInvalidRole   = errors.New("invalid role")
+	ErrAmbiguousUser = errors.New("more than one user matches")
+)
+
+type Role string
+
+const (
+	RoleUser  Role = "user"
+	RoleAdmin Role = "admin"
+)
+
+func ParseRole(s string) (Role, error) {
+	switch r := Role(s); r {
+	case RoleUser, RoleAdmin:
+		return r, nil
+	}
+	return "", fmt.Errorf("%w: %q, want %q or %q", ErrInvalidRole, s, RoleUser, RoleAdmin)
+}
+
+func (r Role) IsAdmin() bool { return r == RoleAdmin }
 
 type UserInput struct {
 	WorkOSUserID string
@@ -21,15 +43,16 @@ type User struct {
 	ID           uuid.UUID
 	WorkOSUserID string
 	Email        *string
+	Role         Role
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
-const userColumns = `id, workos_user_id, email, created_at, updated_at`
+const userColumns = `id, workos_user_id, email, role, created_at, updated_at`
 
 func scanUser(row pgx.Row, extra ...any) (User, error) {
 	var u User
-	dest := append([]any{&u.ID, &u.WorkOSUserID, &u.Email, &u.CreatedAt, &u.UpdatedAt}, extra...)
+	dest := append([]any{&u.ID, &u.WorkOSUserID, &u.Email, &u.Role, &u.CreatedAt, &u.UpdatedAt}, extra...)
 	err := row.Scan(dest...)
 	return u, err
 }
@@ -59,4 +82,68 @@ RETURNING `+userColumns+`, xmax = 0`,
 		return User{}, false, fmt.Errorf("ensure user: upsert: %w", err)
 	}
 	return u, created, nil
+}
+
+type UserRef struct {
+	ID    uuid.UUID
+	Email string
+}
+
+type RoleChange struct {
+	User     User
+	Previous Role
+}
+
+func (s *Store) SetUserRole(ctx context.Context, ref UserRef, role Role) (RoleChange, error) {
+	if _, err := ParseRole(string(role)); err != nil {
+		return RoleChange{}, fmt.Errorf("set user role: %w", err)
+	}
+	if (ref.ID == uuid.Nil) == (ref.Email == "") {
+		return RoleChange{}, fmt.Errorf("set user role: give exactly one of an id or an email: %w", ErrInvalidUser)
+	}
+	var change RoleChange
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		target, err := lockUserRef(ctx, tx, ref)
+		if err != nil {
+			return err
+		}
+		change.Previous = target.Role
+		change.User, err = scanUser(tx.QueryRow(ctx, `
+UPDATE users
+SET role = $2,
+    updated_at = CASE WHEN role = $2 THEN updated_at ELSE now() END
+WHERE id = $1
+RETURNING `+userColumns, target.ID, string(role)))
+		return err
+	})
+	if err != nil {
+		return RoleChange{}, fmt.Errorf("set user role: %w", err)
+	}
+	return change, nil
+}
+
+func lockUserRef(ctx context.Context, tx pgx.Tx, ref UserRef) (User, error) {
+	query, arg := `SELECT `+userColumns+` FROM users WHERE id = $1 FOR UPDATE`, any(ref.ID)
+	if ref.ID == uuid.Nil {
+		query, arg = `SELECT `+userColumns+` FROM users WHERE lower(email) = lower($1) ORDER BY created_at, id FOR UPDATE`, ref.Email
+	}
+	rows, err := tx.Query(ctx, query, arg)
+	if err != nil {
+		return User{}, err
+	}
+	matches, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (User, error) { return scanUser(row) })
+	if err != nil {
+		return User{}, err
+	}
+	switch len(matches) {
+	case 0:
+		return User{}, ErrNotFound
+	case 1:
+		return matches[0], nil
+	}
+	ids := make([]string, len(matches))
+	for i, m := range matches {
+		ids[i] = m.ID.String()
+	}
+	return User{}, fmt.Errorf("%w: %s", ErrAmbiguousUser, strings.Join(ids, ", "))
 }

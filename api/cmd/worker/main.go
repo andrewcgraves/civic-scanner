@@ -45,6 +45,8 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return err
 	case args[0] == checkAgencyCommand:
 		return checkAgency(ctx, args[1:], stdout, stderr, river.QueueDefault)
+	case args[0] == setRoleCommand:
+		return setRole(ctx, args[1:], stdout)
 	default:
 		return errWorkerUsage
 	}

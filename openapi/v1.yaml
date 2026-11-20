@@ -355,6 +355,19 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: >-
+        The token is valid but the signed-in user may not use this route,
+        for example a route for admins only. `code` is `forbidden`. The role
+        is read from the database on every request, so a change takes effect
+        on the next one; signing in again does not help.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     AuthUnavailable:
       description: >-
         The token cannot be checked right now. `code` is
@@ -584,7 +597,7 @@ components:
           type: string
     User:
       type: object
-      required: [id, email, createdAt]
+      required: [id, email, role, createdAt]
       properties:
         id:
           type: string
@@ -596,6 +609,13 @@ components:
           description: >-
             The email address from the latest access token that carried one,
             or null when none has. Not an identifier: it can change.
+        role:
+          type: string
+          enum: [user, admin]
+          description: >-
+            What the user may do. `admin` may use the admin routes; everyone
+            else is `user`, which is also the role of a new user. Read from
+            the database on every request, never from the token.
         createdAt:
           type: string
           format: date-time
