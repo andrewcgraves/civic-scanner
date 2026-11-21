@@ -1,0 +1,27 @@
+{
+  "embeds": [
+    {
+      "title": "Board of Directors",
+      "url": "https://civic.example/meetings/11111111-2222-4333-8444-555555555555",
+      "description": "**Agenda changed**\nThe agenda changed (now version 2).\n\nAdded \\*14.\\* Adopt the 2027 calendar & \\<\\@123\\> \\@everyone \\`now\\` \\# \\[link](https://x.example) \\~\\~gone\\~\\~ \\|\\|spoiler\\|\\|\n\n*Change described by a language model.*",
+      "color": 16361509,
+      "timestamp": "2026-11-17T21:00:00Z",
+      "author": {
+        "name": "LA Metro"
+      },
+      "fields": [
+        {
+          "name": "Starts",
+          "value": "<t:1795197600:F> (<t:1795197600:R>)",
+          "inline": true
+        }
+      ],
+      "footer": {
+        "text": "Civic Scanner"
+      }
+    }
+  ],
+  "allowed_mentions": {
+    "parse": []
+  }
+}

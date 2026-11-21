@@ -1,0 +1,35 @@
+{
+  "text": "Agenda published: Board of Directors (LA Metro)",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "Agenda published: Board of Directors",
+        "emoji": false
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "plain_text",
+          "text": "LA Metro",
+          "emoji": false
+        },
+        {
+          "type": "mrkdwn",
+          "text": "Starts <!date^1795197600^{date_long_pretty} at {time}|Friday, November 20, 2026 at 6:00 PM UTC>"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "plain_text",
+        "text": "The agenda is published (version 1).",
+        "emoji": false
+      }
+    }
+  ]
+}

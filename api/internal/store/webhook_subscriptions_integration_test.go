@@ -60,7 +60,7 @@ func TestWebhookSubscriptionLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if created.ID != in.ID || created.UserID != user.ID || created.AgencySlug != slug || created.AgencyName != "Webhook Test Agency" ||
-		created.URL != in.URL || created.PayloadVersion != "v1" || created.Status != store.WebhookActive {
+		created.URL != in.URL || created.PayloadVersion != "v1" || created.Format != store.WebhookFormatStandard || created.Status != store.WebhookActive {
 		t.Errorf("created = %+v", created)
 	}
 	if created.CreatedAt.Before(before) || !created.SecretRotatedAt.Equal(created.CreatedAt) || !created.UpdatedAt.Equal(created.CreatedAt) {
@@ -96,6 +96,20 @@ func TestWebhookSubscriptionLifecycle(t *testing.T) {
 	updated, err = s.UpdateWebhookSubscription(ctx, user.ID, created.ID, store.WebhookSubscriptionUpdate{URL: &url, Status: &active})
 	if err != nil || updated.Status != store.WebhookActive || updated.URL != url || updated.PayloadVersion != "v1" {
 		t.Errorf("resume and move = %+v, %v", updated, err)
+	}
+	slack := store.WebhookFormatSlack
+	updated, err = s.UpdateWebhookSubscription(ctx, user.ID, created.ID, store.WebhookSubscriptionUpdate{Format: &slack})
+	if err != nil || updated.Format != store.WebhookFormatSlack || updated.URL != url || updated.Status != store.WebhookActive {
+		t.Errorf("format = %+v, %v", updated, err)
+	}
+	bogus := store.WebhookFormat("teams")
+	if _, err := s.UpdateWebhookSubscription(ctx, user.ID, created.ID, store.WebhookSubscriptionUpdate{Format: &bogus}); !errors.Is(err, store.ErrInvalidWebhookSubscription) {
+		t.Errorf("unknown format: err = %v", err)
+	}
+	discord := webhookInput(user, slug, "https://hooks.example.com/discord")
+	discord.Format = store.WebhookFormatDiscord
+	if got, err := s.CreateWebhookSubscription(ctx, discord); err != nil || got.Format != store.WebhookFormatDiscord {
+		t.Errorf("create with a preset = %+v, %v", got, err)
 	}
 	taken := second.URL
 	if _, err := s.UpdateWebhookSubscription(ctx, user.ID, created.ID, store.WebhookSubscriptionUpdate{URL: &taken}); !errors.Is(err, store.ErrWebhookSubscriptionExists) {
@@ -187,6 +201,7 @@ func TestCreateWebhookSubscriptionRefuses(t *testing.T) {
 		"no url":     func(in *store.WebhookSubscriptionInput) { in.URL = "" },
 		"no version": func(in *store.WebhookSubscriptionInput) { in.PayloadVersion = "" },
 		"no secret":  func(in *store.WebhookSubscriptionInput) { in.SecretCiphertext = nil },
+		"bad format": func(in *store.WebhookSubscriptionInput) { in.Format = "teams" },
 	} {
 		in := webhookInput(user, live, "https://hooks.example.com/"+name)
 		mutate(&in)
@@ -213,6 +228,9 @@ func TestCreateWebhookSubscriptionRefuses(t *testing.T) {
 	}
 	if _, err := s.UpdateWebhookSubscription(ctx, user.ID, id, store.WebhookSubscriptionUpdate{Status: &bogus}); err == nil {
 		t.Error("an unknown status was stored")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE webhook_subscriptions SET format = 'teams' WHERE id = $1`, id); err == nil {
+		t.Error("the database stored an unknown format")
 	}
 }
 

@@ -1,0 +1,27 @@
+{
+  "embeds": [
+    {
+      "title": "Board of Directors",
+      "url": "https://civic.example/meetings/11111111-2222-4333-8444-555555555555",
+      "description": "**Agenda published**\nThe agenda is published (version 1).",
+      "color": 3046706,
+      "timestamp": "2026-11-17T21:00:00Z",
+      "author": {
+        "name": "LA Metro"
+      },
+      "fields": [
+        {
+          "name": "Starts",
+          "value": "<t:1795197600:F> (<t:1795197600:R>)",
+          "inline": true
+        }
+      ],
+      "footer": {
+        "text": "Civic Scanner"
+      }
+    }
+  ],
+  "allowed_mentions": {
+    "parse": []
+  }
+}
