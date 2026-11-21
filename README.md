@@ -11,7 +11,7 @@ A Go API and a Next.js front end in one repo, both generated from a shared OpenA
 | `api/` | Go API. Migrations in `api/migrations/`, generated server types in `api/internal/httpapi/v1/`. |
 | `web/` | Next.js front end (pnpm). Generated client types in `web/src/lib/api/v1.d.ts`. |
 | `.github/` | CI workflow, Dependabot, the ruleset for `main`. |
-| `.railway/` | Railway infrastructure as code (`railway.ts`). |
+| `.railway/` | Railway infrastructure as code (`railway.ts`), for production and staging. |
 
 ## Prerequisites
 
@@ -618,7 +618,7 @@ Both binaries call `featureflags.Init` at startup, which picks the provider from
 | `POSTHOG_FLAG_CACHE_TTL` | How long the provider reuses one PostHog answer, as a Go duration such as `10s`. Default `30s`. `0` turns the cache off, so every check is a request. A value that does not parse, or is negative, stops the binary at startup. |
 | `FEATURE_FLAGS` | Used only without a PostHog key, for local runs and tests. Production sets none. A comma-separated list of the flags that are on, such as `new-search,digest-emails`. `*` turns every flag on, for staging-like runs. Empty means every flag is off. |
 
-- Production runs on PostHog: the API and the worker have `POSTHOG_API_KEY` and no `FEATURE_FLAGS`, so a flag is turned on or off in PostHog. The list is not a fallback: when PostHog is unreachable, flags go off after the grace period below.
+- Production runs on PostHog: the API and the worker have `POSTHOG_API_KEY` and no `FEATURE_FLAGS`, so a flag is turned on or off in PostHog. Staging has no PostHog key and `FEATURE_FLAGS=*` (see [Staging](#staging)). The list is not a fallback: when PostHog is unreachable, flags go off after the grace period below.
 - A flag is off unless the provider says it is on. These all evaluate to off: an unknown flag, a PostHog error, an unreachable or slow PostHog, a flag PostHog failed to evaluate, a quota-limited project, and a multivariate flag (whatever its variant, since `Enabled` answers only boolean flags).
 - What gets logged at `warn`: request errors, timeouts, context deadlines and multivariate flags, all by the provider. posthog-go logs quota limits and responses that report `errorsWhileComputingFlags` itself, through the service logger. posthog-go returns the same `ErrFlagNotFound` for an unknown flag, a flag that failed to evaluate and a quota-limited project, and does not expose which one happened. So the provider logs none of those three itself, and a failed flag is logged only when PostHog also reports `errorsWhileComputingFlags`.
 - PostHog evaluates flags remotely, through its `/flags` endpoint, and one response holds every flag for one identity. The provider caches that whole response per identity for `POSTHOG_FLAG_CACHE_TTL`, so repeated checks of any flag make no request. The identity is the OpenFeature targeting key, or `civic-scanner-server` when a caller passes none, so a percentage rollout gives the same answer to every call that has no targeting key. A change in PostHog can take up to the TTL to show.
@@ -868,6 +868,58 @@ Notes on the workflow:
 - Tool versions (Redocly CLI, Squawk, golangci-lint) and `GO_COVERAGE_MIN` are pinned in the workflow `env` and mirrored in the `Makefile` and `.github/scripts/lint-migrations.sh`. Bump them together.
 - `migrations-compat` runs `.github/scripts/check-migration-compat.sh`; see "Backward compatibility check" under Migrations. It runs only on pull requests that change `api/migrations/**` (a change to only the workflow or the script does not trigger it), never on pushes to `main`. A skipped job counts as passing in `ci-ok`; a failure fails it.
 
+## Staging
+
+Every merge to `main` deploys production and staging from the same commit. Production evaluates flags in PostHog, where they default to off; staging turns every flag on. Staging is a preview of `main` with everything on, not a gate in front of production.
+
+| | Production | Staging |
+| --- | --- | --- |
+| Railway | environment `production` | environment `staging` in the same project |
+| API and worker | deploy from `main` after CI | the same |
+| Web | Vercel Production, `main`, `civic-scanner.vercel.app` | Vercel Preview of the `staging` branch, `civic-scanner-git-staging-andrewcgraves-projects.vercel.app`, behind Vercel Authentication |
+| Flags | PostHog | `FEATURE_FLAGS=*` and `NEXT_PUBLIC_FEATURE_FLAGS=*`, no PostHog key, so no analytics |
+| Postgres and bucket | their own | their own: a 5 GB volume and a separate `audio` bucket |
+| Daily agency check | at `INGEST_CHECK_HOUR_UTC` | off, `INGEST_SCHEDULE=off` |
+| Stripe | its configured mode | test mode |
+| WorkOS | the Production environment | the Staging environment |
+| Anthropic, AI Gateway, Firecrawl | keys set | no keys |
+
+At production's current usage, staging costs about $2 to $4 a month on Railway and nothing on Vercel or the other services.
+
+### How it deploys
+
+- **Railway.** `.railway/railway.ts` describes both environments, and `ctx.isEnvironment("production")` picks what differs. The `Railway config` workflow plans and applies each environment in its own matrix job, with a project token scoped to that environment: `RAILWAY_TOKEN` for production and `RAILWAY_TOKEN_STAGING` for staging. Production's plan is the pull request comment. Staging's plan is in the summary of the `plan (staging)` job, because the action marks its comment with one fixed marker and a second comment would replace the first. Merging applies both: production in the `railway-production` GitHub environment, staging in `railway-staging`.
+- **Vercel.** The `Staging branch` workflow (`.github/workflows/staging-branch.yml`) runs when CI passes on a push to `main` and fast-forwards the `staging` branch to that commit. Vercel builds the push as a Preview deploy and serves it on the branch alias above. The alias follows Vercel's `<project>-git-<branch>-<team>` pattern and `PUBLIC_WEB_URL` in `.railway/railway.ts` is set to it. Nobody commits to `staging`. If it stops being an ancestor of `main`, the workflow fails until it is reset with `git push --force origin origin/main:staging`. A run for an older commit than the one `staging` already has does nothing.
+
+### What staging calls
+
+- **Agency sites:** only when a check is run by hand (see [Running a check by hand](#running-a-check-by-hand)), with `--environment staging`. The recordings of the meetings it finds are downloaded too, since `ingest-download-audio` is on.
+- **Models:** nothing. Without `ANTHROPIC_API_KEY` and `AI_GATEWAY_API_KEY`, summaries and transcription are skipped and logged (`LLM not configured`, `transcription not configured`). The AI Gateway transcription limit belongs to the Vercel team, so a staging gateway key would take requests from production. To try summaries in staging, add a key from a separate Anthropic workspace with a low spend limit to the staging branch of `.railway/railway.ts`, in a pull request: the file sets `variables: { managed: true }`, so a key added only in the dashboard is removed by the next apply.
+- **Firecrawl:** nothing. An agenda behind a bot check is not stored, and its job retries until it gives up.
+- **Stripe and WorkOS:** test mode and the Staging environment only.
+
+### Staging values
+
+Set in the Railway dashboard, in the `staging` environment, on `civic-scanner` (declared with `preserve()`):
+
+| Variable | Value |
+| --- | --- |
+| `STRIPE_SECRET_KEY` | a test-mode `sk_test_` or `rk_test_` key |
+| `STRIPE_PRICE_ID` | the test-mode price of the paid plan |
+| `STRIPE_WEBHOOK_SECRET` | the `whsec_` of a test-mode webhook endpoint at `https://<staging API domain>/v1/billing/stripe-webhook` |
+| `WORKOS_CLIENT_ID` | the client id of the WorkOS Staging environment |
+| `WEBHOOK_SECRET_KEY` | its own, from `openssl rand -base64 32`, never production's |
+
+Set in Vercel, as Preview variables for the `staging` branch only:
+
+| Variable | Value |
+| --- | --- |
+| `NEXT_PUBLIC_API_BASE_URL` | `https://<staging API domain>/v1` |
+| `NEXT_PUBLIC_FEATURE_FLAGS` | `*` |
+| `WORKOS_CLIENT_ID` | the same Staging client id |
+| `WORKOS_COOKIE_PASSWORD` | its own, from `openssl rand -base64 32` |
+| `NEXT_PUBLIC_WORKOS_REDIRECT_URI` | `https://civic-scanner-git-staging-andrewcgraves-projects.vercel.app/auth/callback`, also listed as a redirect URI in WorkOS Staging |
+
 ## Coverage
 
 `make coverage` (after `make dev-db`) measures both sides the way CI does.
@@ -1081,11 +1133,12 @@ The worker checks every live agency once a day for board meetings, records them,
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `INGEST_CHECK_HOUR_UTC` | `13` | Hour of the day, in UTC, when the daily check runs (13:00 UTC is 05:00 in Los Angeles in winter, 06:00 in summer). An integer from 0 to 23; anything else stops the worker at startup. |
+| `INGEST_SCHEDULE` | `on` | `off` drops the daily `enqueue_agency_checks` job, so agencies are checked only by hand (see [Running a check by hand](#running-a-check-by-hand)). The hourly sweeps and the audio retention job still run. `on` or `off`; anything else stops the API, `migrate` and the worker at startup. Staging sets `off` (see [Staging](#staging)). The worker logs it as `scheduled_checks` in `worker started`. |
 | `INGEST_AGENDA_REFRESH_GRACE` | `48h` | How long after a meeting's start the daily check keeps downloading its agenda (see [Agenda refresh cutoff](#agenda-refresh-cutoff)). A Go duration (`48h`, `72h`, `36h30m`). It is validated by the shared config loader (`config.Load`), so zero, a negative value or anything that does not parse stops the API, `migrate` and the worker at startup, not only the worker. The worker logs the value it uses as `agenda_refresh_grace` in `worker started`. |
 
 ### Jobs
 
-- `enqueue_agency_checks` is a River periodic job. It runs every day at `INGEST_CHECK_HOUR_UTC`:00 UTC, and also when the worker starts, so a run missed while the worker was down happens on the next start. Its args carry the slot it belongs to: the latest scheduled time at or before now. It is unique by slot, so a restart, a deploy or a new River leader inserts it at most once per day. It inserts one `check_agency` job per live agency (`store.ListAgencies`); pending and rejected agencies get none.
+- `enqueue_agency_checks` is a River periodic job, left out when `INGEST_SCHEDULE` is `off`. It runs every day at `INGEST_CHECK_HOUR_UTC`:00 UTC, and also when the worker starts, so a run missed while the worker was down happens on the next start. Its args carry the slot it belongs to: the latest scheduled time at or before now. It is unique by slot, so a restart, a deploy or a new River leader inserts it at most once per day. It inserts one `check_agency` job per live agency (`store.ListAgencies`); pending and rejected agencies get none.
 - `check_agency` checks one agency. It is unique by agency slug, queue and UTC day (River `UniqueOpts` `ByArgs`, `ByQueue`, `ByPeriod` of 24 hours), and the enqueuer sets its scheduled time to the slot, so a second enqueue in the same day is skipped as a duplicate; a check run by hand is not (see [Running a check by hand](#running-a-check-by-hand)). River keeps completed jobs for 24 hours, which is what lets a completed check block a duplicate. The job has a 10 minute timeout, for slow agency sites, and at most 5 attempts.
 
 `check_agency` does this, in order:
@@ -1174,6 +1227,7 @@ After a fix or a config change, an operator can run the check now instead of wai
 ```sh
 railway ssh --service civic-scanner-worker -- /app/worker check-agency la-metro
 railway ssh --service civic-scanner-worker -- /app/worker check-agency --all
+railway ssh --environment staging --service civic-scanner-worker -- /app/worker check-agency la-metro
 ```
 
 It runs inside the worker's container, because Postgres has no public address, and uses the service's own `DATABASE_URL` and `POSTHOG_API_KEY`, so the `ingest-check-agencies` flag is read from PostHog like the running worker's. It connects (with a 10 second connect timeout, or the URL's `connect_timeout` if shorter, so an unreachable database fails fast), validates, inserts one `check_agency` job per agency through a River client that works no jobs, prints each job id and exits. It needs no `ffmpeg`, bucket or API keys, and the running worker picks the jobs up within seconds. `/app/worker --help` and `/app/worker check-agency --help` print the usage and exit 0. Locally, `DATABASE_URL=... FEATURE_FLAGS=ingest-check-agencies api/bin/worker check-agency octa` does the same after `make run-worker` has built the binaries.

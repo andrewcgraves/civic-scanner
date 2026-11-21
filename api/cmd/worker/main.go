@@ -90,18 +90,19 @@ func run(ctx context.Context) error {
 		transcriber = transcribe.New(cfg.Transcription, transcribe.WithSplitter(media.NewSplitter(audio.Tool)))
 	}
 	client, err := jobs.NewClient(pool, logger, jobs.Config{
-		Registry:     registry,
-		Fetcher:      fetcher,
-		Fallback:     firecrawl,
-		Extractor:    &extract.Extractor{PDF: pdfExtractor},
-		CheckHourUTC: cfg.Ingest.CheckHourUTC,
-		AgendaGrace:  cfg.Ingest.AgendaRefreshGrace,
-		Storage:      bucket,
-		Audio:        audio,
-		AudioTimeout: cfg.Audio.Timeout,
-		LLM:          summarizer,
-		SummaryTier:  llm.Tier(cfg.Summary.AgendaTier),
-		LLMTimeout:   cfg.LLM.Timeout,
+		Registry:          registry,
+		Fetcher:           fetcher,
+		Fallback:          firecrawl,
+		Extractor:         &extract.Extractor{PDF: pdfExtractor},
+		CheckHourUTC:      cfg.Ingest.CheckHourUTC,
+		NoScheduledChecks: !cfg.Ingest.ScheduledChecks,
+		AgendaGrace:       cfg.Ingest.AgendaRefreshGrace,
+		Storage:           bucket,
+		Audio:             audio,
+		AudioTimeout:      cfg.Audio.Timeout,
+		LLM:               summarizer,
+		SummaryTier:       llm.Tier(cfg.Summary.AgendaTier),
+		LLMTimeout:        cfg.LLM.Timeout,
 		Transcription: jobs.Transcription{
 			Client:          transcriber,
 			Model:           cfg.Transcription.Provider + "/" + cfg.Transcription.Model,
@@ -120,6 +121,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger.InfoContext(ctx, "worker started", "source_adapters", registry.Slugs(), "check_hour_utc", cfg.Ingest.CheckHourUTC,
+		"scheduled_checks", cfg.Ingest.ScheduledChecks,
 		"agenda_refresh_grace", cfg.Ingest.AgendaRefreshGrace.String(),
 		"pdf_extractor", pdfExtractor.Binary, "agenda_summary_tier", cfg.Summary.AgendaTier, "llm_configured", summarizer != nil, "llm_provider", cfg.LLM.Provider,
 		"audio_limit", audio.Tool.Limit, "ffmpeg", audio.Tool.FFmpeg, "yt_dlp", audio.Tool.YTDLP,
