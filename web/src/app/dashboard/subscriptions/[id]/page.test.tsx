@@ -194,6 +194,36 @@ describe("SubscriptionPage", () => {
     ).toBeVisible();
   });
 
+  it("shows the template of a custom subscription", async () => {
+    mocks.subscription = {
+      status: "ok",
+      data: {
+        ...SUBSCRIPTION,
+        format: "custom",
+        template: '{"title": "{{meeting.title}}"}',
+      },
+    };
+
+    await renderPage();
+
+    const section = screen.getByRole("region", { name: "Template" });
+    expect(section).toHaveTextContent('{"title": "{{meeting.title}}"}');
+    expect(
+      screen.getByRole("link", { name: "Edit the template for LA Metro" }),
+    ).toHaveAttribute("href", `/dashboard/subscriptions/${ID}/edit#template`);
+  });
+
+  it("has no template section for a preset, even with one saved", async () => {
+    mocks.subscription = {
+      status: "ok",
+      data: { ...SUBSCRIPTION, format: "slack", template: "{}" },
+    };
+
+    await renderPage();
+
+    expect(screen.queryByRole("region", { name: "Template" })).toBeNull();
+  });
+
   it.each([
     ["off", false, "Fare changes"],
     ["on without a prompt", true, undefined],

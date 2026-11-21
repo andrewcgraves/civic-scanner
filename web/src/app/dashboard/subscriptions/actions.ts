@@ -16,8 +16,10 @@ import {
   SUBSCRIPTIONS_SIGN_IN_PATH,
   checkFormat,
   checkPrompt,
+  checkTemplate,
   checkUrl,
   checkValues,
+  isCustom,
   isFormat,
   isSlug,
   isSubscriptionId,
@@ -33,6 +35,7 @@ import {
   type FormState,
   type SubscriptionValues,
 } from "./state";
+import { localProblem, templateProblem, type PreviewState } from "./template";
 
 function formFailure(
   result: UserApiResult<unknown>,
@@ -51,7 +54,11 @@ function formFailure(
       if (result.httpStatus === 429) {
         return { kind: "limit", values };
       }
-      return { kind: "invalid", values, ...rejection(result.error) };
+      return {
+        kind: "invalid",
+        values,
+        ...rejection(result.error, values.template),
+      };
     default:
       return { kind: "unavailable", values };
   }
@@ -77,6 +84,10 @@ function createdPrompt(formData: FormData, values: SubscriptionValues) {
 
 function updatedPrompt(formData: FormData, values: SubscriptionValues) {
   return readsPrompt(formData) ? { prompt: normalPrompt(values.prompt) } : {};
+}
+
+function sentTemplate(values: SubscriptionValues) {
+  return isCustom(values) ? { template: values.template } : {};
 }
 
 function hasSecret(data: unknown): data is { secret: string } {
@@ -114,6 +125,7 @@ export async function createSubscription(
         agency: values.agency,
         url: values.url.trim(),
         format: isFormat(values.format) ? values.format : undefined,
+        ...sentTemplate(values),
         ...createdPrompt(formData, values),
       },
     }),
@@ -142,10 +154,12 @@ export async function updateSubscription(
   }
   const urlError = checkUrl(values.url);
   const formatError = checkFormat(values.format);
+  const templateError = checkTemplate(values);
   const promptError = checkPrompt(values.prompt);
   if (
     urlError !== undefined ||
     formatError !== undefined ||
+    templateError !== undefined ||
     promptError !== undefined
   ) {
     return {
@@ -154,6 +168,7 @@ export async function updateSubscription(
       errors: {
         ...(urlError === undefined ? {} : { url: urlError }),
         ...(formatError === undefined ? {} : { format: formatError }),
+        ...(templateError === undefined ? {} : { template: templateError }),
         ...(promptError === undefined ? {} : { prompt: promptError }),
       },
     };
@@ -164,6 +179,7 @@ export async function updateSubscription(
       body: {
         url: values.url.trim(),
         format: isFormat(values.format) ? values.format : undefined,
+        ...sentTemplate(values),
         ...updatedPrompt(formData, values),
       },
     }),
@@ -299,4 +315,47 @@ export async function sendTest(
     return { kind: "sent", result: result.data };
   }
   return testFailure(result, seen.retryAfter);
+}
+
+export interface PreviewInput {
+  template: string;
+  type: string;
+  agency: string;
+}
+
+export async function previewTemplate(
+  input: PreviewInput,
+): Promise<PreviewState> {
+  const template = typeof input.template === "string" ? input.template : "";
+  const local = localProblem(template);
+  if (local !== undefined) {
+    return { kind: "invalid", problem: local };
+  }
+  if (!(await isSubscriptionsEnabled())) {
+    return { kind: "unavailable" };
+  }
+  const type = isEventType(input.type) ? input.type : DEFAULT_EVENT_TYPE;
+  const agency =
+    typeof input.agency === "string" && isSlug(input.agency)
+      ? { agency: input.agency }
+      : {};
+  const result = await callApiAsUser((api) =>
+    api.POST("/webhook-templates/preview", {
+      body: { template, type, ...agency },
+    }),
+  );
+  if (result.status === "ok") {
+    return { kind: "rendered", type: result.data.type, body: result.data.body };
+  }
+  if (result.status === "rejected") {
+    const { code, message } = (result.error ?? {}) as {
+      code?: unknown;
+      message?: unknown;
+    };
+    const problem = templateProblem(code, message, template);
+    if (problem !== undefined) {
+      return { kind: "invalid", problem };
+    }
+  }
+  return { kind: "unavailable" };
 }

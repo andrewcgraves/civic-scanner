@@ -51,6 +51,7 @@ const {
   createSubscription,
   deleteSubscription,
   pauseSubscription,
+  previewTemplate,
   resumeSubscription,
   rotateSecret,
   sendTest,
@@ -125,7 +126,7 @@ describe("createSubscription", () => {
 
       expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
         kind: "unavailable",
-        values: { ...VALUES, prompt: "" },
+        values: { ...VALUES, template: "", prompt: "" },
       });
     },
   );
@@ -135,7 +136,13 @@ describe("createSubscription", () => {
       await createSubscription(IDLE_FORM, form({ agency: "", url: "" })),
     ).toEqual({
       kind: "invalid",
-      values: { agency: "", url: "", format: "standard", prompt: "" },
+      values: {
+        agency: "",
+        url: "",
+        format: "standard",
+        template: "",
+        prompt: "",
+      },
       errors: {
         agency: "Choose an agency.",
         url: "Enter the URL to send webhooks to.",
@@ -149,7 +156,7 @@ describe("createSubscription", () => {
       await createSubscription(IDLE_FORM, form({ ...VALUES, format: "teams" })),
     ).toEqual({
       kind: "invalid",
-      values: { ...VALUES, format: "teams", prompt: "" },
+      values: { ...VALUES, format: "teams", template: "", prompt: "" },
       errors: { format: "Choose a message format." },
     });
     expect(mocks.calls).toEqual([]);
@@ -173,7 +180,7 @@ describe("createSubscription", () => {
 
     expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind: "gone",
-      values: { ...VALUES, prompt: "" },
+      values: { ...VALUES, template: "", prompt: "" },
     });
     expect(mocks.calls).toEqual([]);
   });
@@ -187,7 +194,7 @@ describe("createSubscription", () => {
 
     expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind: "invalid",
-      values: { ...VALUES, prompt: "" },
+      values: { ...VALUES, template: "", prompt: "" },
       errors: { url: "The host is private." },
     });
   });
@@ -201,7 +208,7 @@ describe("createSubscription", () => {
 
     expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind: "invalid",
-      values: { ...VALUES, prompt: "" },
+      values: { ...VALUES, template: "", prompt: "" },
       errors: {},
       message: FORM_ERROR,
     });
@@ -220,7 +227,7 @@ describe("createSubscription", () => {
 
     expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind,
-      values: { ...VALUES, prompt: "" },
+      values: { ...VALUES, template: "", prompt: "" },
     });
   });
 
@@ -279,7 +286,7 @@ describe("directed prompts in createSubscription", () => {
       await createSubscription(IDLE_FORM, form({ ...VALUES, prompt })),
     ).toEqual({
       kind: "invalid",
-      values: { ...VALUES, prompt },
+      values: { ...VALUES, template: "", prompt },
       errors: {
         prompt: "The prompt can be at most 500 characters. Take out 12.",
       },
@@ -301,7 +308,7 @@ describe("directed prompts in createSubscription", () => {
 
     expect(state).toEqual({
       kind: "invalid",
-      values: { ...VALUES, prompt: "Fare changes" },
+      values: { ...VALUES, template: "", prompt: "Fare changes" },
       errors: {
         prompt:
           "Directed prompts are not available on your account right now. Clear the prompt to save without one.",
@@ -312,7 +319,13 @@ describe("directed prompts in createSubscription", () => {
 
 describe("updateSubscription", () => {
   const VALUES = { id: ID, agency: "la-metro", url: URL, format: "slack" };
-  const KEPT = { agency: "la-metro", url: URL, format: "slack", prompt: "" };
+  const KEPT = {
+    agency: "la-metro",
+    url: URL,
+    format: "slack",
+    template: "",
+    prompt: "",
+  };
 
   it("removes the prompt when the prompt field is sent blank", async () => {
     mocks.result = { status: "ok", data: SUBSCRIPTION };
@@ -694,5 +707,229 @@ describe("sendTest", () => {
     await expect(sendTest(IDLE_TEST, form({ id: ID }))).rejects.toThrow(
       "NEXT_REDIRECT /auth/sign-in",
     );
+  });
+});
+
+describe("custom templates", () => {
+  const TEMPLATE = '{\n  "title": "{{meeting.title}}"\n}';
+  const CREATED = { ...SUBSCRIPTION, format: "custom", secret: SECRET };
+
+  it("sends the template, with plain line breaks, only for custom", async () => {
+    mocks.result = { status: "ok", data: CREATED };
+
+    await createSubscription(
+      IDLE_FORM,
+      form({
+        agency: "la-metro",
+        url: URL,
+        format: "custom",
+        template: TEMPLATE.replace(/\n/g, "\r\n"),
+      }),
+    );
+    await createSubscription(
+      IDLE_FORM,
+      form({
+        agency: "la-metro",
+        url: URL,
+        format: "slack",
+        template: TEMPLATE,
+      }),
+    );
+
+    expect(mocks.calls).toMatchObject([
+      { init: { body: { format: "custom", template: TEMPLATE } } },
+      { init: { body: { format: "slack" } } },
+    ]);
+    expect(mocks.calls[1]).not.toHaveProperty("init.body.template");
+  });
+
+  it("checks for a template before calling the API", async () => {
+    const state = await createSubscription(
+      IDLE_FORM,
+      form({ agency: "la-metro", url: URL, format: "custom", template: " " }),
+    );
+
+    expect(state).toMatchObject({
+      kind: "invalid",
+      errors: {
+        template: "Write a template, or choose another message format.",
+      },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("refuses an oversized template on update before calling the API", async () => {
+    const state = await updateSubscription(
+      IDLE_FORM,
+      form({
+        id: ID,
+        agency: "la-metro",
+        url: URL,
+        format: "custom",
+        template: "x".repeat(8193),
+      }),
+    );
+
+    expect(state).toMatchObject({
+      kind: "invalid",
+      errors: { template: "The template is 1 character too long." },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("sends the template on update and keeps where the API's problem is", async () => {
+    mocks.result = {
+      status: "rejected",
+      httpStatus: 400,
+      error: {
+        code: "unknown_placeholder",
+        message:
+          "unknown placeholder {{meeting.titel}} in `title`; the placeholders are agency.name",
+      },
+    };
+    const template = '{"title": "{{meeting.titel}}"}';
+
+    const state = await updateSubscription(
+      IDLE_FORM,
+      form({
+        id: ID,
+        agency: "la-metro",
+        url: URL,
+        format: "custom",
+        template,
+      }),
+    );
+
+    expect(mocks.calls).toMatchObject([
+      { init: { body: { format: "custom", template } } },
+    ]);
+    expect(state).toMatchObject({
+      kind: "invalid",
+      errors: {
+        template: "{{meeting.titel}} in “title” is not a placeholder.",
+      },
+      templateProblem: {
+        placeholder: "{{meeting.titel}}",
+        suggestion: "{{meeting.title}}",
+        index: 11,
+      },
+    });
+  });
+});
+
+describe("previewTemplate", () => {
+  const TEMPLATE = '{"title": "{{meeting.title}}"}';
+
+  it("renders against the chosen event and agency", async () => {
+    mocks.result = {
+      status: "ok",
+      data: { type: "agenda_changed", body: '{"title":"Sample"}' },
+    };
+
+    expect(
+      await previewTemplate({
+        template: TEMPLATE,
+        type: "agenda_changed",
+        agency: "la-metro",
+      }),
+    ).toEqual({
+      kind: "rendered",
+      type: "agenda_changed",
+      body: '{"title":"Sample"}',
+    });
+    expect(mocks.calls).toEqual([
+      {
+        method: "POST",
+        path: "/webhook-templates/preview",
+        init: {
+          body: {
+            template: TEMPLATE,
+            type: "agenda_changed",
+            agency: "la-metro",
+          },
+        },
+      },
+    ]);
+  });
+
+  it("falls back to the default event and the sample agency", async () => {
+    mocks.result = {
+      status: "ok",
+      data: { type: "agenda_published", body: "{}" },
+    };
+
+    await previewTemplate({
+      template: TEMPLATE,
+      type: "x",
+      agency: "Not A Slug",
+    });
+
+    expect(mocks.calls).toMatchObject([
+      { init: { body: { template: TEMPLATE, type: "agenda_published" } } },
+    ]);
+    expect(mocks.calls[0]).not.toHaveProperty("init.body.agency");
+  });
+
+  it("calls nothing for an empty or oversized template", async () => {
+    expect(
+      await previewTemplate({ template: " ", type: "", agency: "" }),
+    ).toEqual({
+      kind: "invalid",
+      problem: {
+        message: "Write a template, or choose another message format.",
+      },
+    });
+    expect(
+      await previewTemplate({
+        template: "x".repeat(8200),
+        type: "",
+        agency: "",
+      }),
+    ).toEqual({
+      kind: "invalid",
+      problem: { message: "The template is 8 characters too long." },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("turns a template refusal into a problem", async () => {
+    mocks.result = {
+      status: "rejected",
+      httpStatus: 400,
+      error: {
+        code: "invalid_template",
+        message: "the template must be a JSON object",
+      },
+    };
+
+    expect(
+      await previewTemplate({ template: "[]", type: "", agency: "" }),
+    ).toEqual({
+      kind: "invalid",
+      problem: { message: "The template must be a JSON object." },
+    });
+  });
+
+  it.each([
+    { status: "rejected", httpStatus: 400, error: { code: "unknown_agency" } },
+    { status: "payment-required" },
+    { status: "signed-out" },
+    { status: "failed" },
+  ] as UserApiResult<unknown>[])("is unavailable for %j", async (result) => {
+    mocks.result = result;
+
+    expect(
+      await previewTemplate({ template: TEMPLATE, type: "", agency: "" }),
+    ).toEqual({ kind: "unavailable" });
+    expect(mocks.redirect).not.toHaveBeenCalled();
+  });
+
+  it("calls nothing when subscriptions are off", async () => {
+    mocks.enabled = false;
+
+    expect(
+      await previewTemplate({ template: TEMPLATE, type: "", agency: "" }),
+    ).toEqual({ kind: "unavailable" });
+    expect(mocks.calls).toEqual([]);
   });
 });

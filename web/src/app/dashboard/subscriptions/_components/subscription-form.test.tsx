@@ -22,6 +22,7 @@ function fake(action: string) {
 vi.mock("../actions", () => ({
   createSubscription: fake("create"),
   updateSubscription: fake("update"),
+  previewTemplate: () => Promise.resolve({ kind: "unavailable" }),
 }));
 
 const { SubscriptionForm } = await import("./subscription-form");
@@ -45,8 +46,13 @@ const SENT = {
   url: "https://hooks.example.org/new",
   format: "discord",
 };
-const VALUES = { ...SENT, prompt: "" };
+const VALUES = { ...SENT, template: "", prompt: "" };
+const TEMPLATE = '{"title": "{{meeting.title}}"}';
 const PROMPT = "Anything about the Blue Line: closures and delays.";
+
+function radio(name: string) {
+  return screen.getByRole("radio", { name: new RegExp(`^${name}`) });
+}
 
 function options(label: string) {
   return within(screen.getByLabelText(label))
@@ -70,9 +76,7 @@ async function createWith(state: FormState, prompts = false) {
   fireEvent.change(screen.getByLabelText("Endpoint URL"), {
     target: { value: VALUES.url },
   });
-  fireEvent.change(screen.getByLabelText("Message format"), {
-    target: { value: VALUES.format },
-  });
+  fireEvent.click(radio("Discord"));
   await submit("Add subscription");
 }
 
@@ -93,15 +97,15 @@ describe("SubscriptionForm", () => {
       "LA Metro",
       "Orange County Transportation Authority",
     ]);
-    const format = screen.getByLabelText("Message format");
-    expect(format).toHaveValue("standard");
-    expect(format).toBeRequired();
+    const format = screen.getByRole("group", { name: "Message format" });
     expect(format).toHaveAccessibleDescription(/incoming webhook URL/);
-    expect(options("Message format")).toEqual([
-      "Standard JSON",
-      "Discord",
-      "Slack",
-    ]);
+    expect(
+      within(format)
+        .getAllByRole("radio")
+        .map((choice) => (choice as HTMLInputElement).value),
+    ).toEqual(["standard", "discord", "slack", "custom"]);
+    expect(radio("Standard JSON")).toBeChecked();
+    expect(screen.queryByLabelText("Template")).toBeNull();
     const url = screen.getByLabelText("Endpoint URL");
     expect(url).toBeRequired();
     expect(url).toHaveAttribute("inputMode", "url");
@@ -204,8 +208,8 @@ describe("SubscriptionForm", () => {
       errors: { format: "Choose a message format from the list." },
     });
 
-    const format = screen.getByLabelText("Message format");
-    expect(format).toHaveValue("discord");
+    const format = screen.getByRole("group", { name: "Message format" });
+    expect(radio("Discord")).toBeChecked();
     expect(format).toHaveAttribute("aria-invalid", "true");
     expect(format).toHaveAccessibleDescription(
       /incoming webhook URL.*Choose a message format from the list\./,
@@ -362,9 +366,8 @@ describe("SubscriptionForm", () => {
       const url = screen.getByLabelText("Endpoint URL");
       expect(url).toHaveValue(EDIT.url);
       fireEvent.change(url, { target: { value: VALUES.url } });
-      const format = screen.getByLabelText("Message format");
-      expect(format).toHaveValue("slack");
-      fireEvent.change(format, { target: { value: "discord" } });
+      expect(radio("Slack")).toBeChecked();
+      fireEvent.click(radio("Discord"));
 
       await submit("Save changes");
 
@@ -381,26 +384,72 @@ describe("SubscriptionForm", () => {
       ]);
     });
 
-    it("keeps a custom subscription custom", async () => {
+    it("starts a custom subscription from its saved template", async () => {
       mocks.next = { kind: "unavailable", values: VALUES };
-      render(<SubscriptionForm mode={{ ...EDIT, format: "custom" }} />);
+      render(
+        <SubscriptionForm
+          mode={{ ...EDIT, format: "custom", template: TEMPLATE }}
+        />,
+      );
 
-      expect(screen.getByLabelText("Message format")).toHaveValue("custom");
-      expect(options("Message format")).toEqual([
-        "Standard JSON",
-        "Discord",
-        "Slack",
-        "Custom JSON",
-      ]);
+      expect(radio("Custom JSON")).toBeChecked();
+      expect(screen.getByLabelText("Template")).toHaveValue(TEMPLATE);
 
       await submit("Save changes");
 
       expect(mocks.calls).toEqual([
         {
           action: "update",
-          data: { id: ID, agency: "la-metro", url: EDIT.url, format: "custom" },
+          data: {
+            id: ID,
+            agency: "la-metro",
+            url: EDIT.url,
+            format: "custom",
+            template: TEMPLATE,
+          },
         },
       ]);
+    });
+
+    it("says a saved template is kept while a preset is chosen", () => {
+      render(<SubscriptionForm mode={{ ...EDIT, template: TEMPLATE }} />);
+
+      expect(screen.getByText(/Your custom template is kept/)).toBeVisible();
+      fireEvent.click(radio("Custom JSON"));
+      expect(screen.getByLabelText("Template")).toHaveValue(TEMPLATE);
+    });
+
+    it("ties a saved template problem to the template and the summary", async () => {
+      const template = '{"title": "{{meeting.titel}}"}';
+      mocks.next = {
+        kind: "invalid",
+        values: { ...VALUES, format: "custom", template },
+        errors: {
+          template: "{{meeting.titel}} in “title” is not a placeholder.",
+        },
+        templateProblem: {
+          message: "{{meeting.titel}} in “title” is not a placeholder.",
+          placeholder: "{{meeting.titel}}",
+          index: 11,
+          suggestion: "{{meeting.title}}",
+        },
+      };
+      render(
+        <SubscriptionForm mode={{ ...EDIT, format: "custom", template }} />,
+      );
+
+      await submit("Save changes");
+
+      const field = screen.getByLabelText("Template");
+      expect(field).toHaveValue(template);
+      expect(field).toHaveAttribute("aria-invalid", "true");
+      expect(field).toHaveAccessibleDescription(
+        /not a placeholder\. Did you mean \{\{meeting\.title\}\}\?/,
+      );
+      expect(screen.getByRole("link", { name: "Template" })).toHaveAttribute(
+        "href",
+        "#template",
+      );
     });
 
     it("says when the subscription no longer exists", async () => {

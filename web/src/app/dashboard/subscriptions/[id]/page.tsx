@@ -13,6 +13,7 @@ import { DeliveryLog } from "../_components/delivery-log";
 import { PausedNotice } from "../_components/paused-notice";
 import { SendTest } from "../_components/send-test";
 import { FailureStreak, StatusBadge } from "../_components/subscription-status";
+import { TemplateSummary } from "../_components/template-summary";
 import {
   DELIVERIES_PAGE_SIZE,
   deliveriesPath,
@@ -202,6 +203,13 @@ export default async function SubscriptionPage({
         </div>
       ) : null}
       <StatusNotice subscription={subscription} name={name} />
+      {subscription.format === "custom" && subscription.template !== null ? (
+        <TemplateSummary
+          id={id}
+          agencyName={name}
+          template={subscription.template}
+        />
+      ) : null}
       {directed ? (
         <Section
           title="Directed prompt"

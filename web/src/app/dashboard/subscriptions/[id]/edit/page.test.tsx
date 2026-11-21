@@ -111,6 +111,19 @@ describe("EditSubscriptionPage", () => {
     ).toBeVisible();
   });
 
+  it("hands the saved template to the form", async () => {
+    mocks.result = {
+      status: "ok",
+      data: { ...SUBSCRIPTION, format: "custom", template: "{}" },
+    };
+
+    await renderPage();
+
+    expect(
+      screen.getByText(/"format":"custom","template":"\{\}"/),
+    ).toBeVisible();
+  });
+
   it("hands the saved prompt to the form while directed prompts are on", async () => {
     mocks.prompts = true;
     mocks.result = {
