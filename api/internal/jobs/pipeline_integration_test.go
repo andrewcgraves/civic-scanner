@@ -173,8 +173,8 @@ func (e *agencyEdge) downloader(t *testing.T) media.Downloader {
 
 func agencyFetchers() (fetch.Fetcher, fetch.Fetcher) {
 	cfg := config.Fetch{UserAgent: "CivicScanner-test", Timeout: 30 * time.Second, MaxBytes: 128 << 20, MaxRedirects: 5}
-	firecrawl := fetch.NewFirecrawl(cfg)
-	return fetch.NewFallback(fetch.NewPlain(cfg), firecrawl), firecrawl
+	firecrawl := fetch.NewFirecrawl(cfg, fetch.AllowAddress(netip.Addr.IsLoopback))
+	return fetch.NewFallback(fetch.NewPlain(cfg, fetch.AllowAddress(netip.Addr.IsLoopback)), firecrawl), firecrawl
 }
 
 func recordedClip(t *testing.T) string {

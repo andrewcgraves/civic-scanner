@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -77,7 +78,7 @@ func TestProcessAgendaStoresTheStableURLNotTheRedirectTarget(t *testing.T) {
 	client, err := jobs.NewClient(pool, logger, jobs.Config{
 		Enabled:        func(context.Context, string) bool { return true },
 		Clock:          sourcestest.NewClock(fixedNow),
-		Fetcher:        fetch.NewPlain(config.Fetch{UserAgent: "CivicScanner/test", Timeout: 10 * time.Second, MaxBytes: 1 << 20, MaxRedirects: 5}),
+		Fetcher:        fetch.NewPlain(config.Fetch{UserAgent: "CivicScanner/test", Timeout: 10 * time.Second, MaxBytes: 1 << 20, MaxRedirects: 5}, fetch.AllowAddress(netip.Addr.IsLoopback)),
 		Extractor:      &extract.Extractor{PDF: extract.InProcess{}},
 		Queue:          queue,
 		AudioQueue:     queue + "_audio",

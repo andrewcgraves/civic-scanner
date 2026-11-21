@@ -13,8 +13,8 @@ type fallback struct {
 	secondary Fetcher
 }
 
-func New(cfg config.Fetch) Fetcher {
-	return NewFallback(NewPlain(cfg), NewFirecrawl(cfg))
+func New(cfg config.Fetch, opts ...Option) Fetcher {
+	return NewFallback(NewPlain(cfg, opts...), NewFirecrawl(cfg, opts...))
 }
 
 func NewFallback(primary, secondary Fetcher) Fetcher {

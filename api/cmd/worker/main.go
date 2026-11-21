@@ -76,8 +76,8 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	firecrawl := fetch.NewFirecrawl(cfg.Fetch)
-	fetcher := fetch.NewFallback(fetch.NewPlain(cfg.Fetch), firecrawl)
+	firecrawl := fetch.NewFirecrawl(cfg.Fetch, fetch.WithLogger(logger))
+	fetcher := fetch.NewFallback(fetch.NewPlain(cfg.Fetch, fetch.WithLogger(logger)), firecrawl)
 	audio := media.NewDownloader(cfg.Audio, cfg.Fetch.UserAgent)
 	pdfExtractor := extract.NewSubprocess(cfg.Extract)
 	registry := sources.NewRegistry(sources.Deps{Fetcher: fetcher, Clock: sources.SystemClock{}, Logger: logger}, adapters)

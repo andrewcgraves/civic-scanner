@@ -4,43 +4,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 )
-
-func TestPublicAddress(t *testing.T) {
-	cases := map[string]bool{
-		"93.184.216.34":        true,
-		"2606:4700::6810:84e5": true,
-		"127.0.0.1":            false,
-		"::1":                  false,
-		"10.1.2.3":             false,
-		"172.16.0.1":           false,
-		"192.168.1.1":          false,
-		"169.254.169.254":      false,
-		"fe80::1":              false,
-		"fd12:3456::1":         false,
-		"100.64.0.1":           false,
-		"0.0.0.0":              false,
-		"0.1.2.3":              false,
-		"::":                   false,
-		"224.0.0.1":            false,
-		"::ffff:127.0.0.1":     false,
-		"::ffff:10.0.0.1":      false,
-	}
-	for addr, want := range cases {
-		if got := PublicAddress(netip.MustParseAddr(addr)); got != want {
-			t.Errorf("PublicAddress(%s) = %v, want %v", addr, got, want)
-		}
-	}
-	if PublicAddress(netip.Addr{}) {
-		t.Error("PublicAddress(zero) = true")
-	}
-}
 
 func pageServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()

@@ -3,8 +3,10 @@ package fetch_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +25,14 @@ func plainConfig() config.Fetch {
 		MaxBytes:     1 << 20,
 		MaxRedirects: 3,
 	}
+}
+
+func loopbackOnly() []fetch.Option {
+	return []fetch.Option{fetch.AllowAddress(netip.Addr.IsLoopback), fetch.WithLogger(slog.New(slog.DiscardHandler))}
+}
+
+func localPlain(cfg config.Fetch) fetch.Fetcher {
+	return fetch.NewPlain(cfg, loopbackOnly()...)
 }
 
 type agentLog struct {
@@ -51,7 +61,7 @@ func TestPlainReturnsPage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, err := fetch.NewPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL + "/meetings"})
+	got, err := localPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL + "/meetings"})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -84,7 +94,7 @@ func TestPlainSendsUserAgentOnEveryRedirect(t *testing.T) {
 	}))
 	defer first.Close()
 
-	got, err := fetch.NewPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: first.URL})
+	got, err := localPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: first.URL})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -109,7 +119,7 @@ func TestPlainStopsAfterTooManyRedirects(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetch.NewPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL})
+	_, err := localPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL})
 	if !errors.Is(err, fetch.ErrTooManyRedirects) {
 		t.Fatalf("err = %v, want ErrTooManyRedirects", err)
 	}
@@ -128,7 +138,7 @@ func TestPlainRejectsBodyOverCap(t *testing.T) {
 
 	cfg := plainConfig()
 	cfg.MaxBytes = 150
-	_, err := fetch.NewPlain(cfg).Fetch(context.Background(), fetch.Request{URL: srv.URL})
+	_, err := localPlain(cfg).Fetch(context.Background(), fetch.Request{URL: srv.URL})
 	if !errors.Is(err, fetch.ErrTooLarge) {
 		t.Fatalf("err = %v, want ErrTooLarge", err)
 	}
@@ -143,7 +153,7 @@ func TestPlainRejectsDeclaredLengthOverCap(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetch.NewPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL, MaxBytes: 100})
+	_, err := localPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL, MaxBytes: 100})
 	if !errors.Is(err, fetch.ErrTooLarge) {
 		t.Fatalf("err = %v, want ErrTooLarge", err)
 	}
@@ -157,7 +167,7 @@ func TestPlainPerCallCapRaisesLimit(t *testing.T) {
 
 	cfg := plainConfig()
 	cfg.MaxBytes = 100
-	got, err := fetch.NewPlain(cfg).Fetch(context.Background(), fetch.Request{URL: srv.URL, MaxBytes: 1000})
+	got, err := localPlain(cfg).Fetch(context.Background(), fetch.Request{URL: srv.URL, MaxBytes: 1000})
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
@@ -185,7 +195,7 @@ func TestPlainStatusErrors(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(tt.status)
 		}))
-		_, err := fetch.NewPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL})
+		_, err := localPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL})
 		srv.Close()
 
 		var fe *fetch.Error
@@ -208,7 +218,7 @@ func TestPlainReadsRetryAfter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := fetch.NewPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL})
+	_, err := localPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: srv.URL})
 	var fe *fetch.Error
 	if !errors.As(err, &fe) || fe.RetryAfter != 7*time.Second {
 		t.Fatalf("err = %v, want RetryAfter 7s", err)
@@ -228,7 +238,7 @@ func TestPlainTimeoutIsRetryable(t *testing.T) {
 
 	cfg := plainConfig()
 	cfg.Timeout = 50 * time.Millisecond
-	_, err := fetch.NewPlain(cfg).Fetch(context.Background(), fetch.Request{URL: srv.URL})
+	_, err := localPlain(cfg).Fetch(context.Background(), fetch.Request{URL: srv.URL})
 	if err == nil || !fetch.IsRetryable(err) {
 		t.Fatalf("err = %v, want retryable", err)
 	}
@@ -239,7 +249,7 @@ func TestPlainNetworkFailureIsRetryable(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 
-	_, err := fetch.NewPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: url})
+	_, err := localPlain(plainConfig()).Fetch(context.Background(), fetch.Request{URL: url})
 	if err == nil || !fetch.IsRetryable(err) {
 		t.Fatalf("err = %v, want retryable", err)
 	}
@@ -251,7 +261,7 @@ func TestPlainCanceledContextIsRetryable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := fetch.NewPlain(plainConfig()).Fetch(ctx, fetch.Request{URL: srv.URL})
+	_, err := localPlain(plainConfig()).Fetch(ctx, fetch.Request{URL: srv.URL})
 	if err == nil || !fetch.IsRetryable(err) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want retryable wrapping context.Canceled", err)
 	}

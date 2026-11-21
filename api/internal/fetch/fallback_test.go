@@ -93,7 +93,7 @@ func TestNewFallsBackToFirecrawlWhenSiteBlocksPlainHTTP(t *testing.T) {
 	cfg.FirecrawlBaseURL = firecrawl.URL
 	cfg.FirecrawlTimeout = cfg.Timeout
 
-	got, err := fetch.New(cfg).Fetch(context.Background(), fetch.Request{URL: site.URL})
+	got, err := fetch.New(cfg, loopbackOnly()...).Fetch(context.Background(), fetch.Request{URL: site.URL})
 	if err != nil || string(got.Body) != "rendered" {
 		t.Fatalf("got %+v, %v", got, err)
 	}
@@ -105,7 +105,7 @@ func TestNewWithoutFirecrawlKeyReturnsPlainBlock(t *testing.T) {
 	}))
 	defer site.Close()
 
-	_, err := fetch.New(plainConfig()).Fetch(context.Background(), fetch.Request{URL: site.URL})
+	_, err := fetch.New(plainConfig(), loopbackOnly()...).Fetch(context.Background(), fetch.Request{URL: site.URL})
 	var fe *fetch.Error
 	if !errors.As(err, &fe) || fe.StatusCode != 403 {
 		t.Fatalf("err = %v, want plain 403", err)
