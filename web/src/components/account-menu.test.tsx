@@ -117,8 +117,8 @@ describe("AccountMenu", () => {
     const button = screen.getByRole("button", { name: "Account" });
 
     fireEvent.click(button);
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveFocus();
     const signOut = screen.getByRole("button", { name: "Sign out" });
-    expect(signOut).toHaveFocus();
 
     fireEvent.blur(signOut, { relatedTarget: button });
     expect(button).toHaveAttribute("aria-expanded", "true");
@@ -174,13 +174,31 @@ describe("AccountMenu", () => {
       "href",
       "/billing",
     );
+    const dashboard = screen.getByRole("link", { name: "Dashboard" });
     const billing = screen.getByRole("link", { name: "Billing" });
     const signOut = screen.getByRole("button", { name: "Sign out" });
-    expect(billing).toHaveFocus();
+    expect(dashboard).toHaveFocus();
+    expect(
+      dashboard.compareDocumentPosition(billing) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(
       billing.compareDocumentPosition(signOut) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("links to the dashboard first from the open menu", async () => {
+    stubSession(() =>
+      Promise.resolve(Response.json({ signedIn: true, email: null })),
+    );
+    await renderMenu();
+
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+
+    const dashboard = screen.getByRole("link", { name: "Dashboard" });
+    expect(dashboard).toHaveAttribute("href", "/dashboard");
+    expect(dashboard).toHaveFocus();
   });
 
   it("has no billing link when billing is off", async () => {
@@ -213,25 +231,17 @@ describe("AccountMenu", () => {
 
     const review = screen.getByRole("link", { name: "Review agencies" });
     expect(review).toHaveAttribute("href", "/admin/agency-submissions");
-    expect(screen.getByRole("link", { name: "Billing" })).toHaveFocus();
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveFocus();
+    expect(
+      screen
+        .getByRole("link", { name: "Billing" })
+        .compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     expect(
       review.compareDocumentPosition(
         screen.getByRole("button", { name: "Sign out" }),
       ) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-  });
-
-  it("focuses the review link first for an admin without billing", async () => {
-    stubSession(() =>
-      Promise.resolve(
-        Response.json({ signedIn: true, email: null, role: "admin" }),
-      ),
-    );
-    await renderMenu();
-
-    fireEvent.click(screen.getByRole("button", { name: "Account" }));
-
-    expect(screen.getByRole("link", { name: "Review agencies" })).toHaveFocus();
   });
 
   it.each([["user"], [null], ["superuser"]])(

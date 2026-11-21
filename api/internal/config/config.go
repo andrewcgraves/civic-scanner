@@ -26,6 +26,7 @@ type Config struct {
 	Summary       Summary
 	Web           Web
 	Stripe        Stripe
+	Webhooks      Webhooks
 }
 
 func Load() (Config, error) {
@@ -79,6 +80,7 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.Stripe = loadStripe(cfg.Web.PublicURL)
+	cfg.Webhooks = loadWebhooks()
 	return cfg, nil
 }
 

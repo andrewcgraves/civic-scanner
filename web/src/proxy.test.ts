@@ -75,6 +75,7 @@ describe("proxy", () => {
       matcher: [
         "/auth/session",
         "/billing",
+        "/dashboard",
         "/submit-agency",
         "/admin/agency-submissions",
       ],

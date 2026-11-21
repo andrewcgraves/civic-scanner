@@ -39,6 +39,7 @@ export default defineRailway(() => {
       PORT: "8080",
       STRIPE_SECRET_KEY: preserve(),
       STRIPE_WEBHOOK_SECRET: preserve(),
+      WEBHOOK_SECRET_KEY: preserve(),
       POSTHOG_API_KEY: preserve(),
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
       STORAGE_REGION: "${{audio.REGION}}",
@@ -72,7 +73,6 @@ export default defineRailway(() => {
       DATABASE_URL: db.env.DATABASE_URL,
       APP_ENV: "production",
       LOG_LEVEL: "info",
-      FEATURE_FLAGS: "ingest-check-agencies,ingest-summarize-agendas",
       POSTHOG_API_KEY: preserve(),
       AUDIO_MEDIA_USER_AGENT:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",

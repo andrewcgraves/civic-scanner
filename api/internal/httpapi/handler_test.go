@@ -32,6 +32,7 @@ type fakeStore struct {
 	users       *userCalls
 	submissions *submissionCalls
 	reviews     *reviewCalls
+	webhooks    *webhookCalls
 }
 
 type submissionCalls struct {
