@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -228,5 +229,67 @@ func TestFirecrawlBadBaseURLIsPermanent(t *testing.T) {
 	_, err := fetch.NewFirecrawl(cfg).Fetch(context.Background(), fetch.Request{URL: "https://agency.test/a"})
 	if err == nil || fetch.IsRetryable(err) {
 		t.Fatalf("err = %v, want permanent", err)
+	}
+}
+
+func TestFirecrawlRawHTMLAsksForTheWholePage(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = w.Write([]byte(`{"success":true,"data":{"markdown":"ignored","rawHtml":"<a href=\"/agendas\">Agendas</a>","metadata":{"statusCode":200}}}`))
+	}))
+	defer srv.Close()
+
+	got, err := fetch.NewFirecrawl(firecrawlConfig(srv.URL)).Fetch(context.Background(), fetch.Request{URL: "https://agency.test/", RawHTML: true})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	formats, _ := gotBody["formats"].([]any)
+	if len(formats) != 1 || formats[0] != "rawHtml" {
+		t.Errorf("formats = %v", gotBody["formats"])
+	}
+	if gotBody["onlyMainContent"] != false {
+		t.Errorf("onlyMainContent = %v, want false", gotBody["onlyMainContent"])
+	}
+	if string(got.Body) != `<a href="/agendas">Agendas</a>` || !strings.HasPrefix(got.ContentType, "text/html") {
+		t.Errorf("response = %+v", got)
+	}
+}
+
+func TestFirecrawlMarkdownLeavesMainContentDefault(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = w.Write([]byte(`{"success":true,"data":{"markdown":"hi","metadata":{}}}`))
+	}))
+	defer srv.Close()
+
+	if _, err := fetch.NewFirecrawl(firecrawlConfig(srv.URL)).Fetch(context.Background(), fetch.Request{URL: "https://agency.test/"}); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if _, ok := gotBody["onlyMainContent"]; ok {
+		t.Errorf("onlyMainContent sent for markdown: %v", gotBody)
+	}
+}
+
+func TestFirecrawlRefusesARedirectToANonPublicAddress(t *testing.T) {
+	for _, final := range []string{"http://169.254.169.254/latest/meta-data/", "http://localhost:8080/", "http://10.1.2.3/admin", "ftp://agency.test/x"} {
+		t.Run(final, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{
+				"success": true,
+				"data":    map[string]any{"rawHtml": "<p>internal</p>", "metadata": map[string]any{"statusCode": 200, "url": final}},
+			})
+			srv := firecrawlServer(t, 200, string(body))
+			defer srv.Close()
+
+			_, err := fetch.NewFirecrawl(firecrawlConfig(srv.URL), fetch.WithLogger(slog.New(slog.DiscardHandler))).
+				Fetch(context.Background(), fetch.Request{URL: "https://agency.test/", RawHTML: true})
+			if err == nil || fetch.IsRetryable(err) {
+				t.Fatalf("err = %v, want a permanent error", err)
+			}
+			if !errors.Is(err, fetch.ErrForbiddenAddress) && !errors.Is(err, fetch.ErrInvalidURL) {
+				t.Errorf("err = %v, want ErrForbiddenAddress or ErrInvalidURL", err)
+			}
+		})
 	}
 }

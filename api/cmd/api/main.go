@@ -12,11 +12,15 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
 	"github.com/andrewcgraves/civic-scanner/api/internal/billing"
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/httpapi"
+	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
@@ -77,6 +81,11 @@ func run(ctx context.Context) error {
 		logger.InfoContext(ctx, "stripe webhooks configured")
 	}
 
+	inserter, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Logger: logger})
+	if err != nil {
+		return fmt.Errorf("job client: %w", err)
+	}
+
 	srv := &http.Server{
 		Addr: net.JoinHostPort("", cfg.Port),
 		Handler: httpapi.NewRouter(httpapi.NewHandler(db, logger, version,
@@ -84,6 +93,7 @@ func run(ctx context.Context) error {
 			httpapi.WithPublicWebURL(cfg.Web.PublicURL),
 			httpapi.WithBilling(biller),
 			httpapi.WithStripeEvents(stripeEvents),
+			httpapi.WithSubmissionFollowUp(jobs.EnqueueScreenAgency{Client: inserter, Enabled: featureflags.Enabled}),
 		), logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
