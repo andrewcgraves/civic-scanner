@@ -5,6 +5,7 @@ import "context"
 type Request struct {
 	URL      string
 	MaxBytes int64
+	RawHTML  bool
 }
 
 type Response struct {

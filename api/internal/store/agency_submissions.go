@@ -25,11 +25,16 @@ var (
 	ErrInvalidInput    = errors.New("invalid agency submission")
 )
 
+type SubmissionFollowUp interface {
+	AgencySubmitted(ctx context.Context, tx pgx.Tx, sub AgencySubmission) error
+}
+
 type AgencySubmissionInput struct {
 	UserID     uuid.UUID
 	Name       string
 	Website    string
 	WebsiteKey string
+	FollowUp   SubmissionFollowUp
 }
 
 type AgencySubmission struct {
@@ -82,6 +87,12 @@ WHERE s.submitted_by = $1`, in.UserID).Scan(&pending)
 			sub.AgencyID, in.UserID).Scan(&sub.SubmittedAt)
 		if err != nil {
 			return fmt.Errorf("insert agency submission: %w", err)
+		}
+		if in.FollowUp == nil {
+			return nil
+		}
+		if err := in.FollowUp.AgencySubmitted(ctx, tx, sub); err != nil {
+			return fmt.Errorf("follow up agency submission: %w", err)
 		}
 		return nil
 	})
