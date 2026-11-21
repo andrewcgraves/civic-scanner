@@ -23,11 +23,12 @@ const (
 
 type firecrawl struct {
 	cfg  config.Fetch
+	opts options
 	http *http.Client
 }
 
-func NewFirecrawl(cfg config.Fetch) Fetcher {
-	return &firecrawl{cfg: cfg, http: &http.Client{Timeout: cfg.FirecrawlTimeout}}
+func NewFirecrawl(cfg config.Fetch, opts ...Option) Fetcher {
+	return &firecrawl{cfg: cfg, opts: buildOptions(opts), http: &http.Client{Timeout: cfg.FirecrawlTimeout}}
 }
 
 type scrapeRequest struct {
@@ -55,6 +56,9 @@ func (f *firecrawl) Fetch(ctx context.Context, req Request) (Response, error) {
 	target, err := url.Parse(req.URL)
 	if err != nil || !httpScheme(target) {
 		return Response{}, &Error{Err: fmt.Errorf("%w: %q", ErrInvalidURL, req.URL)}
+	}
+	if refused := f.opts.refused(ctx, "firecrawl", req.URL, f.opts.guard().CheckHost(target.Hostname())); refused != nil {
+		return Response{}, refused
 	}
 	payload, err := json.Marshal(scrapeRequest{URL: target.String(), Formats: []string{"markdown"}})
 	if err != nil {

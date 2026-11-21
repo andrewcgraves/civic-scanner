@@ -7,15 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strconv"
-	"syscall"
 	"time"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
+	"github.com/andrewcgraves/civic-scanner/api/internal/netguard"
 )
 
 const (
@@ -25,33 +24,9 @@ const (
 )
 
 var (
-	ErrForbiddenAddress = errors.New("media: address is not a public internet address")
+	ErrForbiddenAddress = netguard.ErrForbiddenAddress
 	ErrForbiddenHost    = errors.New("media: host or port is not an allowed recording host")
-	nonPublicPrefixes   = []netip.Prefix{
-		netip.MustParsePrefix("0.0.0.0/8"),
-		netip.MustParsePrefix("100.64.0.0/10"),
-		netip.MustParsePrefix("198.18.0.0/15"),
-		netip.MustParsePrefix("240.0.0.0/4"),
-		netip.MustParsePrefix("::/96"),
-		netip.MustParsePrefix("64:ff9b::/96"),
-		netip.MustParsePrefix("64:ff9b:1::/48"),
-		netip.MustParsePrefix("2002::/16"),
-	}
 )
-
-func PublicAddress(addr netip.Addr) bool {
-	addr = addr.Unmap()
-	if !addr.IsValid() || addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() ||
-		addr.IsLinkLocalMulticast() || addr.IsInterfaceLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
-		return false
-	}
-	for _, prefix := range nonPublicPrefixes {
-		if prefix.Contains(addr) {
-			return false
-		}
-	}
-	return true
-}
 
 type Guard struct {
 	AllowAddress func(netip.Addr) bool
@@ -72,33 +47,14 @@ func (g Guard) portAllowed(scheme, port string) bool {
 	return false
 }
 
-func (g Guard) allowed(addr netip.Addr) bool {
-	if g.AllowAddress != nil {
-		return g.AllowAddress(addr)
-	}
-	return PublicAddress(addr)
-}
-
-func (g Guard) Dialer() *net.Dialer {
-	return &net.Dialer{
-		Timeout: dialTimeout,
-		Control: func(_, address string, _ syscall.RawConn) error {
-			ap, err := netip.ParseAddrPort(address)
-			if err != nil {
-				return fmt.Errorf("%w: %s", ErrForbiddenAddress, address)
-			}
-			if !g.allowed(ap.Addr()) {
-				return fmt.Errorf("%w: %s", ErrForbiddenAddress, ap.Addr())
-			}
-			return nil
-		},
-	}
+func (g Guard) dialer() netguard.Dialer {
+	return netguard.Dialer{Allow: g.AllowAddress, Timeout: dialTimeout}
 }
 
 func (g Guard) Transport() *http.Transport {
 	return &http.Transport{
 		Proxy:                 nil,
-		DialContext:           g.Dialer().DialContext,
+		DialContext:           g.dialer().DialContext,
 		TLSClientConfig:       &tls.Config{RootCAs: g.RootCAs, MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout:   dialTimeout,
 		ResponseHeaderTimeout: defaultPageTimeout,

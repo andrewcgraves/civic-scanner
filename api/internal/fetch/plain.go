@@ -15,12 +15,16 @@ import (
 
 type plain struct {
 	cfg  config.Fetch
+	opts options
 	http *http.Client
 }
 
-func NewPlain(cfg config.Fetch) Fetcher {
-	p := &plain{cfg: cfg}
-	p.http = &http.Client{Timeout: cfg.Timeout, CheckRedirect: p.checkRedirect}
+func NewPlain(cfg config.Fetch, opts ...Option) Fetcher {
+	p := &plain{cfg: cfg, opts: buildOptions(opts)}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = p.opts.guard().DialContext
+	p.http = &http.Client{Timeout: cfg.Timeout, Transport: transport, CheckRedirect: p.checkRedirect}
 	return p
 }
 
@@ -59,6 +63,9 @@ func (p *plain) Fetch(ctx context.Context, req Request) (Response, error) {
 
 	resp, err := p.http.Do(httpReq)
 	if err != nil {
+		if refused := p.opts.refused(ctx, "plain", req.URL, err); refused != nil {
+			return Response{}, refused
+		}
 		return Response{}, transportError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()

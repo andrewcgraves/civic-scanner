@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"time"
+
+	"github.com/andrewcgraves/civic-scanner/api/internal/netguard"
 )
 
 var (
@@ -11,6 +13,7 @@ var (
 	ErrTooLarge         = errors.New("fetch: response exceeds size limit")
 	ErrTooManyRedirects = errors.New("fetch: too many redirects")
 	ErrInvalidURL       = errors.New("fetch: invalid url")
+	ErrForbiddenAddress = netguard.ErrForbiddenAddress
 )
 
 type Error struct {
