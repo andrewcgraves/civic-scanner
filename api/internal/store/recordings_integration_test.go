@@ -387,14 +387,14 @@ func TestAddRecordingAudioOnlyWhenThereIsNoneAndNoneWasDeleted(t *testing.T) {
 	}
 }
 
-func TestListRecordingsWithExpiredAudio(t *testing.T) {
+func TestListTranscribedRecordingsWithExpiredAudio(t *testing.T) {
 	ctx := t.Context()
 	pool := testdb.Pool(t)
 	s := store.New(pool)
 	meetingID := seedMeeting(t, pool, "store-test-recording-expired")
 	now := time.Date(1850, 6, 1, 0, 0, 0, 0, time.UTC)
 
-	add := func(name string, expiresAt *time.Time) uuid.UUID {
+	add := func(name string, expiresAt *time.Time, transcribed bool) uuid.UUID {
 		t.Helper()
 		r, _, err := s.UpsertRecording(ctx, recordingInput(meetingID, name))
 		if err != nil {
@@ -405,43 +405,65 @@ func TestListRecordingsWithExpiredAudio(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+		if transcribed {
+			if _, _, err := s.SaveTranscript(ctx, transcriptInput(r.ID, "Call to order.")); err != nil {
+				t.Fatal(err)
+			}
+		}
 		return r.ID
 	}
 	at := func(d time.Duration) *time.Time {
 		v := now.Add(d)
 		return &v
 	}
-	older := add("older", at(-48*time.Hour))
-	exact := add("exact", at(0))
-	add("future", at(time.Hour))
-	add("no-audio", nil)
-	deleted := add("deleted", at(-72*time.Hour))
+	older := add("older", at(-48*time.Hour), true)
+	exact := add("exact", at(0), true)
+	add("untranscribed", at(-96*time.Hour), false)
+	add("future", at(time.Hour), true)
+	add("no-audio", nil, true)
+	deleted := add("deleted", at(-72*time.Hour), true)
 	if _, err := s.MarkRecordingAudioDeleted(ctx, deleted, "audio/deleted"); err != nil {
 		t.Fatal(err)
+	}
+	mine := map[uuid.UUID]bool{}
+	recordings, err := s.ListRecordings(ctx, meetingID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recordings {
+		mine[r.ID] = true
 	}
 
 	ids := func(recordings []store.Recording) []uuid.UUID {
 		var out []uuid.UUID
 		for _, r := range recordings {
-			out = append(out, r.ID)
+			if mine[r.ID] {
+				out = append(out, r.ID)
+			}
 		}
 		return out
 	}
 
-	expired, err := s.ListRecordingsWithExpiredAudio(ctx, now, 10)
+	expired, err := s.ListTranscribedRecordingsWithExpiredAudio(ctx, now, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := ids(expired), []uuid.UUID{older, exact}; !slices.Equal(got, want) {
 		t.Errorf("expired = %v, want %v", got, want)
 	}
+	for _, r := range expired {
+		if r.Audio == nil || r.Audio.ExpiresAt.After(now) {
+			t.Errorf("listed %s with audio %+v, want audio expiring at or before %v", r.ID, r.Audio, now)
+		}
+	}
 
-	first, err := s.ListRecordingsWithExpiredAudio(ctx, now, 1)
+	first, err := s.ListTranscribedRecordingsWithExpiredAudio(ctx, now, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := ids(first), []uuid.UUID{older}; !slices.Equal(got, want) {
-		t.Errorf("limit 1 = %v, want %v", got, want)
+	if len(first) != 1 || first[0].Audio == nil || first[0].Audio.ExpiresAt.After(now.Add(-48*time.Hour)) ||
+		(mine[first[0].ID] && first[0].ID != older) {
+		t.Errorf("limit 1 = %+v, want %s or a recording expiring before it", first, older)
 	}
 }
 
@@ -459,7 +481,7 @@ func TestRecordingReadsAndWritesFailOnClosedPool(t *testing.T) {
 	_, _, failures["upsert"] = s.UpsertRecording(ctx, recordingInput(uuid.New(), "x"))
 	_, failures["get"] = s.GetRecording(ctx, uuid.New())
 	_, failures["list"] = s.ListRecordings(ctx, uuid.New())
-	_, failures["expired"] = s.ListRecordingsWithExpiredAudio(ctx, time.Now(), 10)
+	_, failures["expired"] = s.ListTranscribedRecordingsWithExpiredAudio(ctx, time.Now(), 10)
 	_, failures["set audio"] = s.SetRecordingAudio(ctx, uuid.New(), audio)
 	_, failures["mark deleted"] = s.MarkRecordingAudioDeleted(ctx, uuid.New(), "k")
 	_, failures["add audio"] = s.AddRecordingAudio(ctx, uuid.New(), audio)
