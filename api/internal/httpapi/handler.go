@@ -26,6 +26,9 @@ type Store interface {
 	GetLiveAgencyFeed(ctx context.Context, slug string) (store.AgencyFeed, error)
 	EnsureUser(ctx context.Context, in store.UserInput) (store.User, bool, error)
 	CreateAgencySubmission(ctx context.Context, in store.AgencySubmissionInput) (store.AgencySubmission, error)
+	ListPendingAgencySubmissions(ctx context.Context) ([]store.PendingAgencySubmission, error)
+	ApproveAgencySubmission(ctx context.Context, id uuid.UUID, slug string) (store.ReviewedAgency, error)
+	RejectAgencySubmission(ctx context.Context, id uuid.UUID) (store.ReviewedAgency, error)
 }
 
 type Handler struct {

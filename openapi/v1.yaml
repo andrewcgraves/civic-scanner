@@ -22,6 +22,8 @@ tags:
     description: Signed-in users.
   - name: billing
     description: The paid plan, through Stripe.
+  - name: admin
+    description: Routes for admins only.
 paths:
   /healthz:
     get:
@@ -341,6 +343,141 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /admin/agency-submissions:
+    get:
+      operationId: listPendingAgencySubmissions
+      x-admin: true
+      summary: List agencies awaiting review
+      description: >-
+        Lists the submitted agencies that are still pending, oldest
+        submission first, at most 100. Approving or rejecting one takes it
+        off the list, so the next ones appear. Admins only. Every response
+        carries `Cache-Control: no-store`.
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The pending submissions.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingAgencySubmissionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/agency-submissions/{id}/approve:
+    post:
+      operationId: approveAgencySubmission
+      x-admin: true
+      summary: Approve a submitted agency
+      description: >-
+        Makes a pending submitted agency live under the slug the admin
+        chooses, so it appears in the public routes. Only a pending agency
+        can be approved. Admins only. Every response carries
+        `Cache-Control: no-store`.
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AgencySubmissionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgencyApprovalInput"
+      responses:
+        "200":
+          description: The agency is live.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewedAgencySubmission"
+        "400":
+          $ref: "#/components/responses/InvalidApproval"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "409":
+          $ref: "#/components/responses/ReviewConflict"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/agency-submissions/{id}/reject:
+    post:
+      operationId: rejectAgencySubmission
+      x-admin: true
+      summary: Reject a submitted agency
+      description: >-
+        Rejects a pending submitted agency. It stays hidden from every public
+        route, and its site stays on file, so it cannot be submitted again.
+        Only a pending agency can be rejected. Admins only. Every response
+        carries `Cache-Control: no-store`.
+      tags: [admin]
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/AgencySubmissionId"
+      responses:
+        "200":
+          description: The agency is rejected.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewedAgencySubmission"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "409":
+          $ref: "#/components/responses/ReviewConflict"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /billing/checkout-session:
     post:
       operationId: createCheckoutSession
@@ -470,6 +607,14 @@ components:
       description: The agency's slug, e.g. `la-metro`.
       schema:
         type: string
+    AgencySubmissionId:
+      name: id
+      in: path
+      required: true
+      description: The submitted agency's id.
+      schema:
+        type: string
+        format: uuid
     IfNoneMatch:
       name: If-None-Match
       in: header
@@ -659,7 +804,8 @@ components:
     NotFound:
       description: >-
         No live agency has this slug, no meeting of a live agency has this
-        id, or the route is turned off for the signed-in user.
+        id, no submitted agency has this id, or the route is turned off for
+        the signed-in user.
       content:
         application/json:
           schema:
@@ -715,6 +861,31 @@ components:
         The user already has as many submissions awaiting review as one user
         may have. `code` is `submission_limit_reached`. Waiting does not help;
         the limit frees up as submissions are reviewed.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InvalidApproval:
+      description: >-
+        The approval is not valid. `code` is `invalid_body` when the body
+        cannot be decoded and `invalid_slug` when the slug does not follow
+        the rules on `AgencyApprovalInput`; `invalid_parameter` when the id
+        is not a UUID.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ReviewConflict:
+      description: >-
+        The agency cannot be reviewed as asked. `code` is `not_pending` when
+        it has already been approved or rejected, and `slug_taken` when
+        another agency already has the slug.
       headers:
         Cache-Control:
           $ref: "#/components/headers/NoStore"
@@ -1028,6 +1199,77 @@ components:
         submittedAt:
           type: string
           format: date-time
+    PendingAgencySubmissionList:
+      type: object
+      required: [submissions]
+      properties:
+        submissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PendingAgencySubmission"
+    PendingAgencySubmission:
+      type: object
+      required: [id, name, website, submittedAt, submittedBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: The name as submitted, after trimming. Plain text.
+        website:
+          type: string
+          description: >-
+            The website as stored. It has not been fetched or checked beyond
+            the submission rules; show it as text, not as a link.
+        submittedAt:
+          type: string
+          format: date-time
+        submittedBy:
+          $ref: "#/components/schemas/Submitter"
+    Submitter:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The submitter's id in this service.
+        email:
+          type: string
+          nullable: true
+          description: The submitter's latest email, or null when none is known.
+    AgencyApprovalInput:
+      type: object
+      required: [slug]
+      properties:
+        slug:
+          type: string
+          description: >-
+            The live agency's slug, used in its public URL and to register
+            its source adapter: 2 to 60 lower-case letters, digits and single
+            hyphens, starting and ending with a letter or digit, not starting
+            with `submitted-`, and not used by another agency.
+    ReviewedAgencySubmission:
+      type: object
+      required: [id, slug, name, website, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        slug:
+          type: string
+          description: >-
+            The chosen slug for a live agency; the private `submitted-` slug
+            for a rejected one.
+        name:
+          type: string
+        website:
+          type: string
+        status:
+          type: string
+          enum: [live, rejected]
+          x-enum-varnames: [ReviewedAgencySubmissionStatusLive, ReviewedAgencySubmissionStatusRejected]
     ValidationError:
       type: object
       required: [code, message]

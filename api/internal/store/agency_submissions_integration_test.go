@@ -294,7 +294,7 @@ func TestCreateAgencySubmissionFailsOnClosedPool(t *testing.T) {
 	}
 }
 
-func TestEveryLiveOrPendingAgencyTheStoreKnowsHasASiteRow(t *testing.T) {
+func TestEveryAgencyTheStoreKnowsHasASiteRow(t *testing.T) {
 	ctx := t.Context()
 	pool := testdb.Pool(t)
 	s := store.New(pool)
@@ -305,7 +305,10 @@ func TestEveryLiveOrPendingAgencyTheStoreKnowsHasASiteRow(t *testing.T) {
 		sub, _ := submit(t, s, user, name)
 		created = append(created, sub.AgencyID)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE agencies SET status = 'live' WHERE id = $1`, created[0]); err != nil {
+	if _, err := s.ApproveAgencySubmission(ctx, created[0], "civ48-"+uuid.NewString()[:8]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RejectAgencySubmission(ctx, created[1]); err != nil {
 		t.Fatal(err)
 	}
 
@@ -313,8 +316,7 @@ func TestEveryLiveOrPendingAgencyTheStoreKnowsHasASiteRow(t *testing.T) {
 SELECT a.slug
 FROM agencies a
 LEFT JOIN agency_websites w ON w.agency_id = a.id
-WHERE a.status IN ('live', 'pending')
-  AND w.agency_id IS NULL
+WHERE w.agency_id IS NULL
   AND (a.id = ANY($1) OR a.slug = ANY($2))`,
 		created, []string{"metrolink", "la-metro", "vctc", "rctc", "sbcta", "octa"})
 	if err != nil {

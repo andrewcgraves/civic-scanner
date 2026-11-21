@@ -31,6 +31,7 @@ type fakeStore struct {
 	feedCalls   *int
 	users       *userCalls
 	submissions *submissionCalls
+	reviews     *reviewCalls
 }
 
 type submissionCalls struct {
@@ -45,6 +46,43 @@ func (f fakeStore) CreateAgencySubmission(_ context.Context, in store.AgencySubm
 	}
 	f.submissions.inputs = append(f.submissions.inputs, in)
 	return f.submissions.result, f.submissions.err
+}
+
+type reviewCall struct {
+	action string
+	id     uuid.UUID
+	slug   string
+}
+
+type reviewCalls struct {
+	calls    []reviewCall
+	pending  []store.PendingAgencySubmission
+	reviewed store.ReviewedAgency
+	err      error
+}
+
+func (f fakeStore) ListPendingAgencySubmissions(context.Context) ([]store.PendingAgencySubmission, error) {
+	if f.reviews == nil {
+		return nil, errors.New("unexpected ListPendingAgencySubmissions")
+	}
+	f.reviews.calls = append(f.reviews.calls, reviewCall{action: "list"})
+	return f.reviews.pending, f.reviews.err
+}
+
+func (f fakeStore) ApproveAgencySubmission(_ context.Context, id uuid.UUID, slug string) (store.ReviewedAgency, error) {
+	if f.reviews == nil {
+		return store.ReviewedAgency{}, errors.New("unexpected ApproveAgencySubmission")
+	}
+	f.reviews.calls = append(f.reviews.calls, reviewCall{action: "approve", id: id, slug: slug})
+	return f.reviews.reviewed, f.reviews.err
+}
+
+func (f fakeStore) RejectAgencySubmission(_ context.Context, id uuid.UUID) (store.ReviewedAgency, error) {
+	if f.reviews == nil {
+		return store.ReviewedAgency{}, errors.New("unexpected RejectAgencySubmission")
+	}
+	f.reviews.calls = append(f.reviews.calls, reviewCall{action: "reject", id: id})
+	return f.reviews.reviewed, f.reviews.err
 }
 
 type userCalls struct {
