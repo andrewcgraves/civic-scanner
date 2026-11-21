@@ -142,7 +142,7 @@ func TestDirectedPromptSubscriptionsGetATailoredMessageOrNothing(t *testing.T) {
 		}
 		return llm.Response{Text: `{"relevant": false, "message": ""}`, FinishReason: "stop", Model: "anthropic/strong", Usage: usage}, nil
 	}}
-	var logs bytes.Buffer
+	var logs syncBuffer
 	h := startLogged(t, pool, jobs.Config{
 		LLM: fake,
 		Enabled: func(ctx context.Context, flag string) bool {
