@@ -20,12 +20,19 @@ async function loadSessionState(): Promise<SessionState | null> {
   }
 }
 
-function SignedInMenu({ email }: { email: string | null }) {
+function SignedInMenu({
+  email,
+  admin,
+}: {
+  email: string | null;
+  admin: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const signOutRef = useRef<HTMLButtonElement>(null);
   const billingRef = useRef<HTMLAnchorElement>(null);
+  const reviewRef = useRef<HTMLAnchorElement>(null);
   const menuId = useId();
   const billing = useFlag("billing");
 
@@ -33,7 +40,7 @@ function SignedInMenu({ email }: { email: string | null }) {
     if (!open) {
       return;
     }
-    (billingRef.current ?? signOutRef.current)?.focus();
+    (billingRef.current ?? reviewRef.current ?? signOutRef.current)?.focus();
     function closeOnOutsidePointer(event: PointerEvent) {
       if (!containerRef.current?.contains(event.target as Node)) {
         setOpen(false);
@@ -87,6 +94,17 @@ function SignedInMenu({ email }: { email: string | null }) {
             >
               Billing
             </Link>
+          </p>
+        ) : null}
+        {admin ? (
+          <p>
+            <a
+              ref={reviewRef}
+              href="/admin/agency-submissions"
+              className="whitespace-nowrap underline"
+            >
+              Review agencies
+            </a>
           </p>
         ) : null}
         <form action={signOutAction}>
@@ -156,5 +174,5 @@ export function AccountMenu() {
   if (!state.signedIn) {
     return <SignInLink />;
   }
-  return <SignedInMenu email={state.email} />;
+  return <SignedInMenu email={state.email} admin={state.role === "admin"} />;
 }
