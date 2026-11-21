@@ -76,7 +76,7 @@ func TestDirectedRequestRefusesWhatItCannotRead(t *testing.T) {
 		want        error
 	}{
 		"unknown source": {"minutes", focus, agenda, summarize.ErrUnknownSource},
-		"blank focus":    {summarize.DirectedAgenda, " ​\n", agenda, summarize.ErrEmptyFocus},
+		"blank focus":    {summarize.DirectedAgenda, " \u200b\n", agenda, summarize.ErrEmptyFocus},
 		"blank text":     {summarize.DirectedAgenda, focus, " \n ", summarize.ErrEmptySource},
 	} {
 		fake := llmtest.Returning("never")
@@ -89,7 +89,7 @@ func TestDirectedRequestRefusesWhatItCannotRead(t *testing.T) {
 
 func TestDirectedRelevantReplyIsCleaned(t *testing.T) {
 	for name, reply := range map[string]string{
-		"plain":  `{"relevant": true, "message": "Student fares on the A Line​ drop to $1 in July."}`,
+		"plain":  `{"relevant": true, "message": "Student fares on the A Line\u200b drop to $1 in July."}`,
 		"fenced": "```json\n{\"relevant\":true,\"message\":\"Student fares on the A Line drop to $1 in July.\"}\n```",
 		"prose":  "Here is the result:\n{\"message\": \"Student fares on the A Line drop to $1 in July.\", \"relevant\": true}",
 	} {
@@ -127,7 +127,7 @@ func TestDirectedUnreadableReplyIsRetryable(t *testing.T) {
 		"no json":       "Student fares drop in July.",
 		"no verdict":    `{"message": "Student fares drop in July."}`,
 		"wrong type":    `{"relevant": "yes", "message": "x"}`,
-		"empty message": `{"relevant": true, "message": " ​ "}`,
+		"empty message": `{"relevant": true, "message": " \u200b "}`,
 	} {
 		got, err := summarize.Directed(t.Context(), llmtest.Returning(reply), llm.TierStrong, summarize.DirectedAgenda, focus, agenda)
 		if err == nil || !llm.IsRetryable(err) || got.Relevant {
