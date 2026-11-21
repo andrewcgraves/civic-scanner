@@ -18,7 +18,10 @@ func rctcConfig() rctc.Config {
 }
 
 func redirected(body []byte, final string) *fetchtest.Fake {
-	return &fetchtest.Fake{Respond: func(fetch.Request) (fetch.Response, error) {
+	return &fetchtest.Fake{Respond: func(req fetch.Request) (fetch.Response, error) {
+		if req.URL == listingURL {
+			return fetch.Response{Status: 200, ContentType: "application/json", Body: noVideos, FinalURL: req.URL}, nil
+		}
 		return fetch.Response{Status: 200, ContentType: "text/html", Body: body, FinalURL: final}, nil
 	}}
 }
@@ -146,6 +149,10 @@ func TestInvalidConfigs(t *testing.T) {
 		"no time zone":       func(c *rctc.Config) { c.TimeZone = "" },
 		"bad time zone":      func(c *rctc.Config) { c.TimeZone = "Mars/Olympus" },
 		"bad start time":     func(c *rctc.Config) { c.StartTime = "9:30 AM" },
+		"http listing url":   func(c *rctc.Config) { c.Castus.ListingURL = "http://2kbyogxrg4.execute-api.us-west-2.amazonaws.com/x" },
+		"relative listing":   func(c *rctc.Config) { c.Castus.ListingURL = "/playlist/x" },
+		"listing with user":  func(c *rctc.Config) { c.Castus.ListingURL = "https://user@example.com/x" },
+		"no title prefix":    func(c *rctc.Config) { c.Castus.TitlePrefix = " " },
 	}
 	for name, mutate := range cases {
 		cfg := rctc.RCTC

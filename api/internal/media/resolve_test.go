@@ -126,8 +126,14 @@ func TestResolveDirectMediaOnlyOnMediaHosts(t *testing.T) {
 	if err != nil || src != (Source{URL: videoURL, Via: ViaDirect}) {
 		t.Errorf("Resolve = %+v, %v", src, err)
 	}
+	castus := "https://dlttx48mxf9m3.cloudfront.net/outputs/6af62b4f05fc227eedc662d8/Default/HLS/out.m3u8"
+	if src, err := resolver(fake).Resolve(t.Context(), castus); err != nil || src != (Source{URL: castus, Via: ViaDirect}) {
+		t.Errorf("Resolve(castus) = %+v, %v", src, err)
+	}
 	cases := map[string]error{
 		"https://media.example.test/meeting.mp4":                  ErrUnsupported,
+		"https://d1234abcd.cloudfront.net/outputs/x/out.m3u8":     ErrUnsupported,
+		"https://cloud.castus.tv/vod/rivcotv/video/6af62b4f05fc":  ErrUnsupported,
 		"https://archive-video.granicus.com/metrolink/index.html": ErrUnsupported,
 		"ftp://archive-video.granicus.com/a.mp4":                  ErrInvalidURL,
 		"file:///etc/passwd":                                      ErrInvalidURL,

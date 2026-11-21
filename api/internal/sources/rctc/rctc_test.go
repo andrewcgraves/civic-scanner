@@ -19,7 +19,10 @@ import (
 
 var recordedAt = time.Date(2026, 11, 19, 20, 30, 0, 0, time.UTC)
 
-const pageURL = "https://www.rctc.org/meetings-and-agendas/"
+const (
+	pageURL    = "https://www.rctc.org/meetings-and-agendas/"
+	listingURL = "https://2kbyogxrg4.execute-api.us-west-2.amazonaws.com/5fe25821fa91b30007ea7498/playlist/Riverside%20County%20Transportation%20Commission"
+)
 
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
@@ -30,8 +33,17 @@ func fixture(t *testing.T, name string) []byte {
 	return body
 }
 
+var noVideos = []byte(`{"videos":[]}`)
+
 func serving(body []byte) *fetchtest.Fake {
+	return servingWith(body, noVideos)
+}
+
+func servingWith(body, listing []byte) *fetchtest.Fake {
 	return &fetchtest.Fake{Respond: func(req fetch.Request) (fetch.Response, error) {
+		if req.URL == listingURL {
+			return fetch.Response{Status: 200, ContentType: "application/json", Body: listing, FinalURL: req.URL}, nil
+		}
 		return fetch.Response{Status: 200, ContentType: "text/html; charset=UTF-8", Body: body, FinalURL: req.URL}, nil
 	}}
 }
@@ -78,12 +90,15 @@ func describe(ms []sources.Meeting) string {
 	var b strings.Builder
 	for _, m := range ms {
 		fmt.Fprintf(&b, "%s %q %s %s agenda=%s\n", m.SourceID, m.Title, m.StartsAt.Format(time.RFC3339), m.Status, m.AgendaURL)
+		if m.RecordingURL != "" {
+			fmt.Fprintf(&b, "  recording=%s\n", m.RecordingURL)
+		}
 	}
 	return b.String()
 }
 
 func TestRecordedPageGivesTheCommissionMeetingOfTheDailyWindow(t *testing.T) {
-	fake := serving(fixture(t, "rctc_meetings_and_agendas.html"))
+	fake := servingWith(fixture(t, "rctc_meetings_and_agendas.html"), fixture(t, "castus_rctc_playlist.json"))
 	a, buf := logged(t, rctc.RCTC, fake, recordedAt)
 	got, err := a.Meetings(t.Context(), checkWindow(recordedAt))
 	if err != nil {
@@ -93,19 +108,21 @@ func TestRecordedPageGivesTheCommissionMeetingOfTheDailyWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := sources.Meeting{
-		SourceID:  "commission-meeting/2026-11",
-		Title:     "Commission Meeting",
-		StartsAt:  time.Date(2026, 11, 10, 17, 30, 0, 0, time.UTC),
-		Status:    sources.StatusScheduled,
-		PageURL:   pageURL,
-		AgendaURL: "https://www.rctc.org/november2026agenda",
+		SourceID:     "commission-meeting/2026-11",
+		Title:        "Commission Meeting",
+		StartsAt:     time.Date(2026, 11, 10, 17, 30, 0, 0, time.UTC),
+		Status:       sources.StatusHeld,
+		PageURL:      pageURL,
+		AgendaURL:    "https://www.rctc.org/november2026agenda",
+		RecordingURL: "https://dlttx48mxf9m3.cloudfront.net/outputs/6af62b4f05fc227eedc662d8/Default/HLS/out.m3u8",
 	}
 	if len(got) != 1 || got[0] != want {
 		t.Errorf("meetings =\n%s\nwant %+v", describe(got), want)
 	}
 	calls := fake.Calls()
-	if len(calls) != 1 || calls[0].URL != pageURL || calls[0].MaxBytes != rctc.MaxPageBytes {
-		t.Errorf("requests = %+v, want one GET of %s capped at %d bytes", calls, pageURL, rctc.MaxPageBytes)
+	if len(calls) != 2 || calls[0].URL != pageURL || calls[0].MaxBytes != rctc.MaxPageBytes ||
+		calls[1].URL != listingURL || calls[1].MaxBytes != rctc.MaxListingBytes {
+		t.Errorf("requests = %+v, want the page capped at %d bytes, then the castus listing capped at %d", calls, rctc.MaxPageBytes, rctc.MaxListingBytes)
 	}
 	if w := warnings(buf.String()); len(w) != 0 {
 		t.Errorf("warnings on the recorded page:\n%s", strings.Join(w, "\n"))

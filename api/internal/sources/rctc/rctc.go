@@ -38,6 +38,7 @@ type Config struct {
 	CommitteeWords []string
 	TimeZone       string
 	StartTime      string
+	Castus         Castus
 }
 
 type Board struct {
@@ -96,6 +97,9 @@ func (c Config) adapter() (Adapter, error) {
 	case c.TimeZone == "":
 		return Adapter{}, fmt.Errorf("%w: no time zone", ErrInvalidConfig)
 	}
+	if err := c.Castus.validate(); err != nil {
+		return Adapter{}, err
+	}
 	seen := map[string]bool{}
 	for _, b := range c.Boards {
 		key := strings.ToLower(normalize(b.Name))
@@ -116,14 +120,15 @@ func (c Config) adapter() (Adapter, error) {
 }
 
 type entry struct {
-	index     int
-	board     Board
-	full      string
-	date      day
-	startsAt  time.Time
-	cancelled bool
-	agendaURL string
-	sourceID  string
+	index        int
+	board        Board
+	full         string
+	date         day
+	startsAt     time.Time
+	cancelled    bool
+	agendaURL    string
+	recordingURL string
+	sourceID     string
 }
 
 type windowDays struct {
@@ -200,6 +205,13 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 
 	entries = a.merge(ctx, entries, days)
 	a.assignIDs(ctx, entries, days)
+	if a.cfg.Castus.enabled() {
+		recs, err := a.recordings(ctx, window)
+		if err != nil {
+			return nil, err
+		}
+		a.matchRecordings(ctx, entries, recs, days, now)
+	}
 
 	var meetings []sources.Meeting
 	for _, e := range entries {
@@ -207,16 +219,20 @@ func (a *Adapter) Meetings(ctx context.Context, window sources.Window) ([]source
 			continue
 		}
 		status := sources.StatusScheduled
-		if e.cancelled {
+		switch {
+		case e.cancelled:
 			status = sources.StatusCancelled
+		case e.recordingURL != "" && !e.startsAt.After(now):
+			status = sources.StatusHeld
 		}
 		meetings = append(meetings, sources.Meeting{
-			SourceID:  e.sourceID,
-			Title:     e.board.Name,
-			StartsAt:  e.startsAt,
-			Status:    status,
-			PageURL:   a.cfg.PageURL,
-			AgendaURL: e.agendaURL,
+			SourceID:     e.sourceID,
+			Title:        e.board.Name,
+			StartsAt:     e.startsAt,
+			Status:       status,
+			PageURL:      a.cfg.PageURL,
+			AgendaURL:    e.agendaURL,
+			RecordingURL: e.recordingURL,
 		})
 	}
 	slices.SortFunc(meetings, func(x, y sources.Meeting) int {
