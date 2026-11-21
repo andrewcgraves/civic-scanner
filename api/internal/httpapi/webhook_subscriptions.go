@@ -32,6 +32,10 @@ func WithWebhookSealer(s *webhooks.Sealer) HandlerOption {
 	return func(h *Handler) { h.webhookSealer = s }
 }
 
+func WithWebhookAddressCheck(c webhooks.AddressCheck) HandlerOption {
+	return func(h *Handler) { h.webhookAddresses = c }
+}
+
 func invalidWebhook(code, message string) v1.InvalidWebhookSubscriptionJSONResponse {
 	return v1.InvalidWebhookSubscriptionJSONResponse{Body: v1.Error{Code: code, Message: message}}
 }
@@ -43,6 +47,16 @@ func webhookEndpoint(raw string) (string, *v1.InvalidWebhookSubscriptionJSONResp
 		return "", &bad
 	}
 	return url, nil
+}
+
+func (h *Handler) webhookEndpointAddress(ctx context.Context, userID uuid.UUID, url string) *v1.InvalidWebhookSubscriptionJSONResponse {
+	problem := h.webhookAddresses.Check(ctx, url)
+	if problem == nil {
+		return nil
+	}
+	h.logger.InfoContext(ctx, "webhook endpoint refused", "code", problem.Code, "user_id", userID)
+	bad := invalidWebhook(problem.Code, problem.Message)
+	return &bad
 }
 
 func webhookPayloadVersion(version *v1.WebhookPayloadVersion) (string, *v1.InvalidWebhookSubscriptionJSONResponse) {
@@ -128,6 +142,9 @@ func (h *Handler) CreateWebhookSubscription(ctx context.Context, req v1.CreateWe
 	if bad != nil {
 		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
 	}
+	if bad := h.webhookEndpointAddress(ctx, user.ID, url); bad != nil {
+		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
+	}
 	if !h.webhookSealer.Configured() {
 		return v1.CreateWebhookSubscription503JSONResponse{WebhooksUnavailableJSONResponse: webhooksNotConfigured}, nil
 	}
@@ -204,6 +221,21 @@ func (h *Handler) UpdateWebhookSubscription(ctx context.Context, req v1.UpdateWe
 	}
 	if update.Empty() {
 		return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: invalidWebhook("nothing_to_update", "give at least one of url, payloadVersion and status")}, nil
+	}
+	if update.URL != nil {
+		current, err := h.store.GetWebhookSubscription(ctx, user.ID, req.Id)
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return v1.UpdateWebhookSubscription404JSONResponse{WebhookSubscriptionNotFoundJSONResponse: webhookNotFound}, nil
+		case err != nil:
+			h.logger.ErrorContext(ctx, "get webhook subscription failed", "error", err, "user_id", user.ID)
+			return v1.UpdateWebhookSubscriptiondefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
+		}
+		if current.URL != *update.URL {
+			if bad := h.webhookEndpointAddress(ctx, user.ID, *update.URL); bad != nil {
+				return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
+			}
+		}
 	}
 	sub, err := h.store.UpdateWebhookSubscription(ctx, user.ID, req.Id, update)
 	switch {

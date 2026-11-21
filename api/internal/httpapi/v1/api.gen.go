@@ -609,7 +609,7 @@ type WebhookSubscriptionInput struct {
 	// PayloadVersion The version of the payload to send. `v1` is the only one.
 	PayloadVersion *WebhookPayloadVersion `json:"payloadVersion,omitempty"`
 
-	// Url Where to send the webhooks: an absolute `https` URL of at most 2,048 bytes, without a user name, password or fragment. The scheme and host are stored in lower case; the path and query as given.
+	// Url Where to send the webhooks: an absolute `https` URL of at most 2,048 bytes, without a user name, password or fragment, whose host is a public IP address or a name that resolves only to public addresses. The scheme and host are stored in lower case; the path and query as given.
 	Url string `json:"url"`
 }
 
@@ -629,7 +629,7 @@ type WebhookSubscriptionUpdate struct {
 	// Status Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
 	Status *WebhookSubscriptionStatus `json:"status,omitempty"`
 
-	// Url A new URL, with the same rules as when creating.
+	// Url A new URL, with the same rules as when creating. The host's addresses are checked only when the URL differs from the stored one.
 	Url *string `json:"url,omitempty"`
 }
 
