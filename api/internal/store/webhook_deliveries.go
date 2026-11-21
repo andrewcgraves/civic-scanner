@@ -182,7 +182,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 func (s *Store) ListWebhookAttempts(ctx context.Context, subscriptionID uuid.UUID) ([]WebhookAttempt, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT id, subscription_id, event_id, attempt, started_at, duration_ms, status_code, error, succeeded
-FROM webhook_delivery_attempts WHERE subscription_id = $1 ORDER BY started_at DESC, id`, subscriptionID)
+FROM webhook_delivery_attempts WHERE subscription_id = $1 ORDER BY started_at DESC, attempt DESC, id`, subscriptionID)
 	if err != nil {
 		return nil, fmt.Errorf("query webhook attempts: %w", err)
 	}
