@@ -39,6 +39,7 @@ export default defineRailway(() => {
       PORT: "8080",
       STRIPE_SECRET_KEY: preserve(),
       STRIPE_WEBHOOK_SECRET: preserve(),
+      WEBHOOK_SECRET_KEY: preserve(),
       POSTHOG_API_KEY: preserve(),
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
       STORAGE_REGION: "${{audio.REGION}}",

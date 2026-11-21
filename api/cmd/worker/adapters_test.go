@@ -65,9 +65,15 @@ func TestMetrolinkIsRegisteredAsAGranicusAdapter(t *testing.T) {
 	}
 }
 
-func TestRCTCIsRegisteredForTheMeetingsPage(t *testing.T) {
+func TestRCTCIsRegisteredForTheMeetingsPageAndItsCastusListing(t *testing.T) {
 	page := `<table><tr><th>DATE &amp; TIME</th><th>MEETING</th></tr><tr><td>NOVEMBER 10, 2026 &#8211; 9:30 AM</td><td><a href="https://www.rctc.org/november2026agenda">COMMISSION MEETING</a></td></tr></table>`
-	fake := fetchtest.Returning(page)
+	listing := `{"videos":[{"_id":"6af62b4f05fc227eedc662d8","date":"2026-11-12T20:46:03.191Z","access":"open","metadata":{"filename":"RCTC General Commission 11/10/2026 Meeting"}}]}`
+	fake := &fetchtest.Fake{Respond: func(req fetch.Request) (fetch.Response, error) {
+		if strings.HasPrefix(req.URL, "https://2kbyogxrg4.execute-api.us-west-2.amazonaws.com/") {
+			return fetch.Response{Status: 200, ContentType: "application/json", Body: []byte(listing), FinalURL: req.URL}, nil
+		}
+		return fetch.Response{Status: 200, ContentType: "text/html", Body: []byte(page), FinalURL: req.URL}, nil
+	}}
 	now := time.Date(2026, 11, 19, 13, 0, 0, 0, time.UTC)
 	registry := sources.NewRegistry(sources.Deps{Fetcher: fake, Clock: sourcestest.NewClock(now)}, adapters)
 
@@ -79,12 +85,13 @@ func TestRCTCIsRegisteredForTheMeetingsPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].SourceID != "commission-meeting/2026-11" {
-		t.Errorf("meetings = %+v, want the November commission meeting", got)
+	if len(got) != 1 || got[0].SourceID != "commission-meeting/2026-11" || got[0].Status != sources.StatusHeld ||
+		got[0].RecordingURL != "https://dlttx48mxf9m3.cloudfront.net/outputs/6af62b4f05fc227eedc662d8/Default/HLS/out.m3u8" {
+		t.Errorf("meetings = %+v, want the November commission meeting, held, with its video", got)
 	}
 	calls := fake.Calls()
-	if len(calls) != 1 || calls[0].URL != "https://www.rctc.org/meetings-and-agendas/" {
-		t.Errorf("requests = %+v, want one to the RCTC meetings page", calls)
+	if len(calls) != 2 || calls[0].URL != "https://www.rctc.org/meetings-and-agendas/" || !strings.HasPrefix(calls[1].URL, "https://2kbyogxrg4.execute-api.us-west-2.amazonaws.com/") {
+		t.Errorf("requests = %+v, want the RCTC meetings page and then the Castus listing", calls)
 	}
 }
 

@@ -27,7 +27,7 @@ export async function GET(): Promise<Response> {
       (await headers()).get(SESSION_STATE_HEADER) === "unverified";
     return sessionResponse(
       unverified
-        ? { signedIn: true, email: null, role: null }
+        ? { signedIn: true, email: null, role: null, plan: null }
         : { signedIn: false },
     );
   }
@@ -40,5 +40,6 @@ export async function GET(): Promise<Response> {
     signedIn: true,
     email: me.status === "ok" ? me.data.email : null,
     role: me.status === "ok" ? me.data.role : null,
+    plan: me.status === "ok" ? me.data.plan : null,
   });
 }

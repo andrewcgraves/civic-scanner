@@ -53,6 +53,7 @@ func newHarness(t *testing.T, fetcher fetch.Fetcher, followUp jobs.FollowUp) *ha
 		t.Fatalf("insert agency: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM recordings WHERE meeting_id IN (SELECT id FROM meetings WHERE agency_id = $1)`, h.agencyID)
 		_, _ = pool.Exec(ctx, `DELETE FROM meetings WHERE agency_id = $1`, h.agencyID)
 		_, _ = pool.Exec(ctx, `DELETE FROM agencies WHERE id = $1`, h.agencyID)
 	})
@@ -65,6 +66,7 @@ func newHarness(t *testing.T, fetcher fetch.Fetcher, followUp jobs.FollowUp) *ha
 		Clock:          h.clock,
 		Enabled:        func(context.Context, string) bool { return true },
 		Queue:          h.queue,
+		AudioQueue:     h.queue + "_audio",
 		NoPeriodicJobs: true,
 		FollowUp:       followUp,
 	})
@@ -106,11 +108,11 @@ func (h *harness) meetings() map[string]store.Meeting {
 	return stored
 }
 
-func TestCheckAgencyWithTheProductionConfigStoresTheCommissionMeetingAndEnqueuesItsAgenda(t *testing.T) {
-	recorded := serving(fixture(t, "rctc_meetings_and_agendas.html"))
+func TestCheckAgencyWithTheProductionConfigStoresTheCommissionMeetingAndEnqueuesItsAgendaAndAudio(t *testing.T) {
+	recorded := servingWith(fixture(t, "rctc_meetings_and_agendas.html"), fixture(t, "castus_rctc_playlist.json"))
 	fake := &fetchtest.Fake{Respond: func(req fetch.Request) (fetch.Response, error) {
-		if !strings.HasPrefix(req.URL, "https://www.rctc.org/") {
-			t.Errorf("request to %s; the production config reads rctc.org only", req.URL)
+		if !strings.HasPrefix(req.URL, "https://www.rctc.org/") && req.URL != listingURL {
+			t.Errorf("request to %s; the production config reads rctc.org and the castus listing only", req.URL)
 		}
 		return recorded.Fetch(context.Background(), req)
 	}}
@@ -122,7 +124,7 @@ func TestCheckAgencyWithTheProductionConfigStoresTheCommissionMeetingAndEnqueues
 	if len(stored) != 1 || !ok {
 		t.Fatalf("stored %v, want the November commission meeting alone", stored)
 	}
-	if m.Status != "scheduled" || !m.StartsAt.Equal(time.Date(2026, 11, 10, 17, 30, 0, 0, time.UTC)) ||
+	if m.Status != "held" || !m.StartsAt.Equal(time.Date(2026, 11, 10, 17, 30, 0, 0, time.UTC)) ||
 		m.SourceURL != pageURL || m.Title != "Commission Meeting" {
 		t.Errorf("meeting = %+v", m)
 	}
@@ -135,8 +137,17 @@ func TestCheckAgencyWithTheProductionConfigStoresTheCommissionMeetingAndEnqueues
 	if agendaURL != "https://www.rctc.org/november2026agenda" || queue != h.queue {
 		t.Errorf("process_agenda args agenda_url %s on queue %s", agendaURL, queue)
 	}
-	if calls := fake.Calls(); len(calls) != 1 || calls[0].URL != pageURL {
-		t.Errorf("requests = %+v, want one GET of %s", calls, pageURL)
+	var recordingURL, audioQueue string
+	if err := h.pool.QueryRow(context.WithoutCancel(t.Context()),
+		`SELECT r.source_url, j.queue FROM recordings r JOIN river_job j ON j.kind = 'download_audio' AND j.args->>'recording_id' = r.id::text WHERE r.meeting_id = $1`,
+		m.ID).Scan(&recordingURL, &audioQueue); err != nil {
+		t.Fatalf("recording and download_audio job: %v", err)
+	}
+	if recordingURL != "https://dlttx48mxf9m3.cloudfront.net/outputs/6af62b4f05fc227eedc662d8/Default/HLS/out.m3u8" || audioQueue != h.queue+"_audio" {
+		t.Errorf("recording %s, download_audio on queue %s", recordingURL, audioQueue)
+	}
+	if calls := fake.Calls(); len(calls) != 2 || calls[0].URL != pageURL || calls[1].URL != listingURL {
+		t.Errorf("requests = %+v, want the page and then the castus listing", calls)
 	}
 }
 

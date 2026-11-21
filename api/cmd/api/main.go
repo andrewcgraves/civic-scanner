@@ -22,6 +22,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/httpapi"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
+	"github.com/andrewcgraves/civic-scanner/api/internal/webhooks"
 )
 
 const shutdownTimeout = 25 * time.Second
@@ -46,6 +47,9 @@ func run(ctx context.Context) error {
 	logger := config.NewLogger(cfg)
 	if cfg.Stripe.Problem != "" {
 		logger.ErrorContext(ctx, "billing is not configured: the Stripe settings are invalid", "problem", cfg.Stripe.Problem)
+	}
+	if cfg.Webhooks.Problem != "" {
+		logger.ErrorContext(ctx, "webhook subscriptions are not configured: the secret key is invalid", "problem", cfg.Webhooks.Problem)
 	}
 	if cfg.Stripe.WebhookProblem != "" {
 		logger.ErrorContext(ctx, "stripe webhooks are not configured: the signing secret is invalid", "problem", cfg.Stripe.WebhookProblem)
@@ -81,6 +85,14 @@ func run(ctx context.Context) error {
 		logger.InfoContext(ctx, "stripe webhooks configured")
 	}
 
+	var sealer *webhooks.Sealer
+	if cfg.Webhooks.Configured() {
+		if sealer, err = webhooks.NewSealer(cfg.Webhooks.SecretKey); err != nil {
+			return err
+		}
+		logger.InfoContext(ctx, "webhook secrets configured")
+	}
+
 	inserter, err := river.NewClient(riverpgxv5.New(pool), &river.Config{Logger: logger})
 	if err != nil {
 		return fmt.Errorf("job client: %w", err)
@@ -93,6 +105,7 @@ func run(ctx context.Context) error {
 			httpapi.WithPublicWebURL(cfg.Web.PublicURL),
 			httpapi.WithBilling(biller),
 			httpapi.WithStripeEvents(stripeEvents),
+			httpapi.WithWebhookSealer(sealer),
 			httpapi.WithSubmissionFollowUp(jobs.EnqueueScreenAgency{Client: inserter, Enabled: featureflags.Enabled}),
 		), logger),
 		ReadHeaderTimeout: 10 * time.Second,

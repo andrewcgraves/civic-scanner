@@ -31,6 +31,7 @@ type fakeStore struct {
 	feedCalls   *int
 	users       *userCalls
 	submissions *submissionCalls
+	webhooks    *webhookCalls
 }
 
 type submissionCalls struct {

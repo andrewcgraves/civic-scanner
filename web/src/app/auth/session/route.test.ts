@@ -86,14 +86,21 @@ describe("GET /auth/session", () => {
       signedIn: true,
       email: null,
       role: null,
+      plan: null,
     });
     expect(mocks.callApiAsUser).not.toHaveBeenCalled();
   });
 
-  it("shows the email the API has for the user", async () => {
+  it("shows the email and plan the API has for the user", async () => {
     mocks.callApiAsUser.mockResolvedValue({
       status: "ok",
-      data: { id: "u", email: "api@example.com", role: "user", createdAt: "x" },
+      data: {
+        id: "u",
+        email: "api@example.com",
+        role: "user",
+        plan: "free",
+        createdAt: "x",
+      },
     });
 
     const { response, body, text } = await session();
@@ -102,6 +109,7 @@ describe("GET /auth/session", () => {
       signedIn: true,
       email: "api@example.com",
       role: "user",
+      plan: "free",
     });
     expect(response.headers.get("vary")).toBe("Cookie");
     expect(text).not.toContain(ACCESS_TOKEN);
@@ -125,26 +133,40 @@ describe("GET /auth/session", () => {
   it("has no email when the API has none", async () => {
     mocks.callApiAsUser.mockResolvedValue({
       status: "ok",
-      data: { id: "u", email: null, role: "user", createdAt: "x" },
+      data: {
+        id: "u",
+        email: null,
+        role: "user",
+        plan: "free",
+        createdAt: "x",
+      },
     });
 
     expect((await session()).body).toEqual({
       signedIn: true,
       email: null,
       role: "user",
+      plan: "free",
     });
   });
 
-  it("passes on the role the API has for the user", async () => {
+  it("passes on the role and plan the API has for the user", async () => {
     mocks.callApiAsUser.mockResolvedValue({
       status: "ok",
-      data: { id: "u", email: null, role: "admin", createdAt: "x" },
+      data: {
+        id: "u",
+        email: null,
+        role: "admin",
+        plan: "paid",
+        createdAt: "x",
+      },
     });
 
     expect((await session()).body).toEqual({
       signedIn: true,
       email: null,
       role: "admin",
+      plan: "paid",
     });
   });
 
@@ -155,7 +177,7 @@ describe("GET /auth/session", () => {
   });
 
   it.each([["unavailable"], ["not-found"], ["failed"]])(
-    "stays signed in, without an email or role, when the API answers %s",
+    "stays signed in, without an email, role or plan, when the API answers %s",
     async (status) => {
       mocks.callApiAsUser.mockResolvedValue({ status });
 
@@ -163,6 +185,7 @@ describe("GET /auth/session", () => {
         signedIn: true,
         email: null,
         role: null,
+        plan: null,
       });
     },
   );

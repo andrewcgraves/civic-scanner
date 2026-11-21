@@ -12,20 +12,33 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
 
-var paidOperations = map[string]bool{}
+var paidOperations = map[string]string{
+	"ListWebhookSubscriptions":        FlagWebhookSubscriptions,
+	"CreateWebhookSubscription":       FlagWebhookSubscriptions,
+	"GetWebhookSubscription":          FlagWebhookSubscriptions,
+	"UpdateWebhookSubscription":       FlagWebhookSubscriptions,
+	"DeleteWebhookSubscription":       FlagWebhookSubscriptions,
+	"RotateWebhookSubscriptionSecret": FlagWebhookSubscriptions,
+}
 
-var errNotPaid = errors.New("user is on the free plan")
+var (
+	errNotPaid    = errors.New("user is on the free plan")
+	errFeatureOff = errors.New("the route's flag is off for this user")
+)
 
 var paymentRequired = v1.Error{Code: "payment_required", Message: "this route needs the paid plan"}
 
 type paidContextKey struct{}
 
-func (h *Handler) requirePaid(ctx context.Context) (store.User, error) {
+func (h *Handler) requirePaid(ctx context.Context, flag string) (store.User, error) {
 	if _, err := IdentityFrom(ctx); err != nil {
 		return store.User{}, err
 	}
 	if !h.enabled(ctx, FlagAccounts) {
 		return store.User{}, errAccountsOff
+	}
+	if flag != "" && !h.enabled(ctx, flag) {
+		return store.User{}, errFeatureOff
 	}
 	user, err := h.requireUser(ctx)
 	if err != nil {
@@ -37,14 +50,15 @@ func (h *Handler) requirePaid(ctx context.Context) (store.User, error) {
 	return user, nil
 }
 
-func (h *Handler) paidGate(operations map[string]bool) v1.StrictMiddlewareFunc {
+func (h *Handler) paidGate(operations map[string]string) v1.StrictMiddlewareFunc {
 	return func(f v1.StrictHandlerFunc, operationID string) v1.StrictHandlerFunc {
-		if !operations[operationID] {
+		flag, paid := operations[operationID]
+		if !paid {
 			return f
 		}
 		return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
 			w.Header().Set("Cache-Control", "no-store")
-			user, err := h.requirePaid(ctx)
+			user, err := h.requirePaid(ctx, flag)
 			if err != nil {
 				h.refusePaid(ctx, w, operationID, user, err)
 				return nil, nil
@@ -76,7 +90,7 @@ func writeSignInRefusal(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusServiceUnavailable, authNotConfigured.Body.Code, authNotConfigured.Body.Message)
 	case errors.Is(err, auth.ErrUnavailable):
 		writeError(w, http.StatusServiceUnavailable, authUnavailable.Body.Code, authUnavailable.Body.Message)
-	case errors.Is(err, errAccountsOff):
+	case errors.Is(err, errAccountsOff), errors.Is(err, errFeatureOff):
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	default:
 		return false
