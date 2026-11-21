@@ -21,8 +21,10 @@ function signedIn(plan: unknown) {
     );
 }
 
-async function renderOverview(billing = true) {
-  const view = render(<PlanOverview billing={billing} />);
+async function renderOverview(billing = true, subscriptions = false) {
+  const view = render(
+    <PlanOverview billing={billing} subscriptions={subscriptions} />,
+  );
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
@@ -103,6 +105,33 @@ describe("PlanOverview", () => {
       screen.getByRole("button", { name: "Open the billing portal" }),
     ).toBeVisible();
     expect(screen.getByText(/They will be set up here/)).toBeVisible();
+  });
+
+  it("links a paid user to their subscriptions when they are on", async () => {
+    stubSession(signedIn("paid"));
+
+    await renderOverview(true, true);
+
+    expect(
+      screen.getByRole("link", { name: "Manage your subscriptions" }),
+    ).toHaveAttribute("href", "/dashboard/subscriptions");
+    expect(screen.getByText(/get a webhook call/)).toBeVisible();
+    expect(screen.getByText(/included in your plan\.$/)).toBeVisible();
+    expect(screen.queryByText(/coming soon/)).toBeNull();
+  });
+
+  it("points a free user at subscriptions when they are on", async () => {
+    stubSession(signedIn("free"));
+
+    await renderOverview(true, true);
+
+    expect(
+      screen.getByRole("link", { name: "See what subscriptions do" }),
+    ).toHaveAttribute("href", "/dashboard/subscriptions");
+    expect(
+      screen.getByText("Webhook subscriptions are part of the paid plan."),
+    ).toBeVisible();
+    expect(screen.getByText(/adds webhook subscriptions\.$/)).toBeVisible();
   });
 
   it("passes billing being off to the plan card", async () => {
