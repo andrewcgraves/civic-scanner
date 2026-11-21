@@ -85,7 +85,7 @@ type Hosts struct {
 
 var DefaultHosts = Hosts{
 	Players: []string{".granicus.com"},
-	Media:   []string{"archive-stream.granicus.com", "archive-video.granicus.com", ".googlevideo.com"},
+	Media:   []string{"archive-stream.granicus.com", "archive-video.granicus.com", ".googlevideo.com", "dlttx48mxf9m3.cloudfront.net"},
 	YouTube: []string{"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"},
 }
 

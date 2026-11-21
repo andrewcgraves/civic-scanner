@@ -225,3 +225,23 @@ func variantList(n int) string {
 	}
 	return b.String()
 }
+
+func TestInspectHLSReadsTheRecordedCastusMasterPlaylist(t *testing.T) {
+	const base = "https://dlttx48mxf9m3.cloudfront.net/outputs/6af62b4f05fc227eedc662d8/Default/HLS/"
+	fake := playlists(map[string]string{
+		base + "out.m3u8":     page(t, "castus_rctc_out.m3u8"),
+		base + "out360p.m3u8": mediaPlaylist(2, "#EXT-X-PLAYLIST-TYPE:VOD\n"),
+	})
+	source, err := InspectHLS(t.Context(), fake, DefaultHosts.Media, Guard{}, base+"out.m3u8")
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	want := []string{base + "out360p.m3u8", base + "out720p.m3u8", base + "out1080p.m3u8"}
+	if source.Media != nil || strings.Join(source.Candidates, " ") != strings.Join(want, " ") {
+		t.Fatalf("source = %+v, want the variants from the lowest bandwidth up", source)
+	}
+	media, err := LoadMediaPlaylist(t.Context(), fake, DefaultHosts.Media, Guard{}, source.Candidates[0])
+	if err != nil || media.parts() != 2 || media.Runs[0][0] != base+"media_w1_0.ts" {
+		t.Errorf("media playlist = %+v, %v", media, err)
+	}
+}
