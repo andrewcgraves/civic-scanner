@@ -21,6 +21,7 @@ export type UserApiResult<T> =
   | { status: "unavailable" }
   | { status: "not-found" }
   | { status: "forbidden" }
+  | { status: "payment-required" }
   | { status: "conflict"; error: unknown }
   | { status: "rejected"; httpStatus: number; error: unknown }
   | { status: "failed" };
@@ -96,6 +97,9 @@ async function attempt<T>(
   }
   if (status === 403) {
     return { status: "forbidden" };
+  }
+  if (status === 402) {
+    return { status: "payment-required" };
   }
   if (status === 409) {
     return { status: "conflict", error: result.error };

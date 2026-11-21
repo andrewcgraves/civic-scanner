@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { sessionCookieName } from "@/lib/auth/cookie";
 import { isSignInEnabled } from "@/lib/auth/server";
 import { isBillingEnabled } from "@/lib/billing/server";
+import { isFlagEnabled } from "@/lib/flags/server";
 
 import { DashboardNav } from "./_components/dashboard-nav";
 import { PlanOverview } from "./_components/plan-overview";
@@ -22,7 +23,10 @@ export default async function DashboardPage() {
   if (!(await cookies()).has(sessionCookieName())) {
     redirect(DASHBOARD_SIGN_IN_PATH);
   }
-  const billing = await isBillingEnabled();
+  const [billing, subscriptions] = await Promise.all([
+    isBillingEnabled(),
+    isFlagEnabled("webhook-subscriptions"),
+  ]);
 
   return (
     <>
@@ -30,8 +34,8 @@ export default async function DashboardPage() {
         title="Dashboard"
         description="Your plan, and what comes with it."
       />
-      <DashboardNav billing={billing} />
-      <PlanOverview billing={billing} />
+      <DashboardNav billing={billing} subscriptions={subscriptions} />
+      <PlanOverview billing={billing} subscriptions={subscriptions} />
     </>
   );
 }

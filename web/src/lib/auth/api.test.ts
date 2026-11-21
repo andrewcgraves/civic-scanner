@@ -283,6 +283,18 @@ describe("callApiAsUser", () => {
     expect(console.warn).not.toHaveBeenCalled();
   });
 
+  it("reports a 402 as payment required without refreshing", async () => {
+    const { callApiAsUser } = await load([
+      apiResponse(402, { code: "payment_required", message: "x" }),
+    ]);
+
+    expect(
+      await callApiAsUser((api) => api.GET("/webhook-subscriptions")),
+    ).toEqual({ status: "payment-required" });
+    expect(mocks.refreshSession).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
   it("reports a 404 after a refresh", async () => {
     mocks.refreshSession.mockResolvedValue({ accessToken: "token-2" });
     const { callApiAsUser } = await load([apiResponse(401), apiResponse(404)]);

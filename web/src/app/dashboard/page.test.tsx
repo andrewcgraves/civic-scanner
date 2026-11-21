@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   signIn: true,
   billing: true,
+  subscriptions: false,
   cookies: new Set<string>(["wos-session"]),
   redirect: vi.fn((url: string) => {
     throw new Error(`redirect ${url}`);
@@ -27,9 +28,19 @@ vi.mock("@/lib/auth/server", () => ({
 vi.mock("@/lib/billing/server", () => ({
   isBillingEnabled: () => Promise.resolve(mocks.billing),
 }));
+vi.mock("@/lib/flags/server", () => ({
+  isFlagEnabled: (flag: string) =>
+    Promise.resolve(flag === "webhook-subscriptions" && mocks.subscriptions),
+}));
 vi.mock("./_components/plan-overview", () => ({
-  PlanOverview: ({ billing }: { billing: boolean }) => (
-    <p>{`plan overview, billing ${billing ? "on" : "off"}`}</p>
+  PlanOverview: ({
+    billing,
+    subscriptions,
+  }: {
+    billing: boolean;
+    subscriptions: boolean;
+  }) => (
+    <p>{`plan overview, billing ${billing ? "on" : "off"}, subscriptions ${subscriptions ? "on" : "off"}`}</p>
   ),
 }));
 
@@ -43,6 +54,7 @@ describe("DashboardPage", () => {
   beforeEach(() => {
     mocks.signIn = true;
     mocks.billing = true;
+    mocks.subscriptions = false;
     mocks.cookies = new Set(["wos-session"]);
     mocks.redirect.mockClear();
   });
@@ -56,7 +68,9 @@ describe("DashboardPage", () => {
     ).toBeVisible();
     expect(screen.getByRole("navigation", { name: "Dashboard" })).toBeVisible();
     expect(screen.getByRole("link", { name: "Billing" })).toBeVisible();
-    expect(screen.getByText("plan overview, billing on")).toBeVisible();
+    expect(
+      screen.getByText("plan overview, billing on, subscriptions off"),
+    ).toBeVisible();
   });
 
   it("leaves billing out when billing is off", async () => {
@@ -65,7 +79,23 @@ describe("DashboardPage", () => {
     await renderPage();
 
     expect(screen.queryByRole("link", { name: "Billing" })).toBeNull();
-    expect(screen.getByText("plan overview, billing off")).toBeVisible();
+    expect(
+      screen.getByText("plan overview, billing off, subscriptions off"),
+    ).toBeVisible();
+  });
+
+  it("links to subscriptions when the flag is on", async () => {
+    mocks.subscriptions = true;
+
+    await renderPage();
+
+    expect(screen.getByRole("link", { name: "Subscriptions" })).toHaveAttribute(
+      "href",
+      "/dashboard/subscriptions",
+    );
+    expect(
+      screen.getByText("plan overview, billing on, subscriptions on"),
+    ).toBeVisible();
   });
 
   it("sends a visitor without a session to sign in", async () => {

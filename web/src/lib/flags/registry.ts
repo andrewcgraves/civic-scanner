@@ -7,6 +7,7 @@ export const FLAG_KEYS = [
   "meeting-pages",
   "meeting-transcripts",
   "test-only-flag",
+  "webhook-subscriptions",
 ] as const;
 
 export type FlagKey = (typeof FLAG_KEYS)[number];
