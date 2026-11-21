@@ -271,6 +271,18 @@ describe("callApiAsUser", () => {
     expect(mocks.refreshSession).not.toHaveBeenCalled();
   });
 
+  it("reports a 403 as forbidden without refreshing", async () => {
+    const { callApiAsUser } = await load([
+      apiResponse(403, { code: "forbidden", message: "x" }),
+    ]);
+
+    expect(
+      await callApiAsUser((api) => api.GET("/admin/agency-submissions")),
+    ).toEqual({ status: "forbidden" });
+    expect(mocks.refreshSession).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
   it("reports a 404 after a refresh", async () => {
     mocks.refreshSession.mockResolvedValue({ accessToken: "token-2" });
     const { callApiAsUser } = await load([apiResponse(401), apiResponse(404)]);
@@ -381,5 +393,79 @@ describe("isApiUrl", () => {
     const isApiUrl = await loadWithBase("https://api.civic.example/");
 
     expect(isApiUrl("https://api.civic.example/v1/me")).toBe(true);
+  });
+});
+
+describe("readApiAsUser", () => {
+  beforeEach(() => {
+    mocks.withAuth.mockReset();
+    mocks.refreshSession.mockReset();
+    mocks.deleteCookie.mockReset();
+    mocks.requestHeaders = new Headers();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    mocks.withAuth.mockResolvedValue({
+      user: { id: "user_1" },
+      accessToken: "token-1",
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("calls the API with the session's access token", async () => {
+    const { readApiAsUser, fetchMock } = await load([
+      apiResponse(200, { submissions: [] }),
+    ]);
+
+    expect(
+      await readApiAsUser((api) => api.GET("/admin/agency-submissions")),
+    ).toEqual({ status: "ok", data: { submissions: [] } });
+    expect(sentAuthorization(fetchMock, 0).authorization).toBe(
+      "Bearer token-1",
+    );
+  });
+
+  it("never refreshes or forgets the session on a 401", async () => {
+    const { readApiAsUser, fetchMock } = await load([apiResponse(401)]);
+
+    expect(
+      await readApiAsUser((api) => api.GET("/admin/agency-submissions")),
+    ).toEqual({ status: "signed-out" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(mocks.refreshSession).not.toHaveBeenCalled();
+    expect(mocks.deleteCookie).not.toHaveBeenCalled();
+  });
+
+  it("is signed out without a session, and sends nothing", async () => {
+    mocks.withAuth.mockResolvedValue({ user: null });
+    const { readApiAsUser, fetchMock } = await load([]);
+
+    expect(await readApiAsUser((api) => api.GET("/me"))).toEqual({
+      status: "signed-out",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("is unavailable when the proxy could not verify the session", async () => {
+    mocks.withAuth.mockResolvedValue({ user: null });
+    mocks.requestHeaders = new Headers({
+      "x-civic-session-state": "unverified",
+    });
+    const { readApiAsUser, fetchMock } = await load([]);
+
+    expect(await readApiAsUser((api) => api.GET("/me"))).toEqual({
+      status: "unavailable",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("passes other answers through", async () => {
+    const { readApiAsUser } = await load([apiResponse(403)]);
+
+    expect(await readApiAsUser((api) => api.GET("/me"))).toEqual({
+      status: "forbidden",
+    });
   });
 });

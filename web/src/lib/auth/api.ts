@@ -20,6 +20,7 @@ export type UserApiResult<T> =
   | { status: "signed-out" }
   | { status: "unavailable" }
   | { status: "not-found" }
+  | { status: "forbidden" }
   | { status: "conflict"; error: unknown }
   | { status: "rejected"; httpStatus: number; error: unknown }
   | { status: "failed" };
@@ -93,6 +94,9 @@ async function attempt<T>(
   if (status === 404) {
     return { status: "not-found" };
   }
+  if (status === 403) {
+    return { status: "forbidden" };
+  }
   if (status === 409) {
     return { status: "conflict", error: result.error };
   }
@@ -164,4 +168,17 @@ export async function callApiAsUser<T>(
     return { status: "signed-out" };
   }
   return second;
+}
+
+export async function readApiAsUser<T>(
+  call: UserApiCall<T>,
+): Promise<UserApiResult<T>> {
+  const { accessToken } = await withAuth();
+  if (accessToken === undefined) {
+    return (await headers()).get(SESSION_STATE_HEADER) === "unverified"
+      ? { status: "unavailable" }
+      : { status: "signed-out" };
+  }
+  const result = await attempt(call, accessToken);
+  return result.status === "unauthorized" ? { status: "signed-out" } : result;
 }
