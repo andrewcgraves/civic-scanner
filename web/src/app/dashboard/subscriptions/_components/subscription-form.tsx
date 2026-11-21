@@ -8,16 +8,15 @@ import { Notice } from "@/components/ui/notice";
 import { createSubscription, updateSubscription } from "../actions";
 import {
   FIELD_LABELS,
-  FORMAT_LABELS,
   SUBSCRIPTIONS_PATH,
   URL_MAX_LENGTH,
-  formatChoices,
   initialForm,
   type FieldErrors,
   type FormState,
   type SubscriptionField,
 } from "../state";
 
+import { FormatField } from "./format-field";
 import { PromptField } from "./prompt-field";
 import { SecretPanel } from "./secret-panel";
 import { BUTTON, INPUT } from "./styles";
@@ -36,12 +35,11 @@ export type FormMode =
       agencyName: string;
       url: string;
       format: string;
+      template?: string | null;
       prompt?: string;
     };
 
 const URL_HINT = "An https address on a public host, up to 2,048 characters.";
-const FORMAT_HINT =
-  "Standard sends signed JSON for your own code. Discord and Slack send a ready-made message to a channel's incoming webhook URL.";
 
 function Problem({ state, mode }: { state: FormState; mode: FormMode }) {
   switch (state.kind) {
@@ -171,6 +169,7 @@ export function SubscriptionForm({
             agency: mode.agency,
             url: mode.url,
             format: mode.format,
+            template: mode.template ?? "",
             prompt: mode.prompt,
           },
     ),
@@ -191,7 +190,7 @@ export function SubscriptionForm({
     mode.kind === "create" ? "Add subscription" : "Save changes";
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="space-y-6">
       <Problem state={state} mode={mode} />
       <form
         key={JSON.stringify(values)}
@@ -264,34 +263,21 @@ export function SubscriptionForm({
           />
           <FieldError field="url" errors={errors} />
         </div>
-        <div>
-          <label htmlFor="format" className="font-medium">
-            {FIELD_LABELS.format}
-          </label>
-          <p id="format-hint" className="text-sm text-ink-muted">
-            {FORMAT_HINT}
-          </p>
-          <select
-            id="format"
-            name="format"
-            required
-            defaultValue={values.format}
-            aria-invalid={errors.format === undefined ? undefined : true}
-            aria-describedby={describedBy(
-              "format-hint",
-              errors.format,
-              "format",
-            )}
-            className={INPUT}
-          >
-            {formatChoices(values.format).map((format) => (
-              <option key={format} value={format}>
-                {FORMAT_LABELS[format]}
-              </option>
-            ))}
-          </select>
-          <FieldError field="format" errors={errors} />
-        </div>
+        <FormatField
+          defaultFormat={values.format}
+          defaultTemplate={values.template}
+          savedProblem={
+            state.kind === "invalid" ? state.templateProblem : undefined
+          }
+          error={errors.format}
+          agency={values.agency}
+          agencies={
+            mode.kind === "create"
+              ? mode.agencies
+              : [{ slug: mode.agency, name: mode.agencyName }]
+          }
+          keepsTemplate={mode.kind === "edit"}
+        />
         {prompts ? (
           <PromptField
             defaultValue={values.prompt}

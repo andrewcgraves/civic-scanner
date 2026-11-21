@@ -19,7 +19,8 @@ import {
   checkUrl,
   checkValues,
   editPath,
-  formatChoices,
+  FORMAT_HINTS,
+  checkTemplate,
   formatLabel,
   initialForm,
   isSlug,
@@ -37,6 +38,7 @@ import {
   subscriptionOutcomePath,
   subscriptionPath,
 } from "./state";
+import { STARTER_TEMPLATE, TEMPLATE_REQUIRED } from "./template";
 
 const ID = "8b0e6c43-3f3b-4f39-9a31-2a1f7c1a9e10";
 
@@ -91,7 +93,13 @@ describe("initialForm", () => {
   it("starts idle with the given values", () => {
     expect(initialForm({ agency: "octa" })).toEqual({
       kind: "idle",
-      values: { agency: "octa", url: "", format: "standard", prompt: "" },
+      values: {
+        agency: "octa",
+        url: "",
+        format: "standard",
+        template: "",
+        prompt: "",
+      },
     });
     expect(initialForm({ url: "https://a.example", format: "slack" })).toEqual({
       kind: "idle",
@@ -99,6 +107,7 @@ describe("initialForm", () => {
         agency: "",
         url: "https://a.example",
         format: "slack",
+        template: "",
         prompt: "",
       },
     });
@@ -111,6 +120,7 @@ describe("readValues and readId", () => {
       agency: " octa ",
       url: " https://a.example ",
       format: " discord ",
+      template: '{\r\n  "a": "{{agency.name}}"\r\n}',
       prompt: " Fare changes\r\n",
       id: ` ${ID} `,
     });
@@ -119,6 +129,7 @@ describe("readValues and readId", () => {
       agency: "octa",
       url: " https://a.example ",
       format: "discord",
+      template: '{\n  "a": "{{agency.name}}"\n}',
       prompt: " Fare changes\r\n",
     });
     expect(readsPrompt(data)).toBe(true);
@@ -126,12 +137,17 @@ describe("readValues and readId", () => {
   });
 
   it("reads missing or file fields as empty, and caps long input", () => {
-    const data = form({ url: "x".repeat(5000), agency: new Blob(["a"]) });
+    const data = form({
+      url: "x".repeat(5000),
+      agency: new Blob(["a"]),
+      template: "y".repeat(40000),
+    });
 
     expect(readValues(data)).toEqual({
       agency: "",
       url: "x".repeat(4096),
       format: "standard",
+      template: "y".repeat(32768),
       prompt: "",
     });
     expect(readsPrompt(data)).toBe(false);
@@ -169,6 +185,7 @@ describe("checkUrl and checkValues", () => {
         agency: "",
         url: "",
         format: "teams",
+        template: "",
         prompt: "x".repeat(501),
       }),
     ).toEqual({
@@ -183,6 +200,7 @@ describe("checkUrl and checkValues", () => {
           agency: "octa",
           url: "https://a.example",
           format,
+          template: STARTER_TEMPLATE,
           prompt: "",
         }),
       ).toEqual({});
@@ -199,15 +217,28 @@ describe("checkUrl and checkValues", () => {
     expect(formatLabel("teams")).toBe("teams");
   });
 
-  it("offers custom only to a subscription that is already custom", () => {
-    expect(formatChoices("standard")).toEqual(["standard", "discord", "slack"]);
-    expect(formatChoices("")).toEqual(["standard", "discord", "slack"]);
-    expect(formatChoices("custom")).toEqual([
-      "standard",
-      "discord",
-      "slack",
-      "custom",
+  it("describes each format", () => {
+    expect(FORMATS.map((format) => FORMAT_HINTS[format])).toEqual([
+      "Signed JSON with every field, for your own code.",
+      "A ready-made message for a Discord channel.",
+      "A ready-made message for a Slack channel.",
+      "Your own JSON object, filled in from placeholders.",
     ]);
+  });
+
+  it("needs a template of at most 8,192 bytes only for custom", () => {
+    const values = {
+      agency: "octa",
+      url: "https://a.example",
+      format: "custom",
+      template: "  ",
+      prompt: "",
+    };
+    expect(checkValues(values)).toEqual({ template: TEMPLATE_REQUIRED });
+    expect(
+      checkTemplate({ ...values, template: `{"a": "${"é".repeat(4096)}"}` }),
+    ).toBe("The template is 9 characters too long.");
+    expect(checkTemplate({ ...values, format: "slack" })).toBeUndefined();
   });
 });
 
@@ -281,6 +312,33 @@ describe("directed prompts", () => {
 });
 
 describe("rejection", () => {
+  it("puts a template problem next to the template, with where it is", () => {
+    const template = '{\n  "a": "x"\n  "b": "y"\n}';
+    expect(
+      rejection(
+        {
+          code: "invalid_template_json",
+          message:
+            "the template is not valid JSON: invalid character '\"' after object key:value pair, at byte 16",
+        },
+        template,
+      ),
+    ).toEqual({
+      errors: {
+        template:
+          "Line 3, column 3: The template is not valid JSON: invalid character '\"' after object key:value pair.",
+      },
+      templateProblem: {
+        message:
+          "The template is not valid JSON: invalid character '\"' after object key:value pair.",
+        index: 15,
+      },
+    });
+    expect(
+      rejection({ code: "template_required", message: "x" }).errors,
+    ).toEqual({ template: TEMPLATE_REQUIRED });
+  });
+
   it("puts a URL problem next to the URL, as a sentence", () => {
     expect(
       rejection({
