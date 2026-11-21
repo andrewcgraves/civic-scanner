@@ -11,8 +11,8 @@ func TestWebhookSubscriptionPauseMigration(t *testing.T) {
 	ctx := t.Context()
 	provider, pool, schema := isolatedProvider(t)
 
-	if _, err := provider.UpTo(ctx, 19); err != nil {
-		t.Fatalf("UpTo(19): %v", err)
+	if _, err := provider.UpTo(ctx, 20); err != nil {
+		t.Fatalf("UpTo(20): %v", err)
 	}
 	var userID, agencyID string
 	if err := pool.QueryRow(ctx, `INSERT INTO users (workos_user_id) VALUES ('user_pause') RETURNING id`).Scan(&userID); err != nil {
@@ -32,8 +32,8 @@ VALUES (gen_random_uuid(), $1, $2, $3, 'v1', $4, '\x01', $5) RETURNING id`
 		t.Fatal(err)
 	}
 
-	if _, err := provider.UpTo(ctx, 20); err != nil {
-		t.Fatalf("UpTo(20): %v", err)
+	if _, err := provider.UpTo(ctx, 21); err != nil {
+		t.Fatalf("UpTo(21): %v", err)
 	}
 	read := `SELECT consecutive_failed_events, paused_reason, paused_at FROM webhook_subscriptions WHERE id = $1`
 	var (
@@ -64,15 +64,15 @@ VALUES (gen_random_uuid(), $1, $2, $3, 'v1', $4, '\x01', $5) RETURNING id`
 		t.Errorf("valid pause: %v", err)
 	}
 
-	if _, err := provider.DownTo(ctx, 19); err != nil {
-		t.Fatalf("DownTo(19): %v", err)
+	if _, err := provider.DownTo(ctx, 20); err != nil {
+		t.Fatalf("DownTo(20): %v", err)
 	}
 	for _, column := range []string{"consecutive_failed_events", "paused_reason", "paused_at"} {
 		if columnExists(t, pool, schema, "webhook_subscriptions", column) {
-			t.Errorf("%s still exists after rolling back 00020", column)
+			t.Errorf("%s still exists after rolling back 00021", column)
 		}
 	}
-	if _, err := provider.UpTo(ctx, 20); err != nil {
-		t.Fatalf("UpTo(20) after Down: %v", err)
+	if _, err := provider.UpTo(ctx, 21); err != nil {
+		t.Fatalf("UpTo(21) after Down: %v", err)
 	}
 }
