@@ -212,6 +212,7 @@ func (e WebhookEventType) Valid() bool {
 
 // Defines values for WebhookFormat.
 const (
+	WebhookFormatCustom   WebhookFormat = "custom"
 	WebhookFormatDiscord  WebhookFormat = "discord"
 	WebhookFormatSlack    WebhookFormat = "slack"
 	WebhookFormatStandard WebhookFormat = "standard"
@@ -220,6 +221,8 @@ const (
 // Valid indicates whether the value is a known member of the WebhookFormat enum.
 func (e WebhookFormat) Valid() bool {
 	switch e {
+	case WebhookFormatCustom:
+		return true
 	case WebhookFormatDiscord:
 		return true
 	case WebhookFormatSlack:
@@ -654,7 +657,7 @@ type WebhookEventV1 struct {
 	Type WebhookEventType `json:"type"`
 }
 
-// WebhookFormat The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+// WebhookFormat The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. `custom`: the subscription's `template` with its placeholders filled in (see `WebhookTemplate`). The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
 type WebhookFormat string
 
 // WebhookMeeting defines model for WebhookMeeting.
@@ -679,7 +682,7 @@ type WebhookSubscription struct {
 	ConsecutiveFailedEvents int64     `json:"consecutiveFailedEvents"`
 	CreatedAt               time.Time `json:"createdAt"`
 
-	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. `custom`: the subscription's `template` with its placeholders filled in (see `WebhookTemplate`). The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
 	Format WebhookFormat      `json:"format"`
 	Id     openapi_types.UUID `json:"id"`
 
@@ -698,6 +701,9 @@ type WebhookSubscription struct {
 	// Status Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
 	Status WebhookSubscriptionStatus `json:"status"`
 
+	// Template The stored template, as given; null when there is none.
+	Template *string `json:"template"`
+
 	// UpdatedAt When the subscription or its secret last changed.
 	UpdatedAt time.Time `json:"updatedAt"`
 
@@ -710,11 +716,14 @@ type WebhookSubscriptionInput struct {
 	// Agency The slug of the live agency to subscribe to.
 	Agency string `json:"agency"`
 
-	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. `custom`: the subscription's `template` with its placeholders filled in (see `WebhookTemplate`). The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
 	Format *WebhookFormat `json:"format,omitempty"`
 
 	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion *WebhookPayloadVersion `json:"payloadVersion,omitempty"`
+
+	// Template The `custom` format's template; see `WebhookTemplate`. Required when `format` is `custom`, and stored with any format, so switching to a preset and back keeps it.
+	Template *string `json:"template,omitempty"`
 
 	// Url Where to send the webhooks: an absolute `https` URL of at most 2,048 bytes, without a user name, password or fragment, whose host is a public IP address or a name that resolves only to public addresses. The scheme and host are stored in lower case; the path and query as given.
 	Url string `json:"url"`
@@ -733,7 +742,7 @@ type WebhookSubscriptionStatus string
 
 // WebhookSubscriptionUpdate defines model for WebhookSubscriptionUpdate.
 type WebhookSubscriptionUpdate struct {
-	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. `custom`: the subscription's `template` with its placeholders filled in (see `WebhookTemplate`). The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
 	Format *WebhookFormat `json:"format,omitempty"`
 
 	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
@@ -741,6 +750,9 @@ type WebhookSubscriptionUpdate struct {
 
 	// Status Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
 	Status *WebhookSubscriptionStatus `json:"status,omitempty"`
+
+	// Template A new template, checked as when creating. It replaces the stored one; there is no way to remove it. Setting `format` to `custom` needs a template, given here or stored already.
+	Template *string `json:"template,omitempty"`
 
 	// Url A new URL, with the same rules as when creating. The host's addresses are checked only when the URL differs from the stored one.
 	Url *string `json:"url,omitempty"`
@@ -755,7 +767,7 @@ type WebhookSubscriptionWithSecret struct {
 	ConsecutiveFailedEvents int64     `json:"consecutiveFailedEvents"`
 	CreatedAt               time.Time `json:"createdAt"`
 
-	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. `custom`: the subscription's `template` with its placeholders filled in (see `WebhookTemplate`). The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
 	Format WebhookFormat      `json:"format"`
 	Id     openapi_types.UUID `json:"id"`
 
@@ -777,11 +789,38 @@ type WebhookSubscriptionWithSecret struct {
 	// Status Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
 	Status WebhookSubscriptionStatus `json:"status"`
 
+	// Template The stored template, as given; null when there is none.
+	Template *string `json:"template"`
+
 	// UpdatedAt When the subscription or its secret last changed.
 	UpdatedAt time.Time `json:"updatedAt"`
 
 	// Url The URL as stored.
 	Url string `json:"url"`
+}
+
+// WebhookTemplate A JSON object of at most 8,192 bytes (UTF-8) to send as a `custom` subscription's body. Placeholders go inside string values, written `{{name}}` (spaces inside the braces are allowed), and are replaced with text; a string may hold several, alongside other text. The names are a fixed set: `agency.name`, `agency.slug`, `meeting.id`, `meeting.title`, `meeting.startsAt`, `meeting.sourceUrl` (empty when unknown), `meeting.link` (the meeting's page, empty when there is none), `event.id`, `event.type`, `event.label` (such as `Agenda changed`), `event.summary` (one sentence, such as `The agenda changed (now version 2).`), `event.occurredAt`, `event.test` (`true` or `false`), `agenda.version` (empty for `transcript_ready`) and `agenda.changeNote` (empty when there is none). Times are RFC 3339 in UTC. There are no expressions, conditions or loops, and a `{{` must start one of these placeholders. Each value is JSON-escaped where it lands, so the body is always valid JSON whatever the agency's text holds. Numbers, booleans and null in the template are sent as written. The body is sent compact, with the keys in the template's order, and is signed like every other format.
+type WebhookTemplate = string
+
+// WebhookTemplatePreview defines model for WebhookTemplatePreview.
+type WebhookTemplatePreview struct {
+	// Body The rendered body, exactly the bytes a test send would sign and send.
+	Body string `json:"body"`
+
+	// Type What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
+	Type WebhookEventType `json:"type"`
+}
+
+// WebhookTemplatePreviewInput defines model for WebhookTemplatePreviewInput.
+type WebhookTemplatePreviewInput struct {
+	// Agency The slug of a live agency to use as the sample's agency. Without it, the sample agency is `Sample agency` (`sample-agency`).
+	Agency *string `json:"agency,omitempty"`
+
+	// Template A JSON object of at most 8,192 bytes (UTF-8) to send as a `custom` subscription's body. Placeholders go inside string values, written `{{name}}` (spaces inside the braces are allowed), and are replaced with text; a string may hold several, alongside other text. The names are a fixed set: `agency.name`, `agency.slug`, `meeting.id`, `meeting.title`, `meeting.startsAt`, `meeting.sourceUrl` (empty when unknown), `meeting.link` (the meeting's page, empty when there is none), `event.id`, `event.type`, `event.label` (such as `Agenda changed`), `event.summary` (one sentence, such as `The agenda changed (now version 2).`), `event.occurredAt`, `event.test` (`true` or `false`), `agenda.version` (empty for `transcript_ready`) and `agenda.changeNote` (empty when there is none). Times are RFC 3339 in UTC. There are no expressions, conditions or loops, and a `{{` must start one of these placeholders. Each value is JSON-escaped where it lands, so the body is always valid JSON whatever the agency's text holds. Numbers, booleans and null in the template are sent as written. The body is sent compact, with the keys in the template's order, and is signed like every other format.
+	Template WebhookTemplate `json:"template"`
+
+	// Type What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
+	Type *WebhookEventType `json:"type,omitempty"`
 }
 
 // WebhookTestInput defines model for WebhookTestInput.
@@ -964,6 +1003,9 @@ type UpdateWebhookSubscriptionJSONRequestBody = WebhookSubscriptionUpdate
 // SendWebhookTestJSONRequestBody defines body for SendWebhookTest for application/json ContentType.
 type SendWebhookTestJSONRequestBody = WebhookTestInput
 
+// PreviewWebhookTemplateJSONRequestBody defines body for PreviewWebhookTemplate for application/json ContentType.
+type PreviewWebhookTemplateJSONRequestBody = WebhookTemplatePreviewInput
+
 // Getter for additional properties for StripeEvent. Returns the specified
 // element and whether it was found
 func (a StripeEvent) Get(fieldName string) (value interface{}, found bool) {
@@ -1129,6 +1171,9 @@ type ServerInterface interface {
 	// SendWebhookTest Send a test webhook
 	// (POST /webhook-subscriptions/{id}/test)
 	SendWebhookTest(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId)
+	// PreviewWebhookTemplate Render a custom webhook template against a sample event
+	// (POST /webhook-templates/preview)
+	PreviewWebhookTemplate(w http.ResponseWriter, r *http.Request)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -1270,6 +1315,12 @@ func (_ Unimplemented) RotateWebhookSubscriptionSecret(w http.ResponseWriter, r 
 // SendWebhookTest Send a test webhook
 // (POST /webhook-subscriptions/{id}/test)
 func (_ Unimplemented) SendWebhookTest(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PreviewWebhookTemplate Render a custom webhook template against a sample event
+// (POST /webhook-templates/preview)
+func (_ Unimplemented) PreviewWebhookTemplate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1893,6 +1944,20 @@ func (siw *ServerInterfaceWrapper) SendWebhookTest(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// PreviewWebhookTemplate operation middleware
+func (siw *ServerInterfaceWrapper) PreviewWebhookTemplate(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewWebhookTemplate(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -2074,6 +2139,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/webhook-subscriptions/{id}/test", wrapper.SendWebhookTest)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/webhook-templates/preview", wrapper.PreviewWebhookTemplate)
 	})
 
 	return r
@@ -5292,6 +5360,162 @@ func (response SendWebhookTestdefaultJSONResponse) VisitSendWebhookTestResponse(
 	return err
 }
 
+type PreviewWebhookTemplateRequestObject struct {
+	Body *PreviewWebhookTemplateJSONRequestBody
+}
+
+type PreviewWebhookTemplateResponseObject interface {
+	VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error
+}
+
+type PreviewWebhookTemplate200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type PreviewWebhookTemplate200JSONResponse struct {
+	Body    WebhookTemplatePreview
+	Headers PreviewWebhookTemplate200ResponseHeaders
+}
+
+func (response PreviewWebhookTemplate200JSONResponse) VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewWebhookTemplate400JSONResponse struct {
+	InvalidWebhookSubscriptionJSONResponse
+}
+
+func (response PreviewWebhookTemplate400JSONResponse) VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewWebhookTemplate401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response PreviewWebhookTemplate401JSONResponse) VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewWebhookTemplate402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response PreviewWebhookTemplate402JSONResponse) VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewWebhookTemplate404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response PreviewWebhookTemplate404JSONResponse) VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewWebhookTemplate405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response PreviewWebhookTemplate405JSONResponse) VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewWebhookTemplate503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response PreviewWebhookTemplate503JSONResponse) VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewWebhookTemplatedefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response PreviewWebhookTemplatedefaultJSONResponse) VisitPreviewWebhookTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// ListPendingAgencySubmissions List agencies awaiting review
@@ -5363,6 +5587,9 @@ type StrictServerInterface interface {
 	// SendWebhookTest Send a test webhook
 	// (POST /webhook-subscriptions/{id}/test)
 	SendWebhookTest(ctx context.Context, request SendWebhookTestRequestObject) (SendWebhookTestResponseObject, error)
+	// PreviewWebhookTemplate Render a custom webhook template against a sample event
+	// (POST /webhook-templates/preview)
+	PreviewWebhookTemplate(ctx context.Context, request PreviewWebhookTemplateRequestObject) (PreviewWebhookTemplateResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -6026,6 +6253,37 @@ func (sh *strictHandler) SendWebhookTest(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SendWebhookTestResponseObject); ok {
 		if err := validResponse.VisitSendWebhookTestResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewWebhookTemplate operation middleware
+func (sh *strictHandler) PreviewWebhookTemplate(w http.ResponseWriter, r *http.Request) {
+	var request PreviewWebhookTemplateRequestObject
+
+	var body PreviewWebhookTemplateJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewWebhookTemplate(ctx, request.(PreviewWebhookTemplateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewWebhookTemplate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewWebhookTemplateResponseObject); ok {
+		if err := validResponse.VisitPreviewWebhookTemplateResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

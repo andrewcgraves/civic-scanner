@@ -33,7 +33,11 @@ func apiRoutes(h *Handler, logger *slog.Logger, admin map[string]adminRoute) fun
 
 func newRouter(h *Handler, logger *slog.Logger, admin map[string]adminRoute, routes func(chi.Router)) *chi.Mux {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), captureBody(maxRequestBodyBytes, map[string]int64{stripeWebhookPath: maxStripeEventBytes}), authenticate(h.auth, logger), h.adminGate(r, admin))
+	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), captureBody(maxRequestBodyBytes, map[string]int64{
+		stripeWebhookPath:           maxStripeEventBytes,
+		webhookSubscriptionsPattern: maxWebhookBodyBytes,
+		webhookTemplatesPath:        maxWebhookBodyBytes,
+	}), authenticate(h.auth, logger), h.adminGate(r, admin))
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	})

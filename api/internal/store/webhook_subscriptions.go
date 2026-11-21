@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	MaxWebhookSubscriptionsPerUser = 25
-	WebhookPayloadV1               = "v1"
-	webhookUniqueConstraint        = "webhook_subscriptions_user_agency_url_unique"
+	MaxWebhookSubscriptionsPerUser  = 25
+	WebhookPayloadV1                = "v1"
+	webhookUniqueConstraint         = "webhook_subscriptions_user_agency_url_unique"
+	webhookCustomTemplateConstraint = "webhook_subscriptions_custom_template_check"
 )
 
 type WebhookStatus string
@@ -39,10 +40,11 @@ const (
 	WebhookFormatStandard WebhookFormat = "standard"
 	WebhookFormatDiscord  WebhookFormat = "discord"
 	WebhookFormatSlack    WebhookFormat = "slack"
+	WebhookFormatCustom   WebhookFormat = "custom"
 )
 
 func (f WebhookFormat) Valid() bool {
-	return f == WebhookFormatStandard || f == WebhookFormatDiscord || f == WebhookFormatSlack
+	return f == WebhookFormatStandard || f == WebhookFormatDiscord || f == WebhookFormatSlack || f == WebhookFormatCustom
 }
 
 var (
@@ -50,6 +52,7 @@ var (
 	ErrWebhookSubscriptionExists  = errors.New("a subscription to this agency at this URL already exists")
 	ErrWebhookSubscriptionLimit   = errors.New("too many webhook subscriptions")
 	ErrInvalidWebhookSubscription = errors.New("invalid webhook subscription")
+	ErrWebhookTemplateRequired    = errors.New("a custom webhook subscription needs a template")
 )
 
 type WebhookSubscriptionInput struct {
@@ -59,6 +62,7 @@ type WebhookSubscriptionInput struct {
 	URL              string
 	PayloadVersion   string
 	Format           WebhookFormat
+	Template         *string
 	SecretCiphertext []byte
 }
 
@@ -66,11 +70,12 @@ type WebhookSubscriptionUpdate struct {
 	URL            *string
 	PayloadVersion *string
 	Format         *WebhookFormat
+	Template       *string
 	Status         *WebhookStatus
 }
 
 func (u WebhookSubscriptionUpdate) Empty() bool {
-	return u.URL == nil && u.PayloadVersion == nil && u.Format == nil && u.Status == nil
+	return u.URL == nil && u.PayloadVersion == nil && u.Format == nil && u.Template == nil && u.Status == nil
 }
 
 type WebhookSubscription struct {
@@ -82,6 +87,7 @@ type WebhookSubscription struct {
 	URL                     string
 	PayloadVersion          string
 	Format                  WebhookFormat
+	Template                *string
 	Status                  WebhookStatus
 	PausedReason            *WebhookPausedReason
 	PausedAt                *time.Time
@@ -91,12 +97,12 @@ type WebhookSubscription struct {
 	UpdatedAt               time.Time
 }
 
-const webhookColumns = `w.id, w.user_id, w.agency_id, a.slug, a.name, w.url, w.payload_version, w.format, w.status, w.paused_reason, w.paused_at,
+const webhookColumns = `w.id, w.user_id, w.agency_id, a.slug, a.name, w.url, w.payload_version, w.format, w.template, w.status, w.paused_reason, w.paused_at,
 w.consecutive_failed_events, w.secret_rotated_at, w.created_at, w.updated_at`
 
 func scanWebhookSubscription(row pgx.Row) (WebhookSubscription, error) {
 	var w WebhookSubscription
-	err := row.Scan(&w.ID, &w.UserID, &w.AgencyID, &w.AgencySlug, &w.AgencyName, &w.URL, &w.PayloadVersion, &w.Format, &w.Status,
+	err := row.Scan(&w.ID, &w.UserID, &w.AgencyID, &w.AgencySlug, &w.AgencyName, &w.URL, &w.PayloadVersion, &w.Format, &w.Template, &w.Status,
 		&w.PausedReason, &w.PausedAt, &w.ConsecutiveFailedEvents, &w.SecretRotatedAt, &w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		return w, err
@@ -116,6 +122,11 @@ func scanWebhookSubscription(row pgx.Row) (WebhookSubscription, error) {
 	return w, nil
 }
 
+func isWebhookTemplateMissing(err error) bool {
+	pgErr, ok := errors.AsType[*pgconn.PgError](err)
+	return ok && pgErr.Code == checkViolation && pgErr.ConstraintName == webhookCustomTemplateConstraint
+}
+
 func isWebhookDuplicate(err error) bool {
 	pgErr, ok := errors.AsType[*pgconn.PgError](err)
 	return ok && pgErr.Code == uniqueViolation && pgErr.ConstraintName == webhookUniqueConstraint
@@ -125,7 +136,8 @@ func (s *Store) CreateWebhookSubscription(ctx context.Context, in WebhookSubscri
 	if in.Format == "" {
 		in.Format = WebhookFormatStandard
 	}
-	if in.ID == uuid.Nil || in.UserID == uuid.Nil || in.AgencySlug == "" || in.URL == "" || in.PayloadVersion == "" || !in.Format.Valid() || len(in.SecretCiphertext) == 0 {
+	if in.ID == uuid.Nil || in.UserID == uuid.Nil || in.AgencySlug == "" || in.URL == "" || in.PayloadVersion == "" || !in.Format.Valid() ||
+		(in.Format == WebhookFormatCustom && in.Template == nil) || len(in.SecretCiphertext) == 0 {
 		return WebhookSubscription{}, fmt.Errorf("create webhook subscription: %w", ErrInvalidWebhookSubscription)
 	}
 	var created WebhookSubscription
@@ -143,12 +155,12 @@ func (s *Store) CreateWebhookSubscription(ctx context.Context, in WebhookSubscri
 		var err error
 		created, err = scanWebhookSubscription(tx.QueryRow(ctx, `
 WITH w AS (
-    INSERT INTO webhook_subscriptions (id, user_id, agency_id, url, payload_version, format, secret_ciphertext)
-    SELECT $1, $2, a.id, $4, $5, $6, $7 FROM agencies a WHERE a.slug = $3 AND a.status = 'live'
+    INSERT INTO webhook_subscriptions (id, user_id, agency_id, url, payload_version, format, template, secret_ciphertext)
+    SELECT $1, $2, a.id, $4, $5, $6, $8, $7 FROM agencies a WHERE a.slug = $3 AND a.status = 'live'
     RETURNING *
 )
 SELECT `+webhookColumns+` FROM w JOIN agencies a ON a.id = w.agency_id`,
-			in.ID, in.UserID, in.AgencySlug, in.URL, in.PayloadVersion, in.Format, in.SecretCiphertext))
+			in.ID, in.UserID, in.AgencySlug, in.URL, in.PayloadVersion, in.Format, in.SecretCiphertext, in.Template))
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return ErrUnknownAgency
@@ -204,6 +216,7 @@ func (s *Store) UpdateWebhookSubscription(ctx context.Context, userID, id uuid.U
 WITH w AS (
     UPDATE webhook_subscriptions
     SET url = COALESCE($3, url), payload_version = COALESCE($4, payload_version), format = COALESCE($6, format),
+        template = COALESCE($7, template),
         status = COALESCE($5, status),
         paused_reason = CASE
             WHEN $5::text IS NULL OR $5::text = status THEN paused_reason
@@ -218,12 +231,14 @@ WITH w AS (
     WHERE id = $1 AND user_id = $2
     RETURNING *
 )
-SELECT `+webhookColumns+` FROM w JOIN agencies a ON a.id = w.agency_id`, id, userID, update.URL, update.PayloadVersion, update.Status, update.Format))
+SELECT `+webhookColumns+` FROM w JOIN agencies a ON a.id = w.agency_id`, id, userID, update.URL, update.PayloadVersion, update.Status, update.Format, update.Template))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return WebhookSubscription{}, ErrNotFound
 	case isWebhookDuplicate(err):
 		return WebhookSubscription{}, ErrWebhookSubscriptionExists
+	case isWebhookTemplateMissing(err):
+		return WebhookSubscription{}, ErrWebhookTemplateRequired
 	case err != nil:
 		return WebhookSubscription{}, fmt.Errorf("update webhook subscription: %w", err)
 	}

@@ -298,7 +298,11 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 		logger.WarnContext(ctx, "webhook not delivered yet: WEBHOOK_SECRET_KEY is not configured on the worker")
 		return river.JobSnooze(webhookUnconfiguredSnooze)
 	}
-	body, err := webhooks.Body(d.Format, d.PayloadVersion, webhooks.Event{
+	template := ""
+	if d.Template != nil {
+		template = *d.Template
+	}
+	body, err := webhooks.Body(d.Format, d.PayloadVersion, template, webhooks.Event{
 		ID:         d.Event.ID,
 		Type:       d.Event.Type,
 		Payload:    d.Event.Payload,

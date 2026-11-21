@@ -18,6 +18,7 @@ const (
 	FlagWebhookSubscriptions    = "webhook-subscriptions"
 	webhookSubscriptionsPattern = "/v1/webhook-subscriptions"
 	webhookSubscriptionPattern  = "/v1/webhook-subscriptions/{id}"
+	maxWebhookBodyBytes         = 64 << 10
 )
 
 var (
@@ -26,6 +27,7 @@ var (
 	webhookExists         = v1.WebhookSubscriptionExistsJSONResponse{Body: v1.Error{Code: "already_subscribed", Message: "you already have a subscription to this agency at this URL"}}
 	webhookLimit          = v1.WebhookSubscriptionLimitJSONResponse{Body: v1.Error{Code: "subscription_limit_reached", Message: fmt.Sprintf("you can have at most %d webhook subscriptions", store.MaxWebhookSubscriptionsPerUser)}}
 	webhookPaymentNeeded  = v1.PaymentRequiredJSONResponse{Body: paymentRequired}
+	webhookNeedsTemplate  = invalidWebhook("template_required", "a custom subscription needs a template")
 )
 
 func WithWebhookSealer(s *webhooks.Sealer) HandlerOption {
@@ -74,8 +76,20 @@ func webhookFormat(format *v1.WebhookFormat) (store.WebhookFormat, *v1.InvalidWe
 	if f := store.WebhookFormat(*format); f.Valid() {
 		return f, nil
 	}
-	bad := invalidWebhook("invalid_format", "format must be standard, discord or slack")
+	bad := invalidWebhook("invalid_format", "format must be standard, discord, slack or custom")
 	return "", &bad
+}
+
+func webhookTemplate(template *string) *v1.InvalidWebhookSubscriptionJSONResponse {
+	if template == nil {
+		return nil
+	}
+	_, err := webhooks.ParseTemplate(*template)
+	if problem, ok := errors.AsType[*webhooks.TemplateError](err); ok {
+		bad := invalidWebhook(problem.Code, problem.Message)
+		return &bad
+	}
+	return nil
 }
 
 func apiWebhookSubscription(s store.WebhookSubscription) v1.WebhookSubscription {
@@ -85,6 +99,7 @@ func apiWebhookSubscription(s store.WebhookSubscription) v1.WebhookSubscription 
 		Url:                     s.URL,
 		PayloadVersion:          v1.WebhookPayloadVersion(s.PayloadVersion),
 		Format:                  v1.WebhookFormat(s.Format),
+		Template:                s.Template,
 		Status:                  v1.WebhookSubscriptionStatus(s.Status),
 		ConsecutiveFailedEvents: int64(s.ConsecutiveFailedEvents),
 		CreatedAt:               s.CreatedAt.UTC(),
@@ -110,6 +125,7 @@ func apiWebhookWithSecret(s store.WebhookSubscription, secret string) v1.Webhook
 		Url:                     sub.Url,
 		PayloadVersion:          sub.PayloadVersion,
 		Format:                  sub.Format,
+		Template:                sub.Template,
 		Status:                  sub.Status,
 		PausedReason:            sub.PausedReason,
 		PausedAt:                sub.PausedAt,
@@ -172,6 +188,12 @@ func (h *Handler) CreateWebhookSubscription(ctx context.Context, req v1.CreateWe
 	if bad != nil {
 		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
 	}
+	if bad := webhookTemplate(req.Body.Template); bad != nil {
+		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
+	}
+	if format == store.WebhookFormatCustom && req.Body.Template == nil {
+		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: webhookNeedsTemplate}, nil
+	}
 	if bad := h.webhookEndpointAddress(ctx, user.ID, url); bad != nil {
 		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
 	}
@@ -186,7 +208,8 @@ func (h *Handler) CreateWebhookSubscription(ctx context.Context, req v1.CreateWe
 		return v1.CreateWebhookSubscriptiondefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	}
 	created, err := h.store.CreateWebhookSubscription(ctx, store.WebhookSubscriptionInput{
-		ID: id, UserID: user.ID, AgencySlug: agency, URL: url, PayloadVersion: version, Format: format, SecretCiphertext: sealed,
+		ID: id, UserID: user.ID, AgencySlug: agency, URL: url, PayloadVersion: version, Format: format, Template: req.Body.Template,
+		SecretCiphertext: sealed,
 	})
 	switch {
 	case errors.Is(err, store.ErrUnknownAgency):
@@ -250,6 +273,12 @@ func (h *Handler) UpdateWebhookSubscription(ctx context.Context, req v1.UpdateWe
 		}
 		update.Format = &format
 	}
+	if req.Body.Template != nil {
+		if bad := webhookTemplate(req.Body.Template); bad != nil {
+			return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
+		}
+		update.Template = req.Body.Template
+	}
 	if req.Body.Status != nil {
 		status := store.WebhookStatus(*req.Body.Status)
 		if !status.Valid() {
@@ -258,9 +287,10 @@ func (h *Handler) UpdateWebhookSubscription(ctx context.Context, req v1.UpdateWe
 		update.Status = &status
 	}
 	if update.Empty() {
-		return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: invalidWebhook("nothing_to_update", "give at least one of url, payloadVersion, format and status")}, nil
+		return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: invalidWebhook("nothing_to_update", "give at least one of url, payloadVersion, format, template and status")}, nil
 	}
-	if update.URL != nil {
+	needsStoredTemplate := update.Format != nil && *update.Format == store.WebhookFormatCustom && update.Template == nil
+	if update.URL != nil || needsStoredTemplate {
 		current, err := h.store.GetWebhookSubscription(ctx, user.ID, req.Id)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -269,7 +299,10 @@ func (h *Handler) UpdateWebhookSubscription(ctx context.Context, req v1.UpdateWe
 			h.logger.ErrorContext(ctx, "get webhook subscription failed", "error", err, "user_id", user.ID)
 			return v1.UpdateWebhookSubscriptiondefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 		}
-		if current.URL != *update.URL {
+		if needsStoredTemplate && current.Template == nil {
+			return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: webhookNeedsTemplate}, nil
+		}
+		if update.URL != nil && current.URL != *update.URL {
 			if bad := h.webhookEndpointAddress(ctx, user.ID, *update.URL); bad != nil {
 				return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
 			}
@@ -281,6 +314,8 @@ func (h *Handler) UpdateWebhookSubscription(ctx context.Context, req v1.UpdateWe
 		return v1.UpdateWebhookSubscription404JSONResponse{WebhookSubscriptionNotFoundJSONResponse: webhookNotFound}, nil
 	case errors.Is(err, store.ErrWebhookSubscriptionExists):
 		return v1.UpdateWebhookSubscription409JSONResponse{WebhookSubscriptionExistsJSONResponse: webhookExists}, nil
+	case errors.Is(err, store.ErrWebhookTemplateRequired):
+		return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: webhookNeedsTemplate}, nil
 	case err != nil:
 		h.logger.ErrorContext(ctx, "update webhook subscription failed", "error", err, "user_id", user.ID)
 		return v1.UpdateWebhookSubscriptiondefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil

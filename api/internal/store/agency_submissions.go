@@ -16,6 +16,7 @@ const (
 	MaxPendingSubmissionsPerUser = 5
 	SubmittedSlugPrefix          = "submitted-"
 	uniqueViolation              = "23505"
+	checkViolation               = "23514"
 	siteKeyConstraint            = "agency_websites_site_key_unique"
 )
 

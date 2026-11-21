@@ -46,7 +46,7 @@ func presetEvents() map[string]webhooks.Event {
 func TestPresetBodiesMatchGolden(t *testing.T) {
 	for name, e := range presetEvents() {
 		for _, format := range []store.WebhookFormat{store.WebhookFormatStandard, store.WebhookFormatDiscord, store.WebhookFormatSlack} {
-			body, err := webhooks.Body(format, store.WebhookPayloadV1, e)
+			body, err := webhooks.Body(format, store.WebhookPayloadV1, "", e)
 			if err != nil {
 				t.Fatalf("%s %s: %v", format, name, err)
 			}
@@ -82,7 +82,7 @@ func TestStandardBodyIsThePayload(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, format := range []store.WebhookFormat{store.WebhookFormatStandard, ""} {
-		if got, err := webhooks.Body(format, store.WebhookPayloadV1, e); err != nil || !bytes.Equal(got, want) {
+		if got, err := webhooks.Body(format, store.WebhookPayloadV1, "", e); err != nil || !bytes.Equal(got, want) {
 			t.Errorf("format %q: %s, %v", format, got, err)
 		}
 	}
@@ -98,7 +98,7 @@ func oversized() webhooks.Event {
 }
 
 func TestDiscordBodyFitsTheLimits(t *testing.T) {
-	body, err := webhooks.Body(store.WebhookFormatDiscord, store.WebhookPayloadV1, oversized())
+	body, err := webhooks.Body(store.WebhookFormatDiscord, store.WebhookPayloadV1, "", oversized())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestDiscordBodyFitsTheLimits(t *testing.T) {
 }
 
 func TestSlackBodyFitsTheLimits(t *testing.T) {
-	body, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, oversized())
+	body, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, "", oversized())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestSlackBodyFitsTheLimits(t *testing.T) {
 func TestSlackBodyLeavesOutAnEmptyAgencyName(t *testing.T) {
 	e := presetEvents()["agenda_published"]
 	e.AgencyName = " \t"
-	body, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, e)
+	body, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, "", e)
 	if err != nil || strings.Contains(string(body), `"text":""`) || !strings.Contains(string(body), "<!date^") {
 		t.Errorf("%s, %v", body, err)
 	}
@@ -197,12 +197,12 @@ func TestSlackBodyLeavesOutAnEmptyAgencyName(t *testing.T) {
 
 func TestBodyRefusesWhatItCannotDescribe(t *testing.T) {
 	good := event(store.EventAgendaPublished, store.AgendaEventPayload{AgendaVersionID: versionID, Version: 1})
-	if _, err := webhooks.Body("teams", store.WebhookPayloadV1, good); !errors.Is(err, webhooks.ErrUnsupportedFormat) {
+	if _, err := webhooks.Body("teams", store.WebhookPayloadV1, "", good); !errors.Is(err, webhooks.ErrUnsupportedFormat) {
 		t.Errorf("unknown format: %v", err)
 	}
 	bad := event(store.EventTranscriptReady, map[string]string{})
 	for _, format := range []store.WebhookFormat{store.WebhookFormatDiscord, store.WebhookFormatSlack} {
-		if _, err := webhooks.Body(format, store.WebhookPayloadV1, bad); !errors.Is(err, webhooks.ErrUnsupportedEvent) {
+		if _, err := webhooks.Body(format, store.WebhookPayloadV1, "", bad); !errors.Is(err, webhooks.ErrUnsupportedEvent) {
 			t.Errorf("%s: %v", format, err)
 		}
 	}

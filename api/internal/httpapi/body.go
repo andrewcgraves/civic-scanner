@@ -26,10 +26,7 @@ func (f failingReader) Read([]byte) (int, error) { return 0, f.err }
 func captureBody(limit int64, pathLimits map[string]int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			bodyLimit := limit
-			if pathLimit, ok := pathLimits[r.URL.Path]; ok {
-				bodyLimit = pathLimit
-			}
+			bodyLimit := bodyLimitFor(r.URL.Path, limit, pathLimits)
 			data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 			body := capturedBody{contentType: r.Header.Get("Content-Type"), data: data, err: err}
 			if err != nil {
@@ -40,6 +37,16 @@ func captureBody(limit int64, pathLimits map[string]int64) func(http.Handler) ht
 			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), bodyContextKey{}, body)))
 		})
 	}
+}
+
+func bodyLimitFor(path string, limit int64, pathLimits map[string]int64) int64 {
+	matched := ""
+	for prefix, prefixLimit := range pathLimits {
+		if (path == prefix || strings.HasPrefix(path, prefix+"/")) && len(prefix) > len(matched) {
+			matched, limit = prefix, prefixLimit
+		}
+	}
+	return limit
 }
 
 var (

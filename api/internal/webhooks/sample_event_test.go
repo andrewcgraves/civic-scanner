@@ -105,7 +105,7 @@ func TestSampleEventsAreMarkedInThePresets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	discord, err := webhooks.Body(store.WebhookFormatDiscord, store.WebhookPayloadV1, e)
+	discord, err := webhooks.Body(store.WebhookFormatDiscord, store.WebhookPayloadV1, "", e)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestSampleEventsAreMarkedInThePresets(t *testing.T) {
 	if err := json.Unmarshal(discord, &d); err != nil || len(d.Embeds) != 1 || !strings.HasPrefix(d.Embeds[0].Description, "**Test: Agenda changed**") || d.Embeds[0].URL != "" {
 		t.Errorf("discord = %s, %v", discord, err)
 	}
-	slack, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, e)
+	slack, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, "", e)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestSampleEventsAreMarkedInThePresets(t *testing.T) {
 		t.Errorf("slack = %s, %v", slack, err)
 	}
 	e.Test = false
-	plain, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, e)
+	plain, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, "", e)
 	if err != nil || strings.Contains(string(plain), "Test: ") {
 		t.Errorf("a real slack message is marked: %s, %v", plain, err)
 	}

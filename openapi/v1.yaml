@@ -975,7 +975,9 @@ paths:
         now and answers with the result. The request is signed and sent
         exactly as a real delivery, with the subscription's URL, format,
         payload version and current secret. A `standard` body has `test:
-        true`; a Discord or Slack message's label starts with `Test: `. The
+        true`; a Discord or Slack message's label starts with `Test: `; a
+        `custom` body is the subscription's template rendered as
+        `previewWebhookTemplate` renders it. The
         event, meeting, agenda and transcript ids in it are new random ids
         that exist nowhere else, so each test has its own `webhook-id`. A
         paused subscription can be tested too. The URL's addresses are
@@ -1024,6 +1026,62 @@ paths:
           $ref: "#/components/responses/WebhookTestLimit"
         "503":
           $ref: "#/components/responses/WebhooksUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /webhook-templates/preview:
+    post:
+      operationId: previewWebhookTemplate
+      summary: Render a custom webhook template against a sample event
+      description: >-
+        Checks a `custom` template as saving it would and, when it is valid,
+        renders it against a sample event of the given type, exactly as a test
+        send of a `custom` subscription would render it: the meeting is
+        `Sample meeting for a test webhook`, the ids are new random UUIDs,
+        `{{event.test}}` is `true`, `{{event.label}}` starts with `Test: ` and
+        `{{meeting.link}}` is empty. The agency is the live agency `agency`
+        names, or `Sample agency` (`sample-agency`) without one. Nothing is
+        stored or sent. An invalid template is a 400 whose `code` and
+        `message` name the problem. The checks are the same for every webhook
+        subscription route: the token (401, or 503 when it cannot be checked),
+        then the `accounts` and `webhook-subscriptions` flags for that user
+        (404), then the plan (402 on the free plan). Every response carries
+        `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookTemplatePreviewInput"
+      responses:
+        "200":
+          description: The rendered body.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookTemplatePreview"
+        "400":
+          $ref: "#/components/responses/InvalidWebhookSubscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
         default:
           description: Unexpected error.
           content:
@@ -1314,9 +1372,16 @@ components:
         id that is not a UUID and `invalid_body` for a body that is not a JSON
         object of the documented members. Otherwise `code` names the problem:
         `unknown_agency` when no live agency has the slug,
-        `invalid_payload_version`, `invalid_status`, `nothing_to_update` for
-        an update with no members, `invalid_event_type` for a test of a type
-        that is not a `WebhookEventType`, or, for the URL, `required`, `too_long`,
+        `invalid_payload_version`, `invalid_format`, `invalid_status`,
+        `nothing_to_update` for an update with no members, `invalid_event_type`
+        for a test or preview of a type that is not a `WebhookEventType`, or,
+        for a template, `template_required` (format `custom` without a
+        template), `template_too_large` (more than 8,192 bytes),
+        `invalid_template_json` (not JSON, with the byte offset),
+        `invalid_template` (not an object, nested deeper than 32 levels, a
+        repeated key, a placeholder in a key or one not closed with `}}`) or
+        `unknown_placeholder` (naming it and listing the placeholders), or,
+        for the URL, `required`, `too_long`,
         `invalid_url`, `unsupported_scheme` (not `https`), `credentials`,
         `fragment`, `not_public` when the host is, or resolves to, an address
         that is not on the public internet (private, loopback, link-local,
@@ -1742,6 +1807,12 @@ components:
           $ref: "#/components/schemas/WebhookPayloadVersion"
         format:
           $ref: "#/components/schemas/WebhookFormat"
+        template:
+          type: string
+          description: >-
+            The `custom` format's template; see `WebhookTemplate`. Required
+            when `format` is `custom`, and stored with any format, so switching
+            to a preset and back keeps it.
     WebhookSubscriptionUpdate:
       type: object
       properties:
@@ -1755,6 +1826,12 @@ components:
           $ref: "#/components/schemas/WebhookPayloadVersion"
         format:
           $ref: "#/components/schemas/WebhookFormat"
+        template:
+          type: string
+          description: >-
+            A new template, checked as when creating. It replaces the stored
+            one; there is no way to remove it. Setting `format` to `custom`
+            needs a template, given here or stored already.
         status:
           $ref: "#/components/schemas/WebhookSubscriptionStatus"
     WebhookPayloadVersion:
@@ -1767,20 +1844,67 @@ components:
         The `discord` and `slack` formats ignore it.
     WebhookFormat:
       type: string
-      enum: [standard, discord, slack]
-      x-enum-varnames: [WebhookFormatStandard, WebhookFormatDiscord, WebhookFormatSlack]
+      enum: [standard, discord, slack, custom]
+      x-enum-varnames: [WebhookFormatStandard, WebhookFormatDiscord, WebhookFormatSlack, WebhookFormatCustom]
       default: standard
       description: >-
         The shape of each delivery's body. `standard`: the versioned event
         described by `WebhookEventV1`. `discord`: a message for a Discord
         incoming webhook (Execute Webhook), with one embed. `slack`: a message
         for a Slack incoming webhook, with Block Kit blocks and a `text`
-        fallback. The presets are rendered from the same event, cut to fit
+        fallback. `custom`: the subscription's `template` with its
+        placeholders filled in (see `WebhookTemplate`). The presets are
+        rendered from the same event, cut to fit
         the service's limits; text that is cut ends with `…` and the message
         links to the meeting's page. Agency text is shown as text, never as
         Markdown, and mentions are not sent. Every format is sent with the
         same `webhook-id`, `webhook-timestamp` and `webhook-signature`
         headers. The URL is not checked against the format.
+    WebhookTemplate:
+      type: string
+      description: >-
+        A JSON object of at most 8,192 bytes (UTF-8) to send as a `custom`
+        subscription's body. Placeholders go inside string values, written
+        `{{name}}` (spaces inside the braces are allowed), and are replaced
+        with text; a string may hold several, alongside other text. The names
+        are a fixed set: `agency.name`, `agency.slug`, `meeting.id`,
+        `meeting.title`, `meeting.startsAt`, `meeting.sourceUrl` (empty when
+        unknown), `meeting.link` (the meeting's page, empty when there is
+        none), `event.id`, `event.type`, `event.label` (such as `Agenda
+        changed`), `event.summary` (one sentence, such as `The agenda changed
+        (now version 2).`), `event.occurredAt`, `event.test` (`true` or
+        `false`), `agenda.version` (empty for `transcript_ready`) and
+        `agenda.changeNote` (empty when there is none). Times are RFC 3339 in
+        UTC. There are no expressions, conditions or loops, and a `{{` must
+        start one of these placeholders. Each value is JSON-escaped where it
+        lands, so the body is always valid JSON whatever the agency's text
+        holds. Numbers, booleans and null in the template are sent as
+        written. The body is sent compact, with the keys in the template's
+        order, and is signed like every other format.
+    WebhookTemplatePreviewInput:
+      type: object
+      required: [template]
+      properties:
+        template:
+          $ref: "#/components/schemas/WebhookTemplate"
+        type:
+          $ref: "#/components/schemas/WebhookEventType"
+        agency:
+          type: string
+          description: >-
+            The slug of a live agency to use as the sample's agency. Without
+            it, the sample agency is `Sample agency` (`sample-agency`).
+    WebhookTemplatePreview:
+      type: object
+      required: [type, body]
+      properties:
+        type:
+          $ref: "#/components/schemas/WebhookEventType"
+        body:
+          type: string
+          description: >-
+            The rendered body, exactly the bytes a test send would sign and
+            send.
     WebhookSubscriptionStatus:
       type: string
       enum: [active, paused]
@@ -1800,7 +1924,7 @@ components:
         either way.
     WebhookSubscription:
       type: object
-      required: [id, agency, url, payloadVersion, format, status, pausedReason, pausedAt, consecutiveFailedEvents, createdAt, updatedAt, secretRotatedAt]
+      required: [id, agency, url, payloadVersion, format, template, status, pausedReason, pausedAt, consecutiveFailedEvents, createdAt, updatedAt, secretRotatedAt]
       properties:
         id:
           type: string
@@ -1816,6 +1940,10 @@ components:
           $ref: "#/components/schemas/WebhookPayloadVersion"
         format:
           $ref: "#/components/schemas/WebhookFormat"
+        template:
+          type: string
+          nullable: true
+          description: The stored template, as given; null when there is none.
         status:
           $ref: "#/components/schemas/WebhookSubscriptionStatus"
         pausedReason:
