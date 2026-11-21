@@ -1,12 +1,21 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
   FORMATS,
   FORM_ERROR,
+  PROMPTS_UNAVAILABLE,
+  PROMPT_EXAMPLES,
+  PROMPT_INVALID,
+  PROMPT_MAX_LENGTH,
+  PROMPT_TOO_LONG,
   NEW_SUBSCRIPTION_PATH,
   SUBSCRIPTIONS_PATH,
   SUBSCRIPTIONS_SIGN_IN_PATH,
   agencyName,
+  checkPrompt,
   checkUrl,
   checkValues,
   editPath,
@@ -14,11 +23,14 @@ import {
   initialForm,
   isSlug,
   isSubscriptionId,
+  normalPrompt,
   outcomePath,
+  promptLength,
   readId,
   readOutcome,
   readValues,
   readReturnsToSubscription,
+  readsPrompt,
   rejection,
   sentence,
   subscriptionOutcomePath,
@@ -78,11 +90,16 @@ describe("initialForm", () => {
   it("starts idle with the given values", () => {
     expect(initialForm({ agency: "octa" })).toEqual({
       kind: "idle",
-      values: { agency: "octa", url: "", format: "standard" },
+      values: { agency: "octa", url: "", format: "standard", prompt: "" },
     });
     expect(initialForm({ url: "https://a.example", format: "slack" })).toEqual({
       kind: "idle",
-      values: { agency: "", url: "https://a.example", format: "slack" },
+      values: {
+        agency: "",
+        url: "https://a.example",
+        format: "slack",
+        prompt: "",
+      },
     });
   });
 });
@@ -93,6 +110,7 @@ describe("readValues and readId", () => {
       agency: " octa ",
       url: " https://a.example ",
       format: " discord ",
+      prompt: " Fare changes\r\n",
       id: ` ${ID} `,
     });
 
@@ -100,7 +118,9 @@ describe("readValues and readId", () => {
       agency: "octa",
       url: " https://a.example ",
       format: "discord",
+      prompt: " Fare changes\r\n",
     });
+    expect(readsPrompt(data)).toBe(true);
     expect(readId(data)).toBe(ID);
   });
 
@@ -111,7 +131,9 @@ describe("readValues and readId", () => {
       agency: "",
       url: "x".repeat(4096),
       format: "standard",
+      prompt: "",
     });
+    expect(readsPrompt(data)).toBe(false);
     expect(readId(new FormData())).toBe("");
   });
 });
@@ -141,14 +163,27 @@ describe("checkUrl and checkValues", () => {
   });
 
   it("requires an agency slug, a URL and a known format", () => {
-    expect(checkValues({ agency: "", url: "", format: "teams" })).toEqual({
+    expect(
+      checkValues({
+        agency: "",
+        url: "",
+        format: "teams",
+        prompt: "x".repeat(501),
+      }),
+    ).toEqual({
       agency: "Choose an agency.",
       url: "Enter the URL to send webhooks to.",
       format: "Choose a message format.",
+      prompt: `${PROMPT_TOO_LONG} Take out 1.`,
     });
     for (const format of FORMATS) {
       expect(
-        checkValues({ agency: "octa", url: "https://a.example", format }),
+        checkValues({
+          agency: "octa",
+          url: "https://a.example",
+          format,
+          prompt: "",
+        }),
       ).toEqual({});
     }
   });
@@ -160,6 +195,75 @@ describe("checkUrl and checkValues", () => {
       "Slack",
     ]);
     expect(formatLabel("teams")).toBe("teams");
+  });
+});
+
+describe("directed prompts", () => {
+  it("uses the length limit the API contract states", () => {
+    const spec = readFileSync(
+      resolve(process.cwd(), "..", "openapi", "v1.yaml"),
+      "utf8",
+    );
+    const schema =
+      /\n {4}WebhookPrompt:\n([\s\S]*?)\n {4}\S/.exec(spec)?.[1] ?? "";
+    const stated =
+      /at most ([\d,]+)\s+characters/.exec(schema.replace(/\s+/g, " "))?.[1] ??
+      "";
+
+    expect(stated.replace(",", "")).toBe(String(PROMPT_MAX_LENGTH));
+  });
+
+  it("counts characters after trimming, as the API does", () => {
+    expect(normalPrompt("  Blue Line\r\nstations \n")).toBe(
+      "Blue Line\nstations",
+    );
+    expect(promptLength("  ab\r\nc  ")).toBe(4);
+    expect(promptLength("🚆".repeat(3))).toBe(3);
+    expect(promptLength("   ")).toBe(0);
+  });
+
+  it("allows up to the limit and says how much to take out past it", () => {
+    expect(checkPrompt("")).toBeUndefined();
+    expect(checkPrompt(` ${"a".repeat(PROMPT_MAX_LENGTH)} `)).toBeUndefined();
+    expect(checkPrompt("🚆".repeat(PROMPT_MAX_LENGTH))).toBeUndefined();
+    expect(checkPrompt("a".repeat(PROMPT_MAX_LENGTH + 37))).toBe(
+      "The prompt can be at most 500 characters. Take out 37.",
+    );
+  });
+
+  it("refuses control characters other than line breaks and tabs", () => {
+    expect(checkPrompt("Fares\n\tand passes\r\n")).toBeUndefined();
+    expect(checkPrompt("Fares\u0007")).toBe(PROMPT_INVALID);
+    expect(checkPrompt("Fares\rpasses")).toBe(PROMPT_INVALID);
+    expect(checkPrompt("Fares\u0085")).toBe(PROMPT_INVALID);
+    expect(checkPrompt("Fares\uFFFD")).toBe(PROMPT_INVALID);
+  });
+
+  it("offers examples that each fit the limit", () => {
+    expect(PROMPT_EXAMPLES.map((example) => example.label)).toEqual([
+      "Fare changes",
+      "One rail line",
+      "Contracts and votes",
+    ]);
+    for (const example of PROMPT_EXAMPLES) {
+      expect(checkPrompt(example.text)).toBeUndefined();
+    }
+  });
+
+  it.each([
+    ["prompt_too_long", PROMPT_TOO_LONG],
+    ["invalid_prompt", PROMPT_INVALID],
+    ["prompts_unavailable", PROMPTS_UNAVAILABLE],
+  ])("puts %s next to the prompt", (code, message) => {
+    expect(rejection({ code, message: "from the API" })).toEqual({
+      errors: { prompt: message },
+    });
+  });
+
+  it("does not take inherited names for prompt codes", () => {
+    expect(rejection({ code: "toString", message: "odd" })).toEqual({
+      errors: { url: "Odd." },
+    });
   });
 });
 

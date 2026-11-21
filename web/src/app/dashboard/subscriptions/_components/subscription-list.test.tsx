@@ -138,6 +138,40 @@ describe("SubscriptionList", () => {
     expect(unknown).not.toHaveTextContent("You paused it");
   });
 
+  it("shows a directed prompt in its row while directed prompts are on", () => {
+    const prompt = "Anything about the Blue Line: closures and delays.";
+    render(
+      <SubscriptionList
+        subscriptions={[
+          subscription(1, { prompt }),
+          subscription(2),
+          subscription(3, { prompt: "   " }),
+        ]}
+        names={NAMES}
+        prompts
+      />,
+    );
+
+    const rows = screen.getAllByRole("listitem");
+    const line = within(rows[0]!).getByText("Directed prompt:").closest("p");
+    expect(line).toHaveTextContent(`Directed prompt: ${prompt}`);
+    expect(line).toHaveClass("line-clamp-2");
+    expect(within(rows[1]!).queryByText(/Directed prompt/)).toBeNull();
+    expect(within(rows[2]!).queryByText(/Directed prompt/)).toBeNull();
+  });
+
+  it("hides a saved prompt while directed prompts are off", () => {
+    render(
+      <SubscriptionList
+        subscriptions={[subscription(1, { prompt: "Fare changes" })]}
+        names={NAMES}
+      />,
+    );
+
+    expect(screen.queryByText(/Directed prompt/)).toBeNull();
+    expect(screen.queryByText(/Fare changes/)).toBeNull();
+  });
+
   it("says when the limit is reached", () => {
     render(
       <SubscriptionList

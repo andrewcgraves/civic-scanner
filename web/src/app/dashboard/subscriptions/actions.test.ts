@@ -124,7 +124,7 @@ describe("createSubscription", () => {
 
       expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
         kind: "unavailable",
-        values: VALUES,
+        values: { ...VALUES, prompt: "" },
       });
     },
   );
@@ -134,7 +134,7 @@ describe("createSubscription", () => {
       await createSubscription(IDLE_FORM, form({ agency: "", url: "" })),
     ).toEqual({
       kind: "invalid",
-      values: { agency: "", url: "", format: "standard" },
+      values: { agency: "", url: "", format: "standard", prompt: "" },
       errors: {
         agency: "Choose an agency.",
         url: "Enter the URL to send webhooks to.",
@@ -148,7 +148,7 @@ describe("createSubscription", () => {
       await createSubscription(IDLE_FORM, form({ ...VALUES, format: "teams" })),
     ).toEqual({
       kind: "invalid",
-      values: { ...VALUES, format: "teams" },
+      values: { ...VALUES, format: "teams", prompt: "" },
       errors: { format: "Choose a message format." },
     });
     expect(mocks.calls).toEqual([]);
@@ -172,7 +172,7 @@ describe("createSubscription", () => {
 
     expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind: "gone",
-      values: VALUES,
+      values: { ...VALUES, prompt: "" },
     });
     expect(mocks.calls).toEqual([]);
   });
@@ -186,7 +186,7 @@ describe("createSubscription", () => {
 
     expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind: "invalid",
-      values: VALUES,
+      values: { ...VALUES, prompt: "" },
       errors: { url: "The host is private." },
     });
   });
@@ -200,7 +200,7 @@ describe("createSubscription", () => {
 
     expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind: "invalid",
-      values: VALUES,
+      values: { ...VALUES, prompt: "" },
       errors: {},
       message: FORM_ERROR,
     });
@@ -219,7 +219,7 @@ describe("createSubscription", () => {
 
     expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind,
-      values: VALUES,
+      values: { ...VALUES, prompt: "" },
     });
   });
 
@@ -232,9 +232,135 @@ describe("createSubscription", () => {
   });
 });
 
+describe("directed prompts in createSubscription", () => {
+  const VALUES = { agency: "la-metro", url: URL, format: "standard" };
+
+  function body() {
+    return (mocks.calls[0] as { init: { body: unknown } } | undefined)?.init
+      .body;
+  }
+
+  it("sends the prompt trimmed, with line breaks as the API keeps them", async () => {
+    mocks.result = { status: "ok", data: { ...SUBSCRIPTION, secret: SECRET } };
+
+    await createSubscription(
+      IDLE_FORM,
+      form({ ...VALUES, prompt: "  Fare changes\r\nand passes  " }),
+    );
+
+    expect(body()).toEqual({
+      agency: "la-metro",
+      url: URL,
+      format: "standard",
+      prompt: "Fare changes\nand passes",
+    });
+  });
+
+  it.each([
+    ["the field is blank", { prompt: "  \r\n " }],
+    ["the form has no prompt field", {}],
+  ])("sends no prompt when %s", async (_case, extra) => {
+    mocks.result = { status: "ok", data: { ...SUBSCRIPTION, secret: SECRET } };
+
+    await createSubscription(IDLE_FORM, form({ ...VALUES, ...extra }));
+
+    expect(body()).toEqual({
+      agency: "la-metro",
+      url: URL,
+      format: "standard",
+    });
+  });
+
+  it("refuses a prompt over the limit before calling the API", async () => {
+    const prompt = "a".repeat(512);
+
+    expect(
+      await createSubscription(IDLE_FORM, form({ ...VALUES, prompt })),
+    ).toEqual({
+      kind: "invalid",
+      values: { ...VALUES, prompt },
+      errors: {
+        prompt: "The prompt can be at most 500 characters. Take out 12.",
+      },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("puts the API's prompt refusal next to the prompt", async () => {
+    mocks.result = {
+      status: "rejected",
+      httpStatus: 400,
+      error: { code: "prompts_unavailable", message: "not yet" },
+    };
+
+    const state = await createSubscription(
+      IDLE_FORM,
+      form({ ...VALUES, prompt: "Fare changes" }),
+    );
+
+    expect(state).toEqual({
+      kind: "invalid",
+      values: { ...VALUES, prompt: "Fare changes" },
+      errors: {
+        prompt:
+          "Directed prompts are not available on your account right now. Clear the prompt to save without one.",
+      },
+    });
+  });
+});
+
 describe("updateSubscription", () => {
   const VALUES = { id: ID, agency: "la-metro", url: URL, format: "slack" };
-  const KEPT = { agency: "la-metro", url: URL, format: "slack" };
+  const KEPT = { agency: "la-metro", url: URL, format: "slack", prompt: "" };
+
+  it("removes the prompt when the prompt field is sent blank", async () => {
+    mocks.result = { status: "ok", data: SUBSCRIPTION };
+
+    await expect(
+      updateSubscription(IDLE_FORM, form({ ...VALUES, prompt: "  " })),
+    ).rejects.toThrow("NEXT_REDIRECT");
+    expect(mocks.calls).toEqual([
+      {
+        method: "PATCH",
+        path: "/webhook-subscriptions/{id}",
+        init: {
+          params: { path: { id: ID } },
+          body: { url: URL, format: "slack", prompt: "" },
+        },
+      },
+    ]);
+  });
+
+  it("sends a changed prompt trimmed", async () => {
+    mocks.result = { status: "ok", data: SUBSCRIPTION };
+
+    await expect(
+      updateSubscription(
+        IDLE_FORM,
+        form({ ...VALUES, prompt: " Blue Line\r\n" }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT");
+    expect(mocks.calls).toMatchObject([
+      { init: { body: { url: URL, format: "slack", prompt: "Blue Line" } } },
+    ]);
+  });
+
+  it("checks the prompt before calling the API", async () => {
+    expect(
+      await updateSubscription(
+        IDLE_FORM,
+        form({ ...VALUES, prompt: "Fares\u0007" }),
+      ),
+    ).toEqual({
+      kind: "invalid",
+      values: { ...KEPT, prompt: "Fares\u0007" },
+      errors: {
+        prompt:
+          "The prompt has a hidden character that cannot be used, often from pasting. Retype that part as plain text; line breaks and tabs are fine.",
+      },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
 
   it("saves the new URL and returns to the list", async () => {
     mocks.result = { status: "ok", data: SUBSCRIPTION };

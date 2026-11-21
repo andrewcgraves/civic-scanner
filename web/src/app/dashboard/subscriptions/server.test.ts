@@ -43,8 +43,28 @@ vi.mock("@/lib/api/load", () => ({
   loadAgencies: () => Promise.resolve(mocks.agencies),
 }));
 
-const { isSubscriptionsEnabled, loadAgencyChoices, requireSubscriptions } =
-  await import("./server");
+const {
+  isDirectedPromptsEnabled,
+  isSubscriptionsEnabled,
+  loadAgencyChoices,
+  requireSubscriptions,
+} = await import("./server");
+
+describe("isDirectedPromptsEnabled", () => {
+  beforeEach(() => {
+    mocks.flag = true;
+    mocks.flagsAsked = [];
+  });
+
+  it("follows the webhook-directed-prompts flag", async () => {
+    expect(await isDirectedPromptsEnabled()).toBe(true);
+    expect(mocks.flagsAsked).toEqual(["webhook-directed-prompts"]);
+
+    mocks.flag = false;
+
+    expect(await isDirectedPromptsEnabled()).toBe(false);
+  });
+});
 
 describe("isSubscriptionsEnabled", () => {
   beforeEach(() => {

@@ -15,15 +15,18 @@ import {
   SUBSCRIPTIONS_PATH,
   SUBSCRIPTIONS_SIGN_IN_PATH,
   checkFormat,
+  checkPrompt,
   checkUrl,
   checkValues,
   isFormat,
   isSlug,
   isSubscriptionId,
+  normalPrompt,
   outcomePath,
   readId,
   readReturnsToSubscription,
   readValues,
+  readsPrompt,
   rejection,
   subscriptionOutcomePath,
   type ActionState,
@@ -67,6 +70,15 @@ function actionFailure(result: UserApiResult<unknown>): ActionState {
   }
 }
 
+function createdPrompt(formData: FormData, values: SubscriptionValues) {
+  const prompt = normalPrompt(values.prompt);
+  return readsPrompt(formData) && prompt !== "" ? { prompt } : {};
+}
+
+function updatedPrompt(formData: FormData, values: SubscriptionValues) {
+  return readsPrompt(formData) ? { prompt: normalPrompt(values.prompt) } : {};
+}
+
 function hasSecret(data: unknown): data is { secret: string } {
   if (typeof data !== "object" || data === null) {
     return false;
@@ -102,6 +114,7 @@ export async function createSubscription(
         agency: values.agency,
         url: values.url.trim(),
         format: isFormat(values.format) ? values.format : undefined,
+        ...createdPrompt(formData, values),
       },
     }),
   );
@@ -129,13 +142,19 @@ export async function updateSubscription(
   }
   const urlError = checkUrl(values.url);
   const formatError = checkFormat(values.format);
-  if (urlError !== undefined || formatError !== undefined) {
+  const promptError = checkPrompt(values.prompt);
+  if (
+    urlError !== undefined ||
+    formatError !== undefined ||
+    promptError !== undefined
+  ) {
     return {
       kind: "invalid",
       values,
       errors: {
         ...(urlError === undefined ? {} : { url: urlError }),
         ...(formatError === undefined ? {} : { format: formatError }),
+        ...(promptError === undefined ? {} : { prompt: promptError }),
       },
     };
   }
@@ -145,6 +164,7 @@ export async function updateSubscription(
       body: {
         url: values.url.trim(),
         format: isFormat(values.format) ? values.format : undefined,
+        ...updatedPrompt(formData, values),
       },
     }),
   );

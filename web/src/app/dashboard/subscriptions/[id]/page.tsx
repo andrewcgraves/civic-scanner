@@ -18,7 +18,11 @@ import {
   deliveriesPath,
   readCursor,
 } from "../deliveries";
-import { loadAgencyChoices, requireSubscriptions } from "../server";
+import {
+  isDirectedPromptsEnabled,
+  loadAgencyChoices,
+  requireSubscriptions,
+} from "../server";
 import {
   SUBSCRIPTIONS_PATH,
   SUBSCRIPTIONS_SIGN_IN_PATH,
@@ -129,7 +133,7 @@ export default async function SubscriptionPage({
   }
   const query = await searchParams;
   const cursor = readCursor(query);
-  const [result, log, choices] = await Promise.all([
+  const [result, log, choices, prompts] = await Promise.all([
     readApiAsUser((api) =>
       api.GET("/webhook-subscriptions/{id}", { params: { path: { id } } }),
     ),
@@ -145,6 +149,7 @@ export default async function SubscriptionPage({
       }),
     ),
     loadAgencyChoices(),
+    isDirectedPromptsEnabled(),
   ]);
   if (result.status === "signed-out") {
     redirect(SUBSCRIPTIONS_SIGN_IN_PATH);
@@ -169,6 +174,8 @@ export default async function SubscriptionPage({
   const subscription = result.data;
   const name = agencyName(choices.names, subscription.agency);
   const outcome = readOutcome(query);
+  const prompt = prompts ? subscription.prompt?.trim() : undefined;
+  const directed = prompt !== undefined && prompt !== "";
 
   return (
     <>
@@ -195,9 +202,30 @@ export default async function SubscriptionPage({
         </div>
       ) : null}
       <StatusNotice subscription={subscription} name={name} />
+      {directed ? (
+        <Section
+          title="Directed prompt"
+          description="Each agenda and transcript is read against this. A webhook is sent only when something matches, with a short message about it. Meetings with nothing relevant are skipped and do not appear in the log below."
+          actions={
+            <Link
+              href={editPath(id)}
+              aria-label={`Edit the prompt for ${name}`}
+              className="link"
+            >
+              Edit prompt
+            </Link>
+          }
+        >
+          <div className="rounded-lg border border-line bg-surface px-5 py-4">
+            <p className="max-w-[70ch] leading-relaxed whitespace-pre-wrap">
+              {prompt}
+            </p>
+          </div>
+        </Section>
+      ) : null}
       <Section
         title="Send a test"
-        description="Sends one sample event, marked as a test, to this URL now, signed with the current secret. Paused subscriptions can be tested too. Tests are not added to the log."
+        description={`Sends one sample event, marked as a test, to this URL now, signed with the current secret. Paused subscriptions can be tested too. Tests are not added to the log.${directed ? " A test does not use the directed prompt." : ""}`}
       >
         <SendTest id={id} />
       </Section>

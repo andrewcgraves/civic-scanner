@@ -4,7 +4,11 @@ import { UnavailableNotice } from "@/components/ui/notice";
 import { PageHeader } from "@/components/ui/page-header";
 
 import { SubscriptionForm } from "../_components/subscription-form";
-import { loadAgencyChoices, requireSubscriptions } from "../server";
+import {
+  isDirectedPromptsEnabled,
+  loadAgencyChoices,
+  requireSubscriptions,
+} from "../server";
 import { SUBSCRIPTIONS_PATH } from "../state";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +20,10 @@ export const metadata: Metadata = {
 
 export default async function NewSubscriptionPage() {
   await requireSubscriptions();
-  const choices = await loadAgencyChoices();
+  const [choices, prompts] = await Promise.all([
+    loadAgencyChoices(),
+    isDirectedPromptsEnabled(),
+  ]);
 
   return (
     <>
@@ -30,6 +37,7 @@ export default async function NewSubscriptionPage() {
       />
       {choices.ok ? (
         <SubscriptionForm
+          prompts={prompts}
           mode={{
             kind: "create",
             agencies: choices.agencies.map(({ slug, name }) => ({

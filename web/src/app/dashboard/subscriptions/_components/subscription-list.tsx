@@ -79,12 +79,26 @@ function RowStatus({
   );
 }
 
+function PromptLine({ prompt }: { prompt: string | undefined }) {
+  if (prompt === undefined || prompt.trim() === "") {
+    return null;
+  }
+  return (
+    <p className="line-clamp-2 max-w-[65ch] text-sm">
+      <span className="font-medium">Directed prompt:</span>{" "}
+      <span className="text-ink-muted">{prompt}</span>
+    </p>
+  );
+}
+
 export function SubscriptionList({
   subscriptions,
   names,
+  prompts = false,
 }: {
   subscriptions: readonly Subscription[];
   names: ReadonlyMap<string, string>;
+  prompts?: boolean;
 }) {
   if (subscriptions.length === 0) {
     return (
@@ -134,6 +148,7 @@ export function SubscriptionList({
                   format="short-date"
                 />
               </p>
+              {prompts ? <PromptLine prompt={subscription.prompt} /> : null}
               <RowStatus subscription={subscription} name={name} />
               <SubscriptionActions
                 key={subscription.status}

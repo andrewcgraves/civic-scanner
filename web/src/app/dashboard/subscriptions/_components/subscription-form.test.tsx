@@ -40,11 +40,13 @@ const EDIT = {
   url: "https://hooks.example.org/old",
   format: "slack",
 } as const;
-const VALUES = {
+const SENT = {
   agency: "octa",
   url: "https://hooks.example.org/new",
   format: "discord",
 };
+const VALUES = { ...SENT, prompt: "" };
+const PROMPT = "Anything about the Blue Line: closures and delays.";
 
 function options(label: string) {
   return within(screen.getByLabelText(label))
@@ -59,9 +61,9 @@ async function submit(name: string) {
   });
 }
 
-async function createWith(state: FormState) {
+async function createWith(state: FormState, prompts = false) {
   mocks.next = state;
-  render(<SubscriptionForm mode={CREATE} />);
+  render(<SubscriptionForm mode={CREATE} prompts={prompts} />);
   fireEvent.change(screen.getByLabelText("Agency"), {
     target: { value: VALUES.agency },
   });
@@ -129,7 +131,7 @@ describe("SubscriptionForm", () => {
       secret: "whsec_c2VjcmV0",
     });
 
-    expect(mocks.calls).toEqual([{ action: "create", data: VALUES }]);
+    expect(mocks.calls).toEqual([{ action: "create", data: SENT }]);
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent("Subscription added");
     expect(status).toHaveTextContent(
@@ -259,6 +261,92 @@ describe("SubscriptionForm", () => {
     await act(async () => {
       release();
       await mocks.pending;
+    });
+  });
+
+  describe("directed prompt", () => {
+    it("is not offered while directed prompts are off", () => {
+      render(<SubscriptionForm mode={CREATE} />);
+
+      expect(screen.queryByLabelText(/Directed prompt/)).toBeNull();
+      expect(screen.queryByRole("button", { name: "Fare changes" })).toBeNull();
+    });
+
+    it("is an optional, described field with examples and a counter", () => {
+      render(<SubscriptionForm mode={CREATE} prompts />);
+
+      const prompt = screen.getByLabelText(/Directed prompt/);
+      expect(prompt).toHaveValue("");
+      expect(prompt).not.toBeRequired();
+      expect(prompt).toHaveAccessibleDescription(
+        /nothing is sent\. Leave it empty to get every event\. 0 \/ 500 characters/,
+      );
+      expect(
+        screen.getAllByRole("button", { name: /Fare|rail|Contracts/ }),
+      ).toHaveLength(3);
+    });
+
+    it("sends the prompt with the rest of the form", async () => {
+      mocks.next = { kind: "unavailable", values: VALUES };
+      render(<SubscriptionForm mode={CREATE} prompts />);
+      fireEvent.change(screen.getByLabelText("Endpoint URL"), {
+        target: { value: VALUES.url },
+      });
+      fireEvent.change(screen.getByLabelText(/Directed prompt/), {
+        target: { value: PROMPT },
+      });
+
+      await submit("Add subscription");
+
+      expect(mocks.calls).toEqual([
+        {
+          action: "create",
+          data: {
+            agency: "la-metro",
+            url: VALUES.url,
+            format: "standard",
+            prompt: PROMPT,
+          },
+        },
+      ]);
+    });
+
+    it("ties a prompt error to the prompt and keeps the text", async () => {
+      await createWith(
+        {
+          kind: "invalid",
+          values: { ...VALUES, prompt: PROMPT },
+          errors: { prompt: "Directed prompts are not available." },
+        },
+        true,
+      );
+
+      const prompt = screen.getByLabelText(/Directed prompt/);
+      expect(prompt).toHaveValue(PROMPT);
+      expect(prompt).toHaveAttribute("aria-invalid", "true");
+      expect(prompt).toHaveAccessibleDescription(
+        /characters Directed prompts are not available\./,
+      );
+      expect(
+        screen.getByRole("link", { name: "Directed prompt" }),
+      ).toHaveAttribute("href", "#prompt");
+    });
+
+    it("starts from the saved prompt when editing, and can be cleared", async () => {
+      mocks.next = { kind: "unavailable", values: VALUES };
+      render(<SubscriptionForm mode={{ ...EDIT, prompt: PROMPT }} prompts />);
+
+      const prompt = screen.getByLabelText(/Directed prompt/);
+      expect(prompt).toHaveValue(PROMPT);
+      expect(prompt).toHaveAccessibleDescription(
+        /Clear it to get every event again\./,
+      );
+      expect(screen.queryByRole("button", { name: "Fare changes" })).toBeNull();
+      fireEvent.change(prompt, { target: { value: "  " } });
+
+      await submit("Save changes");
+
+      expect(mocks.calls[0]?.data).toMatchObject({ prompt: "  " });
     });
   });
 
