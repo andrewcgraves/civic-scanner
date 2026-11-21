@@ -48,7 +48,8 @@ type Handler struct {
 	feeds   *feedCache
 	billing Biller
 
-	webhookSealer *webhooks.Sealer
+	webhookSealer    *webhooks.Sealer
+	webhookAddresses webhooks.AddressCheck
 
 	stripeEvents StripeEventReceiver
 }

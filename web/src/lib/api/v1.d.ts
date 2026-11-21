@@ -552,12 +552,12 @@ export interface components {
     WebhookSubscriptionInput: {
       /** @description The slug of the live agency to subscribe to. */
       agency: string;
-      /** @description Where to send the webhooks: an absolute `https` URL of at most 2,048 bytes, without a user name, password or fragment. The scheme and host are stored in lower case; the path and query as given. */
+      /** @description Where to send the webhooks: an absolute `https` URL of at most 2,048 bytes, without a user name, password or fragment, whose host is a public IP address or a name that resolves only to public addresses. The scheme and host are stored in lower case; the path and query as given. */
       url: string;
       payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
     };
     WebhookSubscriptionUpdate: {
-      /** @description A new URL, with the same rules as when creating. */
+      /** @description A new URL, with the same rules as when creating. The host's addresses are checked only when the URL differs from the stored one. */
       url?: string;
       payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
       status?: components["schemas"]["WebhookSubscriptionStatus"];
@@ -863,7 +863,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_status`, `nothing_to_update` for an update with no members, or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials` or `fragment`. */
+    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_status`, `nothing_to_update` for an update with no members, or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials`, `fragment`, `not_public` when the host is, or resolves to, an address that is not on the public internet (private, loopback, link-local, cloud metadata or reserved), or `unresolvable_host` when the host name has no address or cannot be looked up. */
     InvalidWebhookSubscription: {
       headers: {
         "Cache-Control": components["headers"]["NoStore"];
