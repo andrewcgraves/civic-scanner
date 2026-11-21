@@ -3,6 +3,7 @@ package webhooks_test
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,5 +97,34 @@ func TestRealPayloadsAreNotMarkedAsTests(t *testing.T) {
 	}
 	if _, ok := raw["test"]; ok {
 		t.Errorf("a real payload carries test: %s", body)
+	}
+}
+
+func TestSampleEventsAreMarkedInThePresets(t *testing.T) {
+	e, err := webhooks.SampleEvent(store.EventAgendaChanged, "la-metro", "LA Metro", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	discord, err := webhooks.Body(store.WebhookFormatDiscord, store.WebhookPayloadV1, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d webhooks.DiscordMessage
+	if err := json.Unmarshal(discord, &d); err != nil || len(d.Embeds) != 1 || !strings.HasPrefix(d.Embeds[0].Description, "**Test: Agenda changed**") || d.Embeds[0].URL != "" {
+		t.Errorf("discord = %s, %v", discord, err)
+	}
+	slack, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s webhooks.SlackMessage
+	if err := json.Unmarshal(slack, &s); err != nil || !strings.HasPrefix(s.Text, "Test: Agenda changed: "+webhooks.SampleMeetingTitle) ||
+		len(s.Blocks) == 0 || !strings.HasPrefix(s.Blocks[0].Text.Text, "Test: Agenda changed: ") {
+		t.Errorf("slack = %s, %v", slack, err)
+	}
+	e.Test = false
+	plain, err := webhooks.Body(store.WebhookFormatSlack, store.WebhookPayloadV1, e)
+	if err != nil || strings.Contains(string(plain), "Test: ") {
+		t.Errorf("a real slack message is marked: %s, %v", plain, err)
 	}
 }

@@ -15,6 +15,7 @@ import (
 var (
 	ErrUnsupportedVersion = errors.New("unsupported webhook payload version")
 	ErrUnsupportedEvent   = errors.New("unsupported meeting event")
+	ErrUnsupportedFormat  = errors.New("unsupported webhook format")
 )
 
 type Event struct {
@@ -25,13 +26,35 @@ type Event struct {
 	AgencySlug string
 	AgencyName string
 	Meeting    store.Meeting
+	PageURL    string
 	Test       bool
+}
+
+func Body(format store.WebhookFormat, version string, e Event) ([]byte, error) {
+	switch format {
+	case store.WebhookFormatStandard, "":
+		return Payload(version, e)
+	case store.WebhookFormatDiscord:
+		return discordBody(e)
+	case store.WebhookFormatSlack:
+		return slackBody(e)
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
+	}
 }
 
 func Payload(version string, e Event) ([]byte, error) {
 	if version != store.WebhookPayloadV1 {
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedVersion, version)
 	}
+	body, err := eventV1(e)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(body)
+}
+
+func eventV1(e Event) (v1.WebhookEventV1, error) {
 	body := v1.WebhookEventV1{
 		Id:             e.ID,
 		Type:           v1.WebhookEventType(e.Type),
@@ -55,7 +78,7 @@ func Payload(version string, e Event) ([]byte, error) {
 	case store.EventAgendaPublished, store.EventAgendaChanged:
 		var p store.AgendaEventPayload
 		if err := json.Unmarshal(e.Payload, &p); err != nil || p.AgendaVersionID == uuid.Nil || p.Version < 1 {
-			return nil, fmt.Errorf("%w: %s payload of event %s", ErrUnsupportedEvent, e.Type, e.ID)
+			return v1.WebhookEventV1{}, fmt.Errorf("%w: %s payload of event %s", ErrUnsupportedEvent, e.Type, e.ID)
 		}
 		agenda := v1.WebhookAgenda{VersionId: p.AgendaVersionID, Version: p.Version}
 		if e.Type == store.EventAgendaChanged && p.ChangeNote != nil && *p.ChangeNote != "" {
@@ -68,11 +91,11 @@ func Payload(version string, e Event) ([]byte, error) {
 	case store.EventTranscriptReady:
 		var p store.TranscriptEventPayload
 		if err := json.Unmarshal(e.Payload, &p); err != nil || p.TranscriptID == uuid.Nil || p.RecordingID == uuid.Nil {
-			return nil, fmt.Errorf("%w: %s payload of event %s", ErrUnsupportedEvent, e.Type, e.ID)
+			return v1.WebhookEventV1{}, fmt.Errorf("%w: %s payload of event %s", ErrUnsupportedEvent, e.Type, e.ID)
 		}
 		body.Transcript = &v1.WebhookTranscript{Id: p.TranscriptID, RecordingId: p.RecordingID}
 	default:
-		return nil, fmt.Errorf("%w: type %q", ErrUnsupportedEvent, e.Type)
+		return v1.WebhookEventV1{}, fmt.Errorf("%w: type %q", ErrUnsupportedEvent, e.Type)
 	}
-	return json.Marshal(body)
+	return body, nil
 }

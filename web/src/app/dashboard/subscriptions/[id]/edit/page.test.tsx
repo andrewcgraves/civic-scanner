@@ -57,6 +57,7 @@ const SUBSCRIPTION = {
   id: ID,
   agency: "la-metro",
   url: "https://hooks.example.org/civic",
+  format: "slack",
 };
 
 async function renderPage(id = ID) {
@@ -96,7 +97,7 @@ describe("EditSubscriptionPage", () => {
     ).toBeVisible();
     expect(
       screen.getByText(
-        `form ${JSON.stringify({ kind: "edit", id: ID, agency: "la-metro", agencyName: "LA Metro", url: SUBSCRIPTION.url })}`,
+        `form ${JSON.stringify({ kind: "edit", id: ID, agency: "la-metro", agencyName: "LA Metro", url: SUBSCRIPTION.url, format: "slack" })}`,
       ),
     ).toBeVisible();
   });

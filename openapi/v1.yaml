@@ -750,7 +750,7 @@ paths:
       operationId: updateWebhookSubscription
       summary: Change, pause or resume a webhook subscription
       description: >-
-        Changes the URL, the payload version or the status of one of
+        Changes the URL, the payload version, the format or the status of one of
         the signed-in user's subscriptions. Members left out are
         unchanged; at least one is required. `status: paused` pauses
         the subscription and `status: active` resumes it. The agency
@@ -970,8 +970,9 @@ paths:
       description: >-
         Sends one sample event to one of the signed-in user's subscriptions
         now and answers with the result. The request is signed and sent
-        exactly as a real delivery, with the subscription's URL, payload
-        version and current secret, and the body has `test: true`. The
+        exactly as a real delivery, with the subscription's URL, format,
+        payload version and current secret. A `standard` body has `test:
+        true`; a Discord or Slack message's label starts with `Test: `. The
         event, meeting, agenda and transcript ids in it are new random ids
         that exist nowhere else, so each test has its own `webhook-id`. A
         paused subscription can be tested too. The URL's addresses are
@@ -1736,6 +1737,8 @@ components:
             and query as given.
         payloadVersion:
           $ref: "#/components/schemas/WebhookPayloadVersion"
+        format:
+          $ref: "#/components/schemas/WebhookFormat"
     WebhookSubscriptionUpdate:
       type: object
       properties:
@@ -1747,6 +1750,8 @@ components:
             one.
         payloadVersion:
           $ref: "#/components/schemas/WebhookPayloadVersion"
+        format:
+          $ref: "#/components/schemas/WebhookFormat"
         status:
           $ref: "#/components/schemas/WebhookSubscriptionStatus"
     WebhookPayloadVersion:
@@ -1754,7 +1759,25 @@ components:
       enum: [v1]
       x-enum-varnames: [WebhookPayloadV1]
       default: v1
-      description: The version of the payload to send. `v1` is the only one.
+      description: >-
+        The version of the `standard` payload to send. `v1` is the only one.
+        The `discord` and `slack` formats ignore it.
+    WebhookFormat:
+      type: string
+      enum: [standard, discord, slack]
+      x-enum-varnames: [WebhookFormatStandard, WebhookFormatDiscord, WebhookFormatSlack]
+      default: standard
+      description: >-
+        The shape of each delivery's body. `standard`: the versioned event
+        described by `WebhookEventV1`. `discord`: a message for a Discord
+        incoming webhook (Execute Webhook), with one embed. `slack`: a message
+        for a Slack incoming webhook, with Block Kit blocks and a `text`
+        fallback. The presets are rendered from the same event, cut to fit
+        the service's limits; text that is cut ends with `…` and the message
+        links to the meeting's page. Agency text is shown as text, never as
+        Markdown, and mentions are not sent. Every format is sent with the
+        same `webhook-id`, `webhook-timestamp` and `webhook-signature`
+        headers. The URL is not checked against the format.
     WebhookSubscriptionStatus:
       type: string
       enum: [active, paused]
@@ -1764,7 +1787,7 @@ components:
         `paused` ones are not.
     WebhookSubscription:
       type: object
-      required: [id, agency, url, payloadVersion, status, createdAt, updatedAt, secretRotatedAt]
+      required: [id, agency, url, payloadVersion, format, status, createdAt, updatedAt, secretRotatedAt]
       properties:
         id:
           type: string
@@ -1778,6 +1801,8 @@ components:
           description: The URL as stored.
         payloadVersion:
           $ref: "#/components/schemas/WebhookPayloadVersion"
+        format:
+          $ref: "#/components/schemas/WebhookFormat"
         status:
           $ref: "#/components/schemas/WebhookSubscriptionStatus"
         createdAt:

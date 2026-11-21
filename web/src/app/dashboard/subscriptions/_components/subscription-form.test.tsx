@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FormState } from "../state";
@@ -38,8 +38,19 @@ const EDIT = {
   agency: "la-metro",
   agencyName: "LA Metro",
   url: "https://hooks.example.org/old",
+  format: "slack",
 } as const;
-const VALUES = { agency: "octa", url: "https://hooks.example.org/new" };
+const VALUES = {
+  agency: "octa",
+  url: "https://hooks.example.org/new",
+  format: "discord",
+};
+
+function options(label: string) {
+  return within(screen.getByLabelText(label))
+    .queryAllByRole("option")
+    .map((option) => option.textContent);
+}
 
 async function submit(name: string) {
   await act(async () => {
@@ -57,6 +68,9 @@ async function createWith(state: FormState) {
   fireEvent.change(screen.getByLabelText("Endpoint URL"), {
     target: { value: VALUES.url },
   });
+  fireEvent.change(screen.getByLabelText("Message format"), {
+    target: { value: VALUES.format },
+  });
   await submit("Add subscription");
 }
 
@@ -73,9 +87,19 @@ describe("SubscriptionForm", () => {
     const agency = screen.getByLabelText("Agency");
     expect(agency).toHaveValue("la-metro");
     expect(agency).toHaveAccessibleDescription(/posts a meeting/);
-    expect(
-      screen.getAllByRole("option").map((option) => option.textContent),
-    ).toEqual(["LA Metro", "Orange County Transportation Authority"]);
+    expect(options("Agency")).toEqual([
+      "LA Metro",
+      "Orange County Transportation Authority",
+    ]);
+    const format = screen.getByLabelText("Message format");
+    expect(format).toHaveValue("standard");
+    expect(format).toBeRequired();
+    expect(format).toHaveAccessibleDescription(/incoming webhook URL/);
+    expect(options("Message format")).toEqual([
+      "Standard JSON",
+      "Discord",
+      "Slack",
+    ]);
     const url = screen.getByLabelText("Endpoint URL");
     expect(url).toBeRequired();
     expect(url).toHaveAttribute("inputMode", "url");
@@ -94,7 +118,7 @@ describe("SubscriptionForm", () => {
   it("has no default agency when there are none", () => {
     render(<SubscriptionForm mode={{ kind: "create", agencies: [] }} />);
 
-    expect(screen.queryAllByRole("option")).toEqual([]);
+    expect(options("Agency")).toEqual([]);
   });
 
   it("sends the chosen agency and URL, then shows the secret once", async () => {
@@ -171,6 +195,24 @@ describe("SubscriptionForm", () => {
     );
   });
 
+  it("ties a format error to the format and keeps the choice", async () => {
+    await createWith({
+      kind: "invalid",
+      values: VALUES,
+      errors: { format: "Choose a message format from the list." },
+    });
+
+    const format = screen.getByLabelText("Message format");
+    expect(format).toHaveValue("discord");
+    expect(format).toHaveAttribute("aria-invalid", "true");
+    expect(format).toHaveAccessibleDescription(
+      /incoming webhook URL.*Choose a message format from the list\./,
+    );
+    expect(
+      screen.getByRole("link", { name: "Message format" }),
+    ).toHaveAttribute("href", "#format");
+  });
+
   it("shows a form-level message instead of a list", async () => {
     await createWith({
       kind: "invalid",
@@ -221,7 +263,7 @@ describe("SubscriptionForm", () => {
   });
 
   describe("editing", () => {
-    it("fixes the agency and changes only the URL", async () => {
+    it("fixes the agency and changes the URL and the format", async () => {
       mocks.next = { kind: "unavailable", values: VALUES };
       render(<SubscriptionForm mode={EDIT} />);
 
@@ -232,13 +274,21 @@ describe("SubscriptionForm", () => {
       const url = screen.getByLabelText("Endpoint URL");
       expect(url).toHaveValue(EDIT.url);
       fireEvent.change(url, { target: { value: VALUES.url } });
+      const format = screen.getByLabelText("Message format");
+      expect(format).toHaveValue("slack");
+      fireEvent.change(format, { target: { value: "discord" } });
 
       await submit("Save changes");
 
       expect(mocks.calls).toEqual([
         {
           action: "update",
-          data: { id: ID, agency: "la-metro", url: VALUES.url },
+          data: {
+            id: ID,
+            agency: "la-metro",
+            url: VALUES.url,
+            format: "discord",
+          },
         },
       ]);
     });

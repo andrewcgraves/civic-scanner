@@ -517,3 +517,21 @@ func TestWebhookTestLimiter(t *testing.T) {
 		t.Errorf("%d users kept after a sweep", len(sweep.sent))
 	}
 }
+
+func TestSendWebhookTestUsesTheSubscriptionsFormat(t *testing.T) {
+	env, sub, sender, _ := newTestSendEnv(t)
+	env.calls.subs[0].Format = store.WebhookFormatSlack
+	rec := env.do(t, http.MethodPost, testPath(sub.ID), "Bearer good", `{"type":"transcript_ready"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, body %s", rec.Code, rec.Body)
+	}
+	result, _ := decodeTestResult(t, rec)
+	sent := sender.sent()
+	if len(sent) != 1 || sent[0].ID != result.Id.String() {
+		t.Fatalf("sent = %+v", sent)
+	}
+	var msg webhooks.SlackMessage
+	if err := json.Unmarshal(sent[0].Body, &msg); err != nil || !strings.HasPrefix(msg.Text, "Test: Transcript ready: ") {
+		t.Errorf("body = %s, %v", sent[0].Body, err)
+	}
+}

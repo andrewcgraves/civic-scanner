@@ -204,7 +204,7 @@ func webhookTestBody(eventType store.EventType, sub store.WebhookSubscription, n
 	if err != nil {
 		return webhooks.Event{}, nil, err
 	}
-	body, err := webhooks.Payload(sub.PayloadVersion, event)
+	body, err := webhooks.Body(sub.Format, sub.PayloadVersion, event)
 	return event, body, err
 }
 
