@@ -1,6 +1,5 @@
 import Link from "next/link";
 
-import { Badge } from "@/components/ui/badge";
 import { MeetingTime } from "@/components/ui/date-time";
 import { EmptyState } from "@/components/ui/empty-state";
 
@@ -12,6 +11,8 @@ import {
   type Subscription,
 } from "../state";
 
+import { PausedNotice } from "./paused-notice";
+import { FailureStreak, StatusBadge } from "./subscription-status";
 import { SubscriptionActions } from "./subscription-actions";
 import { BUTTON } from "./styles";
 
@@ -42,6 +43,42 @@ function usage(count: number): string {
   return `You are using ${String(count)} of ${String(MAX_SUBSCRIPTIONS)}.`;
 }
 
+function RowStatus({
+  subscription,
+  name,
+}: {
+  subscription: Subscription;
+  name: string;
+}) {
+  if (subscription.status === "active") {
+    return (
+      <FailureStreak count={subscription.consecutiveFailedEvents} compact />
+    );
+  }
+  if (subscription.pausedReason === "failed_deliveries") {
+    return (
+      <div className="pt-1">
+        <PausedNotice
+          id={subscription.id}
+          agencyName={name}
+          reason={subscription.pausedReason}
+          pausedAt={subscription.pausedAt}
+          compact
+        />
+      </div>
+    );
+  }
+  if (subscription.pausedAt === null) {
+    return null;
+  }
+  return (
+    <p className="text-sm text-ink-muted">
+      You paused it on{" "}
+      <MeetingTime value={subscription.pausedAt} format="short-date" />.
+    </p>
+  );
+}
+
 export function SubscriptionList({
   subscriptions,
   names,
@@ -69,6 +106,8 @@ export function SubscriptionList({
         {subscriptions.map((subscription) => {
           const name = agencyName(names, subscription.agency);
           const paused = subscription.status === "paused";
+          const failing =
+            paused && subscription.pausedReason === "failed_deliveries";
           return (
             <li
               key={subscription.id}
@@ -76,9 +115,7 @@ export function SubscriptionList({
             >
               <div className="flex flex-wrap items-center justify-between gap-2 sm:justify-start sm:gap-3">
                 <h3 className="text-lg font-semibold">{name}</h3>
-                <Badge tone={paused ? "neutral" : "held"}>
-                  {paused ? "Paused" : "Active"}
-                </Badge>
+                <StatusBadge subscription={subscription} />
               </div>
               <p
                 className={`font-mono text-sm break-all ${paused ? "text-ink-muted" : "text-ink"}`}
@@ -97,6 +134,7 @@ export function SubscriptionList({
                   format="short-date"
                 />
               </p>
+              <RowStatus subscription={subscription} name={name} />
               <SubscriptionActions
                 key={subscription.status}
                 id={subscription.id}
@@ -104,6 +142,7 @@ export function SubscriptionList({
                 agencyName={name}
                 url={subscription.url}
                 paused={paused}
+                statusButton={!failing}
               />
             </li>
           );

@@ -4,6 +4,12 @@ import { redirect } from "next/navigation";
 
 import { callApiAsUser, type UserApiResult } from "@/lib/auth/api";
 
+import {
+  DEFAULT_EVENT_TYPE,
+  isEventType,
+  readRetryAfter,
+  type TestState,
+} from "./deliveries";
 import { isSubscriptionsEnabled } from "./server";
 import {
   SUBSCRIPTIONS_PATH,
@@ -16,8 +22,10 @@ import {
   isSubscriptionId,
   outcomePath,
   readId,
+  readReturnsToSubscription,
   readValues,
   rejection,
+  subscriptionOutcomePath,
   type ActionState,
   type FormState,
   type SubscriptionValues,
@@ -161,10 +169,12 @@ async function setStatus(
     }),
   );
   if (result.status === "ok") {
-    return doneAt(
-      status === "paused" ? "paused" : "resumed",
-      result.data.agency,
-    );
+    const kind = status === "paused" ? "paused" : "resumed";
+    const { agency } = result.data;
+    if (readReturnsToSubscription(formData) && isSlug(agency)) {
+      return redirect(subscriptionOutcomePath(id, kind, agency));
+    }
+    return doneAt(kind, agency);
   }
   return actionFailure(result);
 }
@@ -223,4 +233,50 @@ export async function rotateSecret(
       : { kind: "unavailable" };
   }
   return actionFailure(result);
+}
+
+function testFailure(
+  result: UserApiResult<unknown>,
+  retryAfter: string | null,
+): TestState {
+  switch (result.status) {
+    case "signed-out":
+      return redirect(SUBSCRIPTIONS_SIGN_IN_PATH);
+    case "not-found":
+      return { kind: "gone" };
+    case "payment-required":
+      return { kind: "upgrade" };
+    case "rejected":
+      if (result.httpStatus === 429) {
+        return { kind: "limited", retryAfter: readRetryAfter(retryAfter) };
+      }
+      return { kind: "unavailable" };
+    default:
+      return { kind: "unavailable" };
+  }
+}
+
+export async function sendTest(
+  _previous: TestState,
+  formData: FormData,
+): Promise<TestState> {
+  const id = readId(formData);
+  if (!(await isSubscriptionsEnabled()) || !isSubscriptionId(id)) {
+    return { kind: "gone" };
+  }
+  const chosen = formData.get("type");
+  const type = isEventType(chosen) ? chosen : DEFAULT_EVENT_TYPE;
+  const seen = { retryAfter: null as string | null };
+  const result = await callApiAsUser(async (api) => {
+    const answer = await api.POST("/webhook-subscriptions/{id}/test", {
+      params: { path: { id } },
+      body: { type },
+    });
+    seen.retryAfter = answer.response.headers.get("retry-after");
+    return answer;
+  });
+  if (result.status === "ok") {
+    return { kind: "sent", result: result.data };
+  }
+  return testFailure(result, seen.retryAfter);
 }
