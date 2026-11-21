@@ -5,27 +5,15 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useId, useRef, useState } from "react";
 
 import { signOutAction } from "@/lib/auth/actions";
+import { loadSessionState } from "@/lib/auth/load-session";
+import type { SessionState } from "@/lib/auth/session-state";
 import { useFlag } from "@/lib/flags/client";
-import { parseSessionState, type SessionState } from "@/lib/auth/session-state";
-
-async function loadSessionState(): Promise<SessionState | null> {
-  try {
-    const response = await fetch("/auth/session", {
-      cache: "no-store",
-      headers: { accept: "application/json" },
-    });
-    return response.ok ? parseSessionState(await response.json()) : null;
-  } catch {
-    return null;
-  }
-}
 
 function SignedInMenu({ email }: { email: string | null }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const signOutRef = useRef<HTMLButtonElement>(null);
-  const billingRef = useRef<HTMLAnchorElement>(null);
+  const dashboardRef = useRef<HTMLAnchorElement>(null);
   const menuId = useId();
   const billing = useFlag("billing");
 
@@ -33,7 +21,7 @@ function SignedInMenu({ email }: { email: string | null }) {
     if (!open) {
       return;
     }
-    (billingRef.current ?? signOutRef.current)?.focus();
+    dashboardRef.current?.focus();
     function closeOnOutsidePointer(event: PointerEvent) {
       if (!containerRef.current?.contains(event.target as Node)) {
         setOpen(false);
@@ -78,23 +66,24 @@ function SignedInMenu({ email }: { email: string | null }) {
         hidden={!open}
         className="absolute right-0 z-10 mt-2 space-y-2 rounded-md border border-line bg-surface p-3 shadow"
       >
+        <p>
+          <Link
+            ref={dashboardRef}
+            href="/dashboard"
+            className="whitespace-nowrap underline"
+          >
+            Dashboard
+          </Link>
+        </p>
         {billing ? (
           <p>
-            <Link
-              ref={billingRef}
-              href="/billing"
-              className="whitespace-nowrap underline"
-            >
+            <Link href="/billing" className="whitespace-nowrap underline">
               Billing
             </Link>
           </p>
         ) : null}
         <form action={signOutAction}>
-          <button
-            ref={signOutRef}
-            type="submit"
-            className="whitespace-nowrap underline"
-          >
+          <button type="submit" className="whitespace-nowrap underline">
             Sign out
           </button>
         </form>
