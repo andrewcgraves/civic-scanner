@@ -234,6 +234,21 @@ func (e WebhookFormat) Valid() bool {
 	}
 }
 
+// Defines values for WebhookMessageSource.
+const (
+	WebhookMessageFromDirectedPrompt WebhookMessageSource = "directed_prompt"
+)
+
+// Valid indicates whether the value is a known member of the WebhookMessageSource enum.
+func (e WebhookMessageSource) Valid() bool {
+	switch e {
+	case WebhookMessageFromDirectedPrompt:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for WebhookPayloadVersion.
 const (
 	WebhookPayloadV1 WebhookPayloadVersion = "v1"
@@ -641,6 +656,9 @@ type WebhookEventV1 struct {
 	Id      openapi_types.UUID `json:"id"`
 	Meeting WebhookMeeting     `json:"meeting"`
 
+	// Message Present when the subscription has a directed prompt: what the agenda or transcript says about that focus.
+	Message *WebhookMessage `json:"message,omitempty"`
+
 	// OccurredAt When what the event describes happened. For `agenda_changed`, when the change was found, which can be earlier than the delivery of an event sent before it.
 	OccurredAt time.Time `json:"occurredAt"`
 
@@ -670,8 +688,23 @@ type WebhookMeeting struct {
 	Title     string    `json:"title"`
 }
 
+// WebhookMessage Present when the subscription has a directed prompt: what the agenda or transcript says about that focus.
+type WebhookMessage struct {
+	// Source What the message was written from. `directed_prompt` is the only one; new values may be added.
+	Source WebhookMessageSource `json:"source"`
+
+	// Text Plain text written by a language model from agency text, at most 4,000 bytes. Show it as text, never as HTML or Markdown.
+	Text string `json:"text"`
+}
+
+// WebhookMessageSource What the message was written from. `directed_prompt` is the only one; new values may be added.
+type WebhookMessageSource string
+
 // WebhookPayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 type WebhookPayloadVersion string
+
+// WebhookPrompt A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner.
+type WebhookPrompt = string
 
 // WebhookSubscription defines model for WebhookSubscription.
 type WebhookSubscription struct {
@@ -694,6 +727,9 @@ type WebhookSubscription struct {
 
 	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
+
+	// Prompt A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner.
+	Prompt *WebhookPrompt `json:"prompt,omitempty"`
 
 	// SecretRotatedAt When the current signing secret was made.
 	SecretRotatedAt time.Time `json:"secretRotatedAt"`
@@ -722,6 +758,9 @@ type WebhookSubscriptionInput struct {
 	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion *WebhookPayloadVersion `json:"payloadVersion,omitempty"`
 
+	// Prompt A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner.
+	Prompt *WebhookPrompt `json:"prompt,omitempty"`
+
 	// Template The `custom` format's template; see `WebhookTemplate`. Required when `format` is `custom`, and stored with any format, so switching to a preset and back keeps it.
 	Template *string `json:"template,omitempty"`
 
@@ -747,6 +786,9 @@ type WebhookSubscriptionUpdate struct {
 
 	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion *WebhookPayloadVersion `json:"payloadVersion,omitempty"`
+
+	// Prompt A new directed prompt, with the same rules as when creating. An empty string, or one of only white space, removes the prompt, and the subscription is sent standard deliveries again.
+	Prompt *string `json:"prompt,omitempty"`
 
 	// Status Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
 	Status *WebhookSubscriptionStatus `json:"status,omitempty"`
@@ -779,6 +821,9 @@ type WebhookSubscriptionWithSecret struct {
 
 	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
+
+	// Prompt A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner.
+	Prompt *WebhookPrompt `json:"prompt,omitempty"`
 
 	// Secret The signing secret, `whsec_` followed by 32 random bytes in standard base64. Returned only in this response; store it now.
 	Secret string `json:"secret"`

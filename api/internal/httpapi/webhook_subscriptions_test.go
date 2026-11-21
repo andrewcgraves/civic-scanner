@@ -75,7 +75,7 @@ func (f fakeStore) CreateWebhookSubscription(_ context.Context, in store.Webhook
 	now := time.Date(2026, 11, 20, 1, 2, 3, 0, time.FixedZone("PST", -8*3600))
 	sub := store.WebhookSubscription{
 		ID: in.ID, UserID: in.UserID, AgencyID: uuid.New(), AgencySlug: in.AgencySlug, AgencyName: "Agency",
-		URL: in.URL, PayloadVersion: in.PayloadVersion, Format: in.Format, Template: in.Template, Status: store.WebhookActive,
+		URL: in.URL, PayloadVersion: in.PayloadVersion, Format: in.Format, Template: in.Template, Status: store.WebhookActive, Prompt: in.Prompt,
 		SecretRotatedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	f.webhooks.subs = append(f.webhooks.subs, sub)
@@ -120,6 +120,13 @@ func (f fakeStore) UpdateWebhookSubscription(_ context.Context, userID, id uuid.
 	}
 	if update.Status != nil {
 		sub.Status = *update.Status
+	}
+	if update.Prompt != nil {
+		sub.Prompt = nil
+		if *update.Prompt != "" {
+			prompt := *update.Prompt
+			sub.Prompt = &prompt
+		}
 	}
 	return *sub, nil
 }

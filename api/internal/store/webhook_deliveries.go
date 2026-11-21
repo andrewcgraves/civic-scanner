@@ -39,6 +39,7 @@ type WebhookTarget struct {
 	SubscriptionID uuid.UUID
 	UserID         uuid.UUID
 	WorkOSUserID   string
+	Directed       bool
 }
 
 type WebhookFanOut struct {
@@ -59,7 +60,7 @@ func (s *Store) WebhookFanOutTargets(ctx context.Context, eventID uuid.UUID) (We
 		return WebhookFanOut{}, fmt.Errorf("read event for fan-out: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT w.id, u.id, u.workos_user_id
+SELECT w.id, u.id, u.workos_user_id, w.prompt IS NOT NULL
 FROM webhook_subscriptions w JOIN users u ON u.id = w.user_id
 WHERE w.agency_id = $1 AND w.status = 'active' AND u.plan = 'paid'
 ORDER BY w.created_at, w.id`, agencyID)
@@ -68,7 +69,7 @@ ORDER BY w.created_at, w.id`, agencyID)
 	}
 	fo.Targets, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (WebhookTarget, error) {
 		var t WebhookTarget
-		err := row.Scan(&t.SubscriptionID, &t.UserID, &t.WorkOSUserID)
+		err := row.Scan(&t.SubscriptionID, &t.UserID, &t.WorkOSUserID, &t.Directed)
 		return t, err
 	})
 	if err != nil {
@@ -98,6 +99,9 @@ type WebhookDelivery struct {
 	Template         *string
 	Status           WebhookStatus
 	SecretCiphertext []byte
+	Prompt           *string
+	DirectedOutcome  *DirectedOutcome
+	DirectedMessage  *string
 	Event            MeetingEvent
 	AgencySlug       string
 	AgencyName       string
@@ -111,6 +115,7 @@ func (s *Store) WebhookDelivery(ctx context.Context, subscriptionID, eventID uui
 	)
 	err := s.pool.QueryRow(ctx, `
 SELECT w.id, u.id, u.workos_user_id, u.plan = 'paid', w.url, w.payload_version, w.format, w.template, w.status, w.secret_ciphertext,
+       w.prompt, r.outcome, r.message,
        e.id, e.sequence, e.type, e.meeting_id, e.payload, e.occurred_at,
        a.slug, a.name, m.id, m.agency_id, m.title, m.starts_at, m.status, m.source_url
 FROM webhook_subscriptions w
@@ -118,8 +123,10 @@ JOIN users u ON u.id = w.user_id
 JOIN meeting_events e ON e.id = $2
 JOIN meetings m ON m.id = e.meeting_id AND m.agency_id = w.agency_id
 JOIN agencies a ON a.id = m.agency_id
+LEFT JOIN webhook_directed_prompt_runs r ON r.subscription_id = w.id AND r.event_id = e.id
 WHERE w.id = $1`, subscriptionID, eventID).Scan(
 		&d.SubscriptionID, &d.UserID, &d.WorkOSUserID, &d.Paid, &d.URL, &d.PayloadVersion, &d.Format, &d.Template, &d.Status, &d.SecretCiphertext,
+		&d.Prompt, &d.DirectedOutcome, &d.DirectedMessage,
 		&d.Event.ID, &d.Event.Sequence, &d.Event.Type, &d.Event.MeetingID, &payload, &d.Event.OccurredAt,
 		&d.AgencySlug, &d.AgencyName, &d.Meeting.ID, &d.Meeting.AgencyID, &d.Meeting.Title, &d.Meeting.StartsAt, &d.Meeting.Status, &d.Meeting.SourceURL)
 	if errors.Is(err, pgx.ErrNoRows) {

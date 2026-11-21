@@ -750,11 +750,11 @@ paths:
       operationId: updateWebhookSubscription
       summary: Change, pause or resume a webhook subscription
       description: >-
-        Changes the URL, the payload version, the format or the status of one of
-        the signed-in user's subscriptions. Members left out are
-        unchanged; at least one is required. `status: paused` pauses
-        the subscription and `status: active` resumes it, including one
-        paused for failed deliveries, and resets
+        Changes the URL, the payload version, the format, the status or
+        the directed prompt of one of the signed-in user's subscriptions.
+        Members left out are unchanged; at least one is required.
+        `status: paused` pauses the subscription and `status: active`
+        resumes it, including one paused for failed deliveries, and resets
         `consecutiveFailedEvents` to 0. Events that happen while a
         subscription is paused are not delivered later. The agency
         and the secret cannot be changed here. The checks are the same
@@ -1374,14 +1374,16 @@ components:
         `unknown_agency` when no live agency has the slug,
         `invalid_payload_version`, `invalid_format`, `invalid_status`,
         `nothing_to_update` for an update with no members, `invalid_event_type`
-        for a test or preview of a type that is not a `WebhookEventType`, or,
-        for a template, `template_required` (format `custom` without a
-        template), `template_too_large` (more than 8,192 bytes),
-        `invalid_template_json` (not JSON, with the byte offset),
-        `invalid_template` (not an object, nested deeper than 32 levels, a
-        repeated key, a placeholder in a key or one not closed with `}}`) or
-        `unknown_placeholder` (naming it and listing the placeholders), or,
-        for the URL, `required`, `too_long`,
+        for a test or preview of a type that is not a `WebhookEventType`, for
+        a template `template_required` (format `custom` without a template),
+        `template_too_large` (more than 8,192 bytes), `invalid_template_json`
+        (not JSON, with the byte offset), `invalid_template` (not an object,
+        nested deeper than 32 levels, a repeated key, a placeholder in a key or
+        one not closed with `}}`) or `unknown_placeholder` (naming it and
+        listing the placeholders), for the prompt `prompt_too_long`,
+        `invalid_prompt` (control characters other than line breaks and
+        tabs) or `prompts_unavailable` (directed prompts are not turned on for
+        the user), or, for the URL, `required`, `too_long`,
         `invalid_url`, `unsupported_scheme` (not `https`), `credentials`,
         `fragment`, `not_public` when the host is, or resolves to, an address
         that is not on the public internet (private, loopback, link-local,
@@ -1813,6 +1815,8 @@ components:
             The `custom` format's template; see `WebhookTemplate`. Required
             when `format` is `custom`, and stored with any format, so switching
             to a preset and back keeps it.
+        prompt:
+          $ref: "#/components/schemas/WebhookPrompt"
     WebhookSubscriptionUpdate:
       type: object
       properties:
@@ -1834,6 +1838,22 @@ components:
             needs a template, given here or stored already.
         status:
           $ref: "#/components/schemas/WebhookSubscriptionStatus"
+        prompt:
+          type: string
+          description: >-
+            A new directed prompt, with the same rules as when creating. An
+            empty string, or one of only white space, removes the prompt, and
+            the subscription is sent standard deliveries again.
+    WebhookPrompt:
+      type: string
+      description: >-
+        A directed prompt: what this subscription is to focus on, for example
+        fare changes or a particular rail line, in at most 500 characters
+        after trimming. With a prompt, each agenda or transcript is read
+        against it and the delivery carries a `message` covering only that
+        focus; when nothing in it is relevant, nothing is sent. Empty or
+        absent means standard deliveries. Private to its owner: it is
+        returned only on these routes, to the subscription's owner.
     WebhookPayloadVersion:
       type: string
       enum: [v1]
@@ -1946,6 +1966,8 @@ components:
           description: The stored template, as given; null when there is none.
         status:
           $ref: "#/components/schemas/WebhookSubscriptionStatus"
+        prompt:
+          $ref: "#/components/schemas/WebhookPrompt"
         pausedReason:
           type: string
           allOf:
@@ -2233,6 +2255,27 @@ components:
             /webhook-subscriptions/{id}/test`, whose event, meeting, agenda
             and transcript ids are made up and found nowhere in the API.
             Absent on real deliveries.
+        message:
+          $ref: "#/components/schemas/WebhookMessage"
+    WebhookMessage:
+      type: object
+      description: >-
+        Present when the subscription has a directed prompt: what the agenda
+        or transcript says about that focus.
+      required: [text, source]
+      properties:
+        text:
+          type: string
+          description: >-
+            Plain text written by a language model from agency text, at most
+            4,000 bytes. Show it as text, never as HTML or Markdown.
+        source:
+          type: string
+          enum: [directed_prompt]
+          x-enum-varnames: [WebhookMessageFromDirectedPrompt]
+          description: >-
+            What the message was written from. `directed_prompt` is the only
+            one; new values may be added.
     WebhookAgency:
       type: object
       required: [slug, name]

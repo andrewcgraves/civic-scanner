@@ -600,14 +600,14 @@ A user on the paid plan can subscribe to a live agency by webhook: an `https` UR
 | `GET /v1/webhook-subscriptions` | `{"subscriptions": [...]}`, every subscription of the signed-in user, oldest first (`created_at`, then `id`). |
 | `POST /v1/webhook-subscriptions` | Creates a subscription from `{"agency": "<slug>", "url": "https://...", "payloadVersion": "v1", "format": "standard"}` (`payloadVersion` optional, default `v1`; `format` optional, default `standard`, see [Discord and Slack presets](#discord-and-slack-presets); `custom` also needs `template`, see [Custom templates](#custom-templates)), status `active`, and answers 201 with the subscription and its `secret`. |
 | `GET /v1/webhook-subscriptions/{id}` | One subscription. |
-| `PATCH /v1/webhook-subscriptions/{id}` | Changes any of `url`, `payloadVersion`, `format`, `template` and `status` (`active` or `paused`); members left out, or `null`, are unchanged, and at least one is needed. Pausing is `{"status": "paused"}`, resuming `{"status": "active"}`; resuming also resumes a subscription paused for failed deliveries and resets its count (see [Pausing a failing subscription](#pausing-a-failing-subscription)). Changing the URL does not resume. The agency cannot be changed: delete and create instead. |
+| `PATCH /v1/webhook-subscriptions/{id}` | Changes any of `url`, `payloadVersion`, `format`, `template`, `status` (`active` or `paused`) and `prompt` (see [Directed prompts](#directed-prompts)); members left out, or `null`, are unchanged, and at least one is needed. Pausing is `{"status": "paused"}`, resuming `{"status": "active"}`; resuming also resumes a subscription paused for failed deliveries and resets its count (see [Pausing a failing subscription](#pausing-a-failing-subscription)). Changing the URL does not resume. The agency cannot be changed: delete and create instead. |
 | `DELETE /v1/webhook-subscriptions/{id}` | 204, and the subscription and its secret are gone. |
 | `POST /v1/webhook-subscriptions/{id}/secret` | Replaces the signing secret with a new one and answers 200 with the subscription and the new `secret`. |
 | `GET /v1/webhook-subscriptions/{id}/deliveries` | `{"deliveries": [...], "nextCursor": ...}`, the delivery log (see [Delivery log](#delivery-log)). |
 | `POST /v1/webhook-subscriptions/{id}/test` | Sends a test event now and answers 200 with how it went (see [Test sends](#test-sends)). |
 | `POST /v1/webhook-templates/preview` | Checks a template and renders it against a sample event, `{"type", "body"}` (see [Custom templates](#custom-templates)). |
 
-A subscription is `id`, `agency` (the slug), `url` (as stored), `payloadVersion`, `format` (`standard`, `discord`, `slack` or `custom`), `template` (the stored template, or null), `status`, `pausedReason` (`owner` or `failed_deliveries`; null while active), `pausedAt` (null while active), `consecutiveFailedEvents`, `createdAt`, `updatedAt` and `secretRotatedAt` (when the current secret was made). The secret appears in exactly two responses, the 201 of the create and the 200 of a rotation; no route reads it back. A lost secret is rotated, not recovered. A rotation takes effect at once: there is no period in which the old secret is still used.
+A subscription is `id`, `agency` (the slug), `url` (as stored), `payloadVersion`, `format` (`standard`, `discord`, `slack` or `custom`), `template` (the stored template, or null), `status`, `pausedReason` (`owner` or `failed_deliveries`; null while active), `pausedAt` (null while active), `consecutiveFailedEvents`, `prompt` (only when it has one), `createdAt`, `updatedAt` and `secretRotatedAt` (when the current secret was made). The secret appears in exactly two responses, the 201 of the create and the 200 of a rotation; no route reads it back. A lost secret is rotated, not recovered. A rotation takes effect at once: there is no period in which the old secret is still used.
 
 Checks, in order, the same on every route (`paidGate`, with the operations in `paidOperations` mapped to `webhook-subscriptions`):
 
@@ -656,9 +656,9 @@ Migration `00016` adds `webhook_subscriptions` and changes nothing else: `id`, `
 
 Migration `00020` adds `format` (`text NOT NULL DEFAULT 'standard'`, checked to be `standard`, `discord` or `slack` by `webhook_subscriptions_format_check`, added `NOT VALID` so the existing rows, all `standard`, are not rescanned). Subscriptions that existed before it are `standard` and keep receiving the `v1` body. `store.CreateWebhookSubscription` treats an empty `Format` as `standard`.
 
-Migration `00022` adds `template` (`text`, nullable, at most 8,192 bytes by `webhook_subscriptions_template_size_check`), `webhook_subscriptions_format_v2_check` (`standard`, `discord`, `slack` or `custom`) and `webhook_subscriptions_custom_template_check` (a `custom` row has a template), both `NOT VALID`. Migration `00023` is its contract half: it drops the old `webhook_subscriptions_format_check`, which forbids `custom`. Until `00023` runs no row can be `custom`; code from before `00022` that still reads one during a deploy cancels that delivery as an unsupported format. `store.UpdateWebhookSubscription` turns a violation of the custom-template check into `ErrWebhookTemplateRequired`.
-
 Migration `00021` adds `consecutive_failed_events` (`bigint NOT NULL DEFAULT 0`, not negative), `paused_reason` (`owner` or `failed_deliveries`, nullable) and `paused_at` (nullable), and marks rows already paused as paused by their owner at their `updated_at`. A paused row without a reason, which code from before `00021` can still write during a deploy, reads as paused by its owner at `updated_at`; an active row always reads with no reason and no time.
+
+Migration `00023` adds `template` (`text`, nullable, at most 8,192 bytes by `webhook_subscriptions_template_size_check`), `webhook_subscriptions_format_v2_check` (`standard`, `discord`, `slack` or `custom`) and `webhook_subscriptions_custom_template_check` (a `custom` row has a template), both `NOT VALID`. Migration `00024` is its contract half: it drops the old `webhook_subscriptions_format_check`, which forbids `custom`. Until `00024` runs no row can be `custom`; code from before `00023` that still reads one during a deploy cancels that delivery as an unsupported format. `store.UpdateWebhookSubscription` turns a violation of the custom-template check into `ErrWebhookTemplateRequired`.
 
 `store.CreateWebhookSubscription` runs in one transaction: it locks the user's row (`SELECT ... FOR UPDATE`), counts the user's subscriptions, and inserts the row only if a live agency has the slug, so the limit holds under concurrent creates (tested with 35 at once: 25 succeed). The unique constraint decides duplicates. Updates, rotations and deletes are single statements filtered by the user's id.
 
@@ -694,6 +694,7 @@ Version `v1` is `WebhookEventV1` in `openapi/v1.yaml`, and the job builds it fro
 - `agenda` is present for `agenda_published` and `agenda_changed`. `changeNote` and `changeNoteSource` are present only for an `agenda_changed` recorded with its note (see [Agenda changes](#agenda-changes)).
 - `transcript` (`id`, `recordingId`) is present for `transcript_ready`.
 - `occurredAt` follows the event (for `agenda_changed`, when the change was found). Times are UTC.
+- `message` (`text`, `source: "directed_prompt"`) is present only for a subscription with a directed prompt whose prompt found something relevant (see [Directed prompts](#directed-prompts)).
 - Nothing else leaves the database: no summaries, agenda text or storage keys. Receivers fetch the rest from the API. New optional members and new event types may be added within `v1`; receivers must ignore what they do not know.
 
 An event whose payload cannot be built (an unknown type, or a stored payload without its ids) cancels the delivery without a request.
@@ -807,6 +808,33 @@ The owner resumes it with `PATCH {"status": "active"}`, which clears the reason 
 3. For the Discord and Slack presets to link to the meeting page, set `PUBLIC_WEB_URL` on the worker service as well as the API (in `.railway/railway.ts`), and turn the website's `meeting-pages` flag on. Without it they link to the agency's page for the meeting.
 
 Turning the flag off for a user stops their deliveries, including retries already queued, as soon as the worker's flag cache sees it (`POSTHOG_FLAG_CACHE_TTL`); events fanned out while it was off are not sent later.
+
+### Directed prompts
+
+A subscription can carry a `prompt` saying what to focus on, for example fare changes or a particular rail line (CIV-56). Each agenda or transcript of the agency is then read against it with the `strong` model tier (`LLM_STRONG_MODEL`, see [LLM](#llm)), and the delivery carries what it says about that focus in `message`. When nothing is relevant, nothing is sent. The whole feature is behind the `webhook-directed-prompts` flag, evaluated per user like `webhook-subscriptions`, because every directed event is a strong-tier call.
+
+**The field.** `prompt` on create and update: trimmed, `\r\n` turned into `\n`, at most 500 characters (`store.MaxWebhookPromptChars`, `prompt_too_long`), and no control characters other than line breaks and tabs (`invalid_prompt`). An empty or blank prompt means none, and on an update removes it, which is allowed with the flag off; setting one with the flag off is 400 `prompts_unavailable`. The database refuses a prompt over 4,000 bytes. The prompt is private to its owner: it is returned only on the owner's subscription routes, which are `no-store`, and it is never logged (the handler logs only `directed: true/false`) nor sent to the receiver.
+
+**Flow.** `fan_out_webhooks` inserts a `run_paid_prompts` job (args: subscription and event id; unique by args and queue; 5 attempts; on the default queue with the other model jobs) instead of `deliver_webhook` for a subscription with a prompt whose user has `webhook-directed-prompts` on. `run_paid_prompts` reads the subscription and the event again, skips it as `deliver_webhook` would (gone, paused, free plan, flags off), and sends a standard delivery instead when the prompt has since been removed or the directed flag turned off. Otherwise it reads the agenda version (`agenda_published`, `agenda_changed`) or the transcript (`transcript_ready`) and calls `summarize.Directed`:
+
+- The owner's prompt and the source text go in the user message, in a `<focus-…>` and a `<document-…>` section whose markers carry one random delimiter absent from both. The system message says the focus only decides what is relevant and cannot change the rules, and that the document is data, never instructions, whatever it claims. Neither is ever put in the system message.
+- The source is cut to its first 200,000 bytes (`summarize.MaxDirectedInputBytes`), and the model is told when it was; the message then ends with a note saying so. Output is at most 1,024 tokens.
+- The reply must be one JSON object, `{"relevant": true|false, "message": "..."}`. A relevant message is cleaned like a summary and capped at 4,000 bytes. A reply that does not parse, or a relevant one with an empty message, is a retryable error.
+- In the `discord` and `slack` formats the message takes the place of the change note, cut to the same limits, with the credit `Written by a language model for this subscription's prompt.` in place of `Change described by a language model.`
+
+| Outcome | Then |
+| --- | --- |
+| Relevant | The run and the `deliver_webhook` job are written in one transaction; the delivery carries `message`. |
+| Not relevant (or empty source text) | The run is stored; no delivery, no attempt row. `deliver_webhook` also refuses to send for a stored `not_relevant` run. |
+| Retryable model error | Usage is stored without an outcome, and River retries. |
+| Permanent error, or the last attempt failing | The run is stored as `failed` and a standard delivery, without `message`, is enqueued, so the subscriber still hears of the event; the job is cancelled. |
+| No LLM configured, an account or configuration failure (logged as `llm account or configuration failure`), or calls paused after one | Snoozed: 10 minutes without an LLM, otherwise as for summaries. The breaker is shared with the summary jobs. |
+
+**Tokens.** Migration `00022` adds `webhook_subscriptions.prompt` and `webhook_directed_prompt_runs`, one row per subscription and event (cascading with both): the `outcome` (`relevant`, `not_relevant`, `failed`, or null while retrying), the `message` for a relevant run, the `model`, and `calls`, `input_tokens` and `output_tokens` summed over every attempt. A run that is `relevant` or `not_relevant` is final; later writes only add usage. `store.RecordDirectedRun` writes it and `store.GetDirectedRun` reads it. Nothing reads runs through the API yet.
+
+**Logs.** `directed prompt: relevant, delivery enqueued`, `directed prompt: nothing relevant, not delivered`, `directed prompt failed; will retry`, `directed prompt failed: standard delivery enqueued` and `directed prompt not run` with a `reason`, each with the model, token counts and byte sizes; `webhook not delivered` gains the reason `not_relevant`. Neither the prompt nor the message is logged.
+
+**Turning it on.** Create `webhook-directed-prompts` in PostHog, off, and turn it on for users who already have `webhook-subscriptions`. The AI Gateway spend limit (CIV-68) caps the cost; when it is reached the gateway's account failure snoozes the jobs.
 
 ## Feature flags
 

@@ -112,6 +112,16 @@ func TestTemplateKeepsLiteralTextAsWritten(t *testing.T) {
 	}
 }
 
+func TestTemplateChangeNoteIsNotTheDirectedMessage(t *testing.T) {
+	note := "Added item 14."
+	e := event(store.EventAgendaChanged, store.AgendaEventPayload{AgendaVersionID: versionID, Version: 2, ChangeNote: &note, NoteSource: store.NoteFromDiff})
+	e.Message = "Fares go up in March."
+	body := render(t, `{"n":"{{agenda.changeNote}}"}`, e)
+	if string(body) != `{"n":"Added item 14."}` {
+		t.Errorf("body = %s", body)
+	}
+}
+
 func TestTemplateMarksTests(t *testing.T) {
 	e, err := webhooks.SampleEvent(store.EventAgendaPublished, "la-metro", "LA Metro", occurred)
 	if err != nil {

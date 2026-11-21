@@ -326,13 +326,16 @@ func templateValues(e Event) (map[string]string, error) {
 		PlaceholderEventOccurredAt:  ev.OccurredAt.UTC().Format(time.RFC3339),
 		PlaceholderEventTest:        strconv.FormatBool(e.Test),
 		PlaceholderAgendaVersion:    "",
-		PlaceholderAgendaChangeNote: p.note,
+		PlaceholderAgendaChangeNote: "",
 	}
 	if ev.Meeting.SourceUrl != nil {
 		values[PlaceholderMeetingSourceURL] = *ev.Meeting.SourceUrl
 	}
 	if ev.Agenda != nil {
 		values[PlaceholderAgendaVersion] = strconv.Itoa(ev.Agenda.Version)
+		if ev.Agenda.ChangeNote != nil {
+			values[PlaceholderAgendaChangeNote] = *ev.Agenda.ChangeNote
+		}
 	}
 	return values, nil
 }
