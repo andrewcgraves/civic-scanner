@@ -72,7 +72,13 @@ describe("proxy", () => {
 
   it("runs only for the session route, the billing page and the agency submission page", () => {
     expect(config).toEqual({
-      matcher: ["/auth/session", "/billing", "/dashboard", "/submit-agency"],
+      matcher: [
+        "/auth/session",
+        "/billing",
+        "/dashboard",
+        "/submit-agency",
+        "/admin/agency-submissions",
+      ],
     });
   });
 

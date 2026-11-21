@@ -9,7 +9,13 @@ import { loadSessionState } from "@/lib/auth/load-session";
 import type { SessionState } from "@/lib/auth/session-state";
 import { useFlag } from "@/lib/flags/client";
 
-function SignedInMenu({ email }: { email: string | null }) {
+function SignedInMenu({
+  email,
+  admin,
+}: {
+  email: string | null;
+  admin: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -82,6 +88,16 @@ function SignedInMenu({ email }: { email: string | null }) {
             </Link>
           </p>
         ) : null}
+        {admin ? (
+          <p>
+            <a
+              href="/admin/agency-submissions"
+              className="whitespace-nowrap underline"
+            >
+              Review agencies
+            </a>
+          </p>
+        ) : null}
         <form action={signOutAction}>
           <button type="submit" className="whitespace-nowrap underline">
             Sign out
@@ -145,5 +161,5 @@ export function AccountMenu() {
   if (!state.signedIn) {
     return <SignInLink />;
   }
-  return <SignedInMenu email={state.email} />;
+  return <SignedInMenu email={state.email} admin={state.role === "admin"} />;
 }

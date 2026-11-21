@@ -17,7 +17,11 @@ type adminRoute struct {
 	pattern string
 }
 
-var adminOperations = map[string]adminRoute{}
+var adminOperations = map[string]adminRoute{
+	"ListPendingAgencySubmissions": {method: http.MethodGet, pattern: "/v1/admin/agency-submissions"},
+	"ApproveAgencySubmission":      {method: http.MethodPost, pattern: "/v1/admin/agency-submissions/{id}/approve"},
+	"RejectAgencySubmission":       {method: http.MethodPost, pattern: "/v1/admin/agency-submissions/{id}/reject"},
+}
 
 var (
 	errAccountsOff  = errors.New("accounts are off for this user")

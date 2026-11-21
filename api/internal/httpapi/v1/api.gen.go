@@ -90,6 +90,24 @@ func (e MeetingStatus) Valid() bool {
 	}
 }
 
+// Defines values for ReviewedAgencySubmissionStatus.
+const (
+	ReviewedAgencySubmissionStatusLive     ReviewedAgencySubmissionStatus = "live"
+	ReviewedAgencySubmissionStatusRejected ReviewedAgencySubmissionStatus = "rejected"
+)
+
+// Valid indicates whether the value is a known member of the ReviewedAgencySubmissionStatus enum.
+func (e ReviewedAgencySubmissionStatus) Valid() bool {
+	switch e {
+	case ReviewedAgencySubmissionStatusLive:
+		return true
+	case ReviewedAgencySubmissionStatusRejected:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for StripeEventReceiptOutcome.
 const (
 	Applied         StripeEventReceiptOutcome = "applied"
@@ -196,6 +214,12 @@ type Agency struct {
 
 	// Website The agency's official website.
 	Website string `json:"website"`
+}
+
+// AgencyApprovalInput defines model for AgencyApprovalInput.
+type AgencyApprovalInput struct {
+	// Slug The live agency's slug, used in its public URL and to register its source adapter: 2 to 60 lower-case letters, digits and single hyphens, starting and ending with a letter or digit, not starting with `submitted-`, and not used by another agency.
+	Slug string `json:"slug"`
 }
 
 // AgencyList defines model for AgencyList.
@@ -329,6 +353,24 @@ type MeetingSummary struct {
 	Title    string        `json:"title"`
 }
 
+// PendingAgencySubmission defines model for PendingAgencySubmission.
+type PendingAgencySubmission struct {
+	Id openapi_types.UUID `json:"id"`
+
+	// Name The name as submitted, after trimming. Plain text.
+	Name        string    `json:"name"`
+	SubmittedAt time.Time `json:"submittedAt"`
+	SubmittedBy Submitter `json:"submittedBy"`
+
+	// Website The website as stored. It has not been fetched or checked beyond the submission rules; show it as text, not as a link.
+	Website string `json:"website"`
+}
+
+// PendingAgencySubmissionList defines model for PendingAgencySubmissionList.
+type PendingAgencySubmissionList struct {
+	Submissions []PendingAgencySubmission `json:"submissions"`
+}
+
 // Recording defines model for Recording.
 type Recording struct {
 	// SourceUrl The agency's original recording.
@@ -337,6 +379,20 @@ type Recording struct {
 	// Transcript The recording's transcript. Null until it is ready.
 	Transcript *Transcript `json:"transcript"`
 }
+
+// ReviewedAgencySubmission defines model for ReviewedAgencySubmission.
+type ReviewedAgencySubmission struct {
+	Id   openapi_types.UUID `json:"id"`
+	Name string             `json:"name"`
+
+	// Slug The chosen slug for a live agency; the private `submitted-` slug for a rejected one.
+	Slug    string                         `json:"slug"`
+	Status  ReviewedAgencySubmissionStatus `json:"status"`
+	Website string                         `json:"website"`
+}
+
+// ReviewedAgencySubmissionStatus defines model for ReviewedAgencySubmission.Status.
+type ReviewedAgencySubmissionStatus string
 
 // StripeEvent A Stripe event object, as Stripe sends it. Only the members below are read; the signature covers the raw body.
 type StripeEvent struct {
@@ -354,6 +410,15 @@ type StripeEventReceipt struct {
 
 // StripeEventReceiptOutcome `applied` changed the subscription's stored state and recomputed the plan; `duplicate` is an event id already processed; `stale` is older than the last event applied to its subscription, or the subscription has already ended; `unknown_customer` is for a Stripe customer no user has; and `ignored` is an event type, or a checkout that is not a paid subscription, that does not change the plan.
 type StripeEventReceiptOutcome string
+
+// Submitter defines model for Submitter.
+type Submitter struct {
+	// Email The submitter's latest email, or null when none is known.
+	Email *string `json:"email"`
+
+	// Id The submitter's id in this service.
+	Id openapi_types.UUID `json:"id"`
+}
 
 // Transcript defines model for Transcript.
 type Transcript struct {
@@ -497,6 +562,9 @@ type WebhookSubscriptionWithSecret struct {
 // AgencySlug defines model for AgencySlug.
 type AgencySlug = string
 
+// AgencySubmissionId defines model for AgencySubmissionId.
+type AgencySubmissionId = openapi_types.UUID
+
 // IfNoneMatch defines model for IfNoneMatch.
 type IfNoneMatch = string
 
@@ -521,6 +589,12 @@ type BillingFailed = Error
 // BillingUnavailable defines model for BillingUnavailable.
 type BillingUnavailable = Error
 
+// Forbidden defines model for Forbidden.
+type Forbidden = Error
+
+// InvalidApproval defines model for InvalidApproval.
+type InvalidApproval = Error
+
 // InvalidStripeEvent defines model for InvalidStripeEvent.
 type InvalidStripeEvent = Error
 
@@ -541,6 +615,9 @@ type PayloadTooLarge = Error
 
 // PaymentRequired defines model for PaymentRequired.
 type PaymentRequired = Error
+
+// ReviewConflict defines model for ReviewConflict.
+type ReviewConflict = Error
 
 // StripeEventTooLarge defines model for StripeEventTooLarge.
 type StripeEventTooLarge = Error
@@ -595,6 +672,9 @@ type ReceiveStripeEventParams struct {
 	// StripeSignature Stripe's signature header, `t=<unix time>,v1=<hex HMAC>[,v1=...]`.
 	StripeSignature *string `json:"Stripe-Signature,omitempty"`
 }
+
+// ApproveAgencySubmissionJSONRequestBody defines body for ApproveAgencySubmission for application/json ContentType.
+type ApproveAgencySubmissionJSONRequestBody = AgencyApprovalInput
 
 // CreateAgencySubmissionJSONRequestBody defines body for CreateAgencySubmission for application/json ContentType.
 type CreateAgencySubmissionJSONRequestBody = AgencySubmissionInput
@@ -704,6 +784,15 @@ func (a StripeEvent) MarshalJSON() ([]byte, error) {
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListPendingAgencySubmissions List agencies awaiting review
+	// (GET /admin/agency-submissions)
+	ListPendingAgencySubmissions(w http.ResponseWriter, r *http.Request)
+	// ApproveAgencySubmission Approve a submitted agency
+	// (POST /admin/agency-submissions/{id}/approve)
+	ApproveAgencySubmission(w http.ResponseWriter, r *http.Request, id AgencySubmissionId)
+	// RejectAgencySubmission Reject a submitted agency
+	// (POST /admin/agency-submissions/{id}/reject)
+	RejectAgencySubmission(w http.ResponseWriter, r *http.Request, id AgencySubmissionId)
 	// ListAgencies List tracked agencies
 	// (GET /agencies)
 	ListAgencies(w http.ResponseWriter, r *http.Request)
@@ -763,6 +852,24 @@ type ServerInterface interface {
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
 
 type Unimplemented struct{}
+
+// ListPendingAgencySubmissions List agencies awaiting review
+// (GET /admin/agency-submissions)
+func (_ Unimplemented) ListPendingAgencySubmissions(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ApproveAgencySubmission Approve a submitted agency
+// (POST /admin/agency-submissions/{id}/approve)
+func (_ Unimplemented) ApproveAgencySubmission(w http.ResponseWriter, r *http.Request, id AgencySubmissionId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RejectAgencySubmission Reject a submitted agency
+// (POST /admin/agency-submissions/{id}/reject)
+func (_ Unimplemented) RejectAgencySubmission(w http.ResponseWriter, r *http.Request, id AgencySubmissionId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
 
 // ListAgencies List tracked agencies
 // (GET /agencies)
@@ -880,6 +987,72 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListPendingAgencySubmissions operation middleware
+func (siw *ServerInterfaceWrapper) ListPendingAgencySubmissions(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListPendingAgencySubmissions(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ApproveAgencySubmission operation middleware
+func (siw *ServerInterfaceWrapper) ApproveAgencySubmission(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AgencySubmissionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ApproveAgencySubmission(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RejectAgencySubmission operation middleware
+func (siw *ServerInterfaceWrapper) RejectAgencySubmission(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id AgencySubmissionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RejectAgencySubmission(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ListAgencies operation middleware
 func (siw *ServerInterfaceWrapper) ListAgencies(w http.ResponseWriter, r *http.Request) {
@@ -1486,6 +1659,15 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Post(options.BaseURL+"/agency-submissions", wrapper.CreateAgencySubmission)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/admin/agency-submissions", wrapper.ListPendingAgencySubmissions)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/admin/agency-submissions/{id}/approve", wrapper.ApproveAgencySubmission)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/admin/agency-submissions/{id}/reject", wrapper.RejectAgencySubmission)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/billing/checkout-session", wrapper.CreateCheckoutSession)
 	})
 	r.Group(func(r chi.Router) {
@@ -1583,6 +1765,24 @@ type BillingUnavailableJSONResponse struct {
 	Headers BillingUnavailableResponseHeaders
 }
 
+type ForbiddenResponseHeaders struct {
+	CacheControl *string
+}
+type ForbiddenJSONResponse struct {
+	Body Error
+
+	Headers ForbiddenResponseHeaders
+}
+
+type InvalidApprovalResponseHeaders struct {
+	CacheControl *string
+}
+type InvalidApprovalJSONResponse struct {
+	Body Error
+
+	Headers InvalidApprovalResponseHeaders
+}
+
 type InvalidStripeEventJSONResponse Error
 
 type InvalidSubmissionResponseHeaders struct {
@@ -1638,6 +1838,15 @@ type PaymentRequiredJSONResponse struct {
 	Body Error
 
 	Headers PaymentRequiredResponseHeaders
+}
+
+type ReviewConflictResponseHeaders struct {
+	CacheControl *string
+}
+type ReviewConflictJSONResponse struct {
+	Body Error
+
+	Headers ReviewConflictResponseHeaders
 }
 
 type StripeEventTooLargeJSONResponse Error
@@ -1706,6 +1915,467 @@ type WebhooksUnavailableJSONResponse struct {
 	Body Error
 
 	Headers WebhooksUnavailableResponseHeaders
+}
+
+type ListPendingAgencySubmissionsRequestObject struct {
+}
+
+type ListPendingAgencySubmissionsResponseObject interface {
+	VisitListPendingAgencySubmissionsResponse(w http.ResponseWriter) error
+}
+
+type ListPendingAgencySubmissions200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type ListPendingAgencySubmissions200JSONResponse struct {
+	Body    PendingAgencySubmissionList
+	Headers ListPendingAgencySubmissions200ResponseHeaders
+}
+
+func (response ListPendingAgencySubmissions200JSONResponse) VisitListPendingAgencySubmissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPendingAgencySubmissions401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListPendingAgencySubmissions401JSONResponse) VisitListPendingAgencySubmissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPendingAgencySubmissions403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListPendingAgencySubmissions403JSONResponse) VisitListPendingAgencySubmissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPendingAgencySubmissions404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response ListPendingAgencySubmissions404JSONResponse) VisitListPendingAgencySubmissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPendingAgencySubmissions405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response ListPendingAgencySubmissions405JSONResponse) VisitListPendingAgencySubmissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPendingAgencySubmissions503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response ListPendingAgencySubmissions503JSONResponse) VisitListPendingAgencySubmissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPendingAgencySubmissionsdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ListPendingAgencySubmissionsdefaultJSONResponse) VisitListPendingAgencySubmissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmissionRequestObject struct {
+	Id   AgencySubmissionId `json:"id"`
+	Body *ApproveAgencySubmissionJSONRequestBody
+}
+
+type ApproveAgencySubmissionResponseObject interface {
+	VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error
+}
+
+type ApproveAgencySubmission200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type ApproveAgencySubmission200JSONResponse struct {
+	Body    ReviewedAgencySubmission
+	Headers ApproveAgencySubmission200ResponseHeaders
+}
+
+func (response ApproveAgencySubmission200JSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmission400JSONResponse struct{ InvalidApprovalJSONResponse }
+
+func (response ApproveAgencySubmission400JSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmission401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ApproveAgencySubmission401JSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmission403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ApproveAgencySubmission403JSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmission404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response ApproveAgencySubmission404JSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmission405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response ApproveAgencySubmission405JSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmission409JSONResponse struct{ ReviewConflictJSONResponse }
+
+func (response ApproveAgencySubmission409JSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmission503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response ApproveAgencySubmission503JSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ApproveAgencySubmissiondefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ApproveAgencySubmissiondefaultJSONResponse) VisitApproveAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmissionRequestObject struct {
+	Id AgencySubmissionId `json:"id"`
+}
+
+type RejectAgencySubmissionResponseObject interface {
+	VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error
+}
+
+type RejectAgencySubmission200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type RejectAgencySubmission200JSONResponse struct {
+	Body    ReviewedAgencySubmission
+	Headers RejectAgencySubmission200ResponseHeaders
+}
+
+func (response RejectAgencySubmission200JSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmission400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response RejectAgencySubmission400JSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmission401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response RejectAgencySubmission401JSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmission403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response RejectAgencySubmission403JSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmission404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response RejectAgencySubmission404JSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmission405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response RejectAgencySubmission405JSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmission409JSONResponse struct{ ReviewConflictJSONResponse }
+
+func (response RejectAgencySubmission409JSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmission503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response RejectAgencySubmission503JSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectAgencySubmissiondefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response RejectAgencySubmissiondefaultJSONResponse) VisitRejectAgencySubmissionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type ListAgenciesRequestObject struct {
@@ -3902,6 +4572,15 @@ func (response RotateWebhookSubscriptionSecretdefaultJSONResponse) VisitRotateWe
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListPendingAgencySubmissions List agencies awaiting review
+	// (GET /admin/agency-submissions)
+	ListPendingAgencySubmissions(ctx context.Context, request ListPendingAgencySubmissionsRequestObject) (ListPendingAgencySubmissionsResponseObject, error)
+	// ApproveAgencySubmission Approve a submitted agency
+	// (POST /admin/agency-submissions/{id}/approve)
+	ApproveAgencySubmission(ctx context.Context, request ApproveAgencySubmissionRequestObject) (ApproveAgencySubmissionResponseObject, error)
+	// RejectAgencySubmission Reject a submitted agency
+	// (POST /admin/agency-submissions/{id}/reject)
+	RejectAgencySubmission(ctx context.Context, request RejectAgencySubmissionRequestObject) (RejectAgencySubmissionResponseObject, error)
 	// ListAgencies List tracked agencies
 	// (GET /agencies)
 	ListAgencies(ctx context.Context, request ListAgenciesRequestObject) (ListAgenciesResponseObject, error)
@@ -3995,6 +4674,89 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ListPendingAgencySubmissions operation middleware
+func (sh *strictHandler) ListPendingAgencySubmissions(w http.ResponseWriter, r *http.Request) {
+	var request ListPendingAgencySubmissionsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListPendingAgencySubmissions(ctx, request.(ListPendingAgencySubmissionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListPendingAgencySubmissions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListPendingAgencySubmissionsResponseObject); ok {
+		if err := validResponse.VisitListPendingAgencySubmissionsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ApproveAgencySubmission operation middleware
+func (sh *strictHandler) ApproveAgencySubmission(w http.ResponseWriter, r *http.Request, id AgencySubmissionId) {
+	var request ApproveAgencySubmissionRequestObject
+
+	request.Id = id
+
+	var body ApproveAgencySubmissionJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ApproveAgencySubmission(ctx, request.(ApproveAgencySubmissionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ApproveAgencySubmission")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ApproveAgencySubmissionResponseObject); ok {
+		if err := validResponse.VisitApproveAgencySubmissionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RejectAgencySubmission operation middleware
+func (sh *strictHandler) RejectAgencySubmission(w http.ResponseWriter, r *http.Request, id AgencySubmissionId) {
+	var request RejectAgencySubmissionRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RejectAgencySubmission(ctx, request.(RejectAgencySubmissionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RejectAgencySubmission")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RejectAgencySubmissionResponseObject); ok {
+		if err := validResponse.VisitRejectAgencySubmissionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // ListAgencies operation middleware
