@@ -7,6 +7,7 @@ export const FLAG_KEYS = [
   "meeting-pages",
   "meeting-transcripts",
   "test-only-flag",
+  "webhook-directed-prompts",
   "webhook-subscriptions",
 ] as const;
 

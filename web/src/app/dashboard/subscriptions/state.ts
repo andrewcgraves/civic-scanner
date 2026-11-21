@@ -12,6 +12,7 @@ export const SUBSCRIPTIONS_SIGN_IN_PATH = `/auth/sign-in?returnTo=${encodeURICom
 
 export const MAX_SUBSCRIPTIONS = 25;
 export const URL_MAX_LENGTH = 2048;
+export const PROMPT_MAX_LENGTH = 500;
 
 const ECHO_LIMIT = 4096;
 const MESSAGE_LIMIT = 300;
@@ -38,7 +39,14 @@ export function editPath(id: string): string {
 
 export const RETURN_TO_SUBSCRIPTION = "subscription";
 
-export type SubscriptionField = "agency" | "url" | "format";
+export type SubscriptionField = "agency" | "url" | "format" | "prompt";
+
+const FIELDS: readonly SubscriptionField[] = [
+  "agency",
+  "url",
+  "format",
+  "prompt",
+];
 
 export type SubscriptionValues = Record<SubscriptionField, string>;
 
@@ -76,7 +84,61 @@ export const FIELD_LABELS: Record<SubscriptionField, string> = {
   agency: "Agency",
   url: "Endpoint URL",
   format: "Message format",
+  prompt: "Directed prompt",
 };
+
+export interface PromptExample {
+  label: string;
+  text: string;
+}
+
+export const PROMPT_EXAMPLES: readonly PromptExample[] = [
+  {
+    label: "Fare changes",
+    text: "Fare changes: proposed increases, new discounts or passes, and votes on fare policy.",
+  },
+  {
+    label: "One rail line",
+    text: "Anything about the Blue Line: service changes, station closures, construction and delays.",
+  },
+  {
+    label: "Contracts and votes",
+    text: "Contracts over $1 million, what they are for, and how each board member voted.",
+  },
+];
+
+export const PROMPT_TOO_LONG = `The prompt can be at most ${String(PROMPT_MAX_LENGTH)} characters.`;
+export const PROMPT_INVALID =
+  "The prompt has a hidden character that cannot be used, often from pasting. Retype that part as plain text; line breaks and tabs are fine.";
+export const PROMPTS_UNAVAILABLE =
+  "Directed prompts are not available on your account right now. Clear the prompt to save without one.";
+
+const PROMPT_CODES: Record<string, string> = {
+  prompt_too_long: PROMPT_TOO_LONG,
+  invalid_prompt: PROMPT_INVALID,
+  prompts_unavailable: PROMPTS_UNAVAILABLE,
+};
+
+const PROMPT_FORBIDDEN = /(?![\n\t])[\p{Cc}\ufffd]/u;
+
+export function normalPrompt(value: string): string {
+  return value.replace(/\r\n/g, "\n").trim();
+}
+
+export function promptLength(value: string): number {
+  return [...normalPrompt(value)].length;
+}
+
+export function checkPrompt(value: string): string | undefined {
+  const length = promptLength(value);
+  if (length > PROMPT_MAX_LENGTH) {
+    return `${PROMPT_TOO_LONG} Take out ${String(length - PROMPT_MAX_LENGTH)}.`;
+  }
+  if (PROMPT_FORBIDDEN.test(normalPrompt(value))) {
+    return PROMPT_INVALID;
+  }
+  return undefined;
+}
 
 export type FormState =
   | { kind: "idle"; values: SubscriptionValues }
@@ -121,6 +183,7 @@ export function initialForm(values: Partial<SubscriptionValues>): FormState {
       agency: values.agency ?? "",
       url: values.url ?? "",
       format: values.format ?? DEFAULT_FORMAT,
+      prompt: values.prompt ?? "",
     },
   };
 }
@@ -134,7 +197,12 @@ export function readValues(formData: FormData): SubscriptionValues {
     agency: text(formData.get("agency")).trim(),
     url: text(formData.get("url")),
     format: text(formData.get("format")).trim() || DEFAULT_FORMAT,
+    prompt: text(formData.get("prompt")),
   };
+}
+
+export function readsPrompt(formData: FormData): boolean {
+  return formData.has("prompt");
 }
 
 export function readId(formData: FormData): string {
@@ -181,6 +249,10 @@ export function checkValues(values: SubscriptionValues): FieldErrors {
   if (format !== undefined) {
     errors.format = format;
   }
+  const prompt = checkPrompt(values.prompt);
+  if (prompt !== undefined) {
+    errors.prompt = prompt;
+  }
   return errors;
 }
 
@@ -200,7 +272,7 @@ export function sentence(value: unknown): string | undefined {
 }
 
 function isField(value: unknown): value is SubscriptionField {
-  return value === "agency" || value === "url" || value === "format";
+  return FIELDS.includes(value as SubscriptionField);
 }
 
 function listedErrors(fields: unknown): FieldErrors {
@@ -229,6 +301,9 @@ export function rejection(body: unknown): {
   }
   if (code === "unknown_agency") {
     return { errors: { agency: "Choose an agency from the list." } };
+  }
+  if (typeof code === "string" && Object.hasOwn(PROMPT_CODES, code)) {
+    return { errors: { prompt: PROMPT_CODES[code] } };
   }
   if (code === "invalid_format") {
     return { errors: { format: "Choose a message format from the list." } };

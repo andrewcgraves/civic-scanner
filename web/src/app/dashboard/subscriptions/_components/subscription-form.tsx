@@ -18,6 +18,7 @@ import {
   type SubscriptionField,
 } from "../state";
 
+import { PromptField } from "./prompt-field";
 import { SecretPanel } from "./secret-panel";
 import { BUTTON, INPUT } from "./styles";
 
@@ -35,6 +36,7 @@ export type FormMode =
       agencyName: string;
       url: string;
       format: string;
+      prompt?: string;
     };
 
 const URL_HINT = "An https address on a public host, up to 2,048 characters.";
@@ -153,13 +155,24 @@ function CreatedPanel({
   );
 }
 
-export function SubscriptionForm({ mode }: { mode: FormMode }) {
+export function SubscriptionForm({
+  mode,
+  prompts = false,
+}: {
+  mode: FormMode;
+  prompts?: boolean;
+}) {
   const [state, formAction, pending] = useActionState(
     mode.kind === "create" ? createSubscription : updateSubscription,
     initialForm(
       mode.kind === "create"
         ? { agency: mode.agencies[0]?.slug ?? "" }
-        : { agency: mode.agency, url: mode.url, format: mode.format },
+        : {
+            agency: mode.agency,
+            url: mode.url,
+            format: mode.format,
+            prompt: mode.prompt,
+          },
     ),
   );
 
@@ -279,6 +292,13 @@ export function SubscriptionForm({ mode }: { mode: FormMode }) {
           </select>
           <FieldError field="format" errors={errors} />
         </div>
+        {prompts ? (
+          <PromptField
+            defaultValue={values.prompt}
+            error={errors.prompt}
+            editing={mode.kind === "edit"}
+          />
+        ) : null}
         <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:gap-4">
           <button
             type="submit"

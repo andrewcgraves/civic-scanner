@@ -6,7 +6,11 @@ import { PageHeader } from "@/components/ui/page-header";
 import { readApiAsUser } from "@/lib/auth/api";
 
 import { SubscriptionForm } from "../../_components/subscription-form";
-import { loadAgencyChoices, requireSubscriptions } from "../../server";
+import {
+  isDirectedPromptsEnabled,
+  loadAgencyChoices,
+  requireSubscriptions,
+} from "../../server";
 import {
   SUBSCRIPTIONS_PATH,
   SUBSCRIPTIONS_SIGN_IN_PATH,
@@ -37,11 +41,12 @@ export default async function EditSubscriptionPage({
   if (!isSubscriptionId(id)) {
     notFound();
   }
-  const [result, choices] = await Promise.all([
+  const [result, choices, prompts] = await Promise.all([
     readApiAsUser((api) =>
       api.GET("/webhook-subscriptions/{id}", { params: { path: { id } } }),
     ),
     loadAgencyChoices(),
+    isDirectedPromptsEnabled(),
   ]);
   if (result.status === "signed-out") {
     redirect(SUBSCRIPTIONS_SIGN_IN_PATH);
@@ -66,6 +71,7 @@ export default async function EditSubscriptionPage({
     <>
       <PageHeader title={`Edit ${name}`} breadcrumb={BREADCRUMB} />
       <SubscriptionForm
+        prompts={prompts}
         mode={{
           kind: "edit",
           id: result.data.id,
@@ -73,6 +79,7 @@ export default async function EditSubscriptionPage({
           agencyName: name,
           url: result.data.url,
           format: result.data.format,
+          prompt: result.data.prompt ?? "",
         }}
       />
     </>

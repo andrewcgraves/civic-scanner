@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => {
   const failed = (): UserApiResult<unknown> => ({ status: "failed" });
   return {
     required: [] as string[],
+    prompts: false,
     result: failed(),
     calls: [] as unknown[],
     notFound: vi.fn(() => {
@@ -29,6 +30,7 @@ vi.mock("../../server", () => ({
   },
   loadAgencyChoices: () =>
     Promise.resolve({ ok: true, names: new Map([["la-metro", "LA Metro"]]) }),
+  isDirectedPromptsEnabled: () => Promise.resolve(mocks.prompts),
 }));
 vi.mock("@/lib/auth/api", () => ({
   readApiAsUser: async (
@@ -45,8 +47,14 @@ vi.mock("@/lib/auth/api", () => ({
   },
 }));
 vi.mock("../../_components/subscription-form", () => ({
-  SubscriptionForm: ({ mode }: { mode: unknown }) => (
-    <p>{`form ${JSON.stringify(mode)}`}</p>
+  SubscriptionForm: ({
+    mode,
+    prompts,
+  }: {
+    mode: unknown;
+    prompts: boolean;
+  }) => (
+    <p>{`form${prompts ? " with a prompt" : ""} ${JSON.stringify(mode)}`}</p>
   ),
 }));
 
@@ -69,6 +77,7 @@ async function renderPage(id = ID) {
 describe("EditSubscriptionPage", () => {
   beforeEach(() => {
     mocks.required = [];
+    mocks.prompts = false;
     mocks.result = { status: "ok", data: SUBSCRIPTION };
     mocks.calls = [];
     mocks.notFound.mockClear();
@@ -97,8 +106,22 @@ describe("EditSubscriptionPage", () => {
     ).toBeVisible();
     expect(
       screen.getByText(
-        `form ${JSON.stringify({ kind: "edit", id: ID, agency: "la-metro", agencyName: "LA Metro", url: SUBSCRIPTION.url, format: "slack" })}`,
+        `form ${JSON.stringify({ kind: "edit", id: ID, agency: "la-metro", agencyName: "LA Metro", url: SUBSCRIPTION.url, format: "slack", prompt: "" })}`,
       ),
+    ).toBeVisible();
+  });
+
+  it("hands the saved prompt to the form while directed prompts are on", async () => {
+    mocks.prompts = true;
+    mocks.result = {
+      status: "ok",
+      data: { ...SUBSCRIPTION, prompt: "Fare changes" },
+    };
+
+    await renderPage();
+
+    expect(
+      screen.getByText(/^form with a prompt .*"prompt":"Fare changes"\}$/),
     ).toBeVisible();
   });
 

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
   return {
     required: [] as string[],
     billing: true,
+    prompts: false,
     result: failed(),
     names: new Map([["la-metro", "LA Metro"]]),
     calls: [] as string[],
@@ -30,6 +31,7 @@ vi.mock("./server", () => ({
     return Promise.resolve();
   },
   loadAgencyChoices: () => Promise.resolve({ ok: true, names: mocks.names }),
+  isDirectedPromptsEnabled: () => Promise.resolve(mocks.prompts),
 }));
 vi.mock("@/lib/billing/server", () => ({
   isBillingEnabled: () => Promise.resolve(mocks.billing),
@@ -49,8 +51,14 @@ vi.mock("@/lib/auth/api", () => ({
   },
 }));
 vi.mock("./_components/subscription-list", () => ({
-  SubscriptionList: ({ subscriptions }: { subscriptions: unknown[] }) => (
-    <p>{`${String(subscriptions.length)} subscriptions`}</p>
+  SubscriptionList: ({
+    subscriptions,
+    prompts,
+  }: {
+    subscriptions: unknown[];
+    prompts: boolean;
+  }) => (
+    <p>{`${String(subscriptions.length)} subscriptions${prompts ? " with prompts" : ""}`}</p>
   ),
   AddButton: ({ count }: { count: number }) => (
     <p>{`add button at ${String(count)}`}</p>
@@ -78,6 +86,7 @@ describe("SubscriptionsPage", () => {
   beforeEach(() => {
     mocks.required = [];
     mocks.billing = true;
+    mocks.prompts = false;
     mocks.result = { status: "ok", data: LIST };
     mocks.calls = [];
     mocks.notFound.mockClear();
@@ -111,6 +120,14 @@ describe("SubscriptionsPage", () => {
     expect(screen.getByText("add button at 2")).toBeVisible();
     expect(screen.getByText(/signed request to your URL/)).toBeVisible();
     expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("shows prompts in the list while directed prompts are on", async () => {
+    mocks.prompts = true;
+
+    await renderPage();
+
+    expect(screen.getByText("2 subscriptions with prompts")).toBeVisible();
   });
 
   it.each([

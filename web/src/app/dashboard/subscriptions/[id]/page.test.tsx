@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => {
   const failed = (): UserApiResult<unknown> => ({ status: "failed" });
   return {
     required: [] as string[],
+    prompts: false,
     subscription: failed(),
     log: failed(),
     calls: [] as unknown[],
@@ -30,6 +31,7 @@ vi.mock("../server", () => ({
   },
   loadAgencyChoices: () =>
     Promise.resolve({ ok: true, names: new Map([["la-metro", "LA Metro"]]) }),
+  isDirectedPromptsEnabled: () => Promise.resolve(mocks.prompts),
 }));
 vi.mock("@/lib/auth/api", () => ({
   readApiAsUser: async (
@@ -115,6 +117,7 @@ async function renderPage(
 describe("SubscriptionPage", () => {
   beforeEach(() => {
     mocks.required = [];
+    mocks.prompts = false;
     mocks.subscription = { status: "ok", data: SUBSCRIPTION };
     mocks.log = {
       status: "ok",
@@ -168,6 +171,51 @@ describe("SubscriptionPage", () => {
     expect(screen.queryByText(/paused notice/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("shows the whole directed prompt while directed prompts are on", async () => {
+    mocks.prompts = true;
+    mocks.subscription = {
+      status: "ok",
+      data: { ...SUBSCRIPTION, prompt: "Blue Line closures\nand delays" },
+    };
+
+    await renderPage();
+
+    const section = screen.getByRole("region", { name: "Directed prompt" });
+    expect(section).toHaveTextContent(/Meetings with nothing relevant/);
+    expect(screen.getByText(/^Blue Line closures/)).toHaveClass(
+      "whitespace-pre-wrap",
+    );
+    expect(
+      screen.getByRole("link", { name: "Edit the prompt for LA Metro" }),
+    ).toHaveAttribute("href", `/dashboard/subscriptions/${ID}/edit`);
+    expect(
+      screen.getByText(/A test does not use the directed prompt\./),
+    ).toBeVisible();
+  });
+
+  it.each([
+    ["off", false, "Fare changes"],
+    ["on without a prompt", true, undefined],
+    ["on with a blank prompt", true, "  "],
+  ])(
+    "has no prompt section with directed prompts %s",
+    async (_case, prompts, prompt) => {
+      mocks.prompts = prompts;
+      mocks.subscription = {
+        status: "ok",
+        data: { ...SUBSCRIPTION, prompt },
+      };
+
+      await renderPage();
+
+      expect(
+        screen.queryByRole("region", { name: "Directed prompt" }),
+      ).toBeNull();
+      expect(screen.queryByText("Fare changes")).toBeNull();
+      expect(screen.queryByText(/does not use the directed prompt/)).toBeNull();
+    },
+  );
 
   it("pages through older deliveries with the cursor", async () => {
     mocks.log = {

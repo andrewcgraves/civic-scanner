@@ -17,6 +17,10 @@ export async function isSubscriptionsEnabled(): Promise<boolean> {
   );
 }
 
+export async function isDirectedPromptsEnabled(): Promise<boolean> {
+  return isFlagEnabled("webhook-directed-prompts");
+}
+
 export async function requireSubscriptions(): Promise<void> {
   if (!(await isSubscriptionsEnabled())) {
     notFound();
