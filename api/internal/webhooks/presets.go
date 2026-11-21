@@ -24,6 +24,7 @@ const (
 	openMeeting           = "Open the meeting"
 	byModel               = "Change described by a language model."
 	slackDateFallback     = "Monday, January 2, 2006 at 3:04 PM UTC"
+	testLabelPrefix       = "Test: "
 )
 
 type preset struct {
@@ -56,6 +57,9 @@ func presetFor(e Event) (preset, error) {
 	case v1.WebhookTranscriptReady:
 		p.label, p.color = "Transcript ready", 0x1565C0
 		p.summary = "The recording's transcript and summary are ready."
+	}
+	if e.Test {
+		p.label = testLabelPrefix + p.label
 	}
 	return p, nil
 }

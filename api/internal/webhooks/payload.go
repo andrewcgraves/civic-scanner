@@ -27,6 +27,7 @@ type Event struct {
 	AgencyName string
 	Meeting    store.Meeting
 	PageURL    string
+	Test       bool
 }
 
 func Body(format store.WebhookFormat, version string, e Event) ([]byte, error) {
@@ -68,6 +69,10 @@ func eventV1(e Event) (v1.WebhookEventV1, error) {
 	}
 	if e.Meeting.SourceURL != "" {
 		body.Meeting.SourceUrl = &e.Meeting.SourceURL
+	}
+	if e.Test {
+		test := true
+		body.Test = &test
 	}
 	switch e.Type {
 	case store.EventAgendaPublished, store.EventAgendaChanged:

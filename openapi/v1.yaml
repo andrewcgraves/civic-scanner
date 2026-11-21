@@ -891,6 +891,142 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /webhook-subscriptions/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: List a webhook subscription's deliveries
+      description: >-
+        The delivery log of one of the signed-in user's subscriptions: one
+        entry per meeting event the subscription was sent, with every attempt
+        at sending it. Entries are newest first by their first attempt, ties
+        broken by event id, and go back as far as attempts are kept. Pages are
+        keyset-paginated: pass `nextCursor` from one page as `cursor` to get
+        the next. A delivery first tried between requests never causes
+        another to be skipped or repeated; a retry of a listed delivery adds
+        an attempt to it without moving it. A delivery appears once its first
+        attempt is stored; one still waiting for its first attempt is not
+        listed. Test sends are not listed. Another user's subscription is a
+        404, the same as one that does not exist. The checks are the same for
+        every webhook subscription route: the token (401, or 503 when it
+        cannot be checked), then the `accounts` and `webhook-subscriptions`
+        flags for that user (404), then the plan (402 on the free plan).
+        Every response carries `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WebhookSubscriptionId"
+        - name: cursor
+          in: query
+          required: false
+          description: >-
+            Opaque cursor from a previous page's `nextCursor`. Omit for the
+            first page. A cursor that is malformed, altered, or from another
+            subscription is rejected with 400 `invalid_cursor`.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of deliveries to return.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: One page of the subscription's deliveries.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDeliveryList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /webhook-subscriptions/{id}/test:
+    post:
+      operationId: sendWebhookTest
+      summary: Send a test webhook
+      description: >-
+        Sends one sample event to one of the signed-in user's subscriptions
+        now and answers with the result. The request is signed and sent
+        exactly as a real delivery, with the subscription's URL, format,
+        payload version and current secret. A `standard` body has `test:
+        true`; a Discord or Slack message's label starts with `Test: `. The
+        event, meeting, agenda and transcript ids in it are new random ids
+        that exist nowhere else, so each test has its own `webhook-id`. A
+        paused subscription can be tested too. The URL's addresses are
+        checked first, as when saving it; a refused URL is answered 200 with
+        `succeeded: false` and nothing is sent. The receiver's answer,
+        whatever it is, is also a 200 with the result. There are no retries,
+        and test sends are not stored in the delivery log. A user may send at
+        most 10 tests a minute (429). The checks are the same for every
+        webhook subscription route: the token (401, or 503 when it cannot be
+        checked), then the `accounts` and `webhook-subscriptions` flags for
+        that user (404), then the plan (402 on the free plan). Every
+        response carries `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WebhookSubscriptionId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookTestInput"
+      responses:
+        "200":
+          description: The test was attempted; the result says how it went.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookTestResult"
+        "400":
+          $ref: "#/components/responses/InvalidWebhookSubscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "429":
+          $ref: "#/components/responses/WebhookTestLimit"
+        "503":
+          $ref: "#/components/responses/WebhooksUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     WebhookSubscriptionId:
@@ -1176,7 +1312,8 @@ components:
         object of the documented members. Otherwise `code` names the problem:
         `unknown_agency` when no live agency has the slug,
         `invalid_payload_version`, `invalid_status`, `nothing_to_update` for
-        an update with no members, or, for the URL, `required`, `too_long`,
+        an update with no members, `invalid_event_type` for a test of a type
+        that is not a `WebhookEventType`, or, for the URL, `required`, `too_long`,
         `invalid_url`, `unsupported_scheme` (not `https`), `credentials`,
         `fragment`, `not_public` when the host is, or resolves to, an address
         that is not on the public internet (private, loopback, link-local,
@@ -1223,11 +1360,27 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    WebhookTestLimit:
+      description: >-
+        The user has sent 10 tests in the last minute. `code` is
+        `test_limit_reached`; `Retry-After` says when the next one is
+        allowed.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+        Retry-After:
+          description: Seconds until the next test is allowed.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     WebhooksUnavailable:
       description: >-
-        A signing secret cannot be made right now. `code` is
+        A signing secret cannot be made or used right now. `code` is
         `webhooks_not_configured` when the API has no key to store secrets
-        with, or `auth_not_configured` or `auth_unavailable` when the token
+        with or cannot send tests, or `auth_not_configured` or `auth_unavailable` when the token
         cannot be checked (see `AuthUnavailable`).
       headers:
         Cache-Control:
@@ -1683,6 +1836,116 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/WebhookSubscription"
+    WebhookDeliveryList:
+      type: object
+      required: [deliveries, nextCursor]
+      properties:
+        deliveries:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookDelivery"
+        nextCursor:
+          type: string
+          nullable: true
+          description: >-
+            Pass as `cursor` to get the next page. Null on the last page.
+    WebhookDelivery:
+      type: object
+      description: >-
+        One meeting event sent to the subscription, with its attempts. New
+        optional members may be added; clients must ignore members they do
+        not know.
+      required: [eventId, type, meeting, succeeded, firstAttemptAt, lastAttemptAt, attempts]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          description: The event's id, sent as `webhook-id` and as the payload's `id`.
+        type:
+          $ref: "#/components/schemas/WebhookEventType"
+        meeting:
+          $ref: "#/components/schemas/WebhookMeeting"
+        succeeded:
+          type: boolean
+          description: Whether any attempt was answered with a 2xx.
+        firstAttemptAt:
+          type: string
+          format: date-time
+        lastAttemptAt:
+          type: string
+          format: date-time
+        attempts:
+          type: array
+          description: Every stored attempt, in the order they were made.
+          items:
+            $ref: "#/components/schemas/WebhookDeliveryAttempt"
+    WebhookDeliveryAttempt:
+      type: object
+      required: [attempt, startedAt, durationMs, statusCode, error, succeeded]
+      properties:
+        attempt:
+          type: integer
+          minimum: 1
+          description: 1 for the first try, then counting up.
+        startedAt:
+          type: string
+          format: date-time
+          description: When the attempt was signed and sent.
+        durationMs:
+          type: integer
+          minimum: 0
+          description: How long the request took, in milliseconds.
+        statusCode:
+          type: integer
+          nullable: true
+          description: The receiver's HTTP status. Null when there was no answer.
+        error:
+          type: string
+          nullable: true
+          description: >-
+            Why the attempt failed without an answer (a timeout, a refused
+            address, a connection error), in plain text. Null for an HTTP
+            answer, which `statusCode` describes.
+        succeeded:
+          type: boolean
+          description: Whether the receiver answered with a 2xx.
+    WebhookTestInput:
+      type: object
+      properties:
+        type:
+          $ref: "#/components/schemas/WebhookEventType"
+    WebhookTestResult:
+      type: object
+      required: [id, type, sentAt, succeeded, statusCode, durationMs, error]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The test event's id, sent as `webhook-id` and as the payload's `id`.
+        type:
+          $ref: "#/components/schemas/WebhookEventType"
+        sentAt:
+          type: string
+          format: date-time
+          description: When the test was signed, the `webhook-timestamp` sent.
+        succeeded:
+          type: boolean
+          description: Whether the receiver answered with a 2xx.
+        statusCode:
+          type: integer
+          nullable: true
+          description: The receiver's HTTP status. Null when there was no answer.
+        durationMs:
+          type: integer
+          minimum: 0
+          description: How long the request took, in milliseconds. 0 when nothing was sent.
+        error:
+          type: string
+          nullable: true
+          description: >-
+            Why the test failed without an answer: the URL's addresses were
+            refused, the request timed out or could not connect. Plain text.
+            Null for an HTTP answer, which `statusCode` describes.
     PendingAgencySubmissionList:
       type: object
       required: [submissions]
@@ -1804,6 +2067,13 @@ components:
           $ref: "#/components/schemas/WebhookAgenda"
         transcript:
           $ref: "#/components/schemas/WebhookTranscript"
+        test:
+          type: boolean
+          description: >-
+            `true` on a test sent with `POST
+            /webhook-subscriptions/{id}/test`, whose event, meeting, agenda
+            and transcript ids are made up and found nowhere in the API.
+            Absent on real deliveries.
     WebhookAgency:
       type: object
       required: [slug, name]

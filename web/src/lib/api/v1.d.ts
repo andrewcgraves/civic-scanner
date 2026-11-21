@@ -360,6 +360,46 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/webhook-subscriptions/{id}/deliveries": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List a webhook subscription's deliveries
+     * @description The delivery log of one of the signed-in user's subscriptions: one entry per meeting event the subscription was sent, with every attempt at sending it. Entries are newest first by their first attempt, ties broken by event id, and go back as far as attempts are kept. Pages are keyset-paginated: pass `nextCursor` from one page as `cursor` to get the next. A delivery first tried between requests never causes another to be skipped or repeated; a retry of a listed delivery adds an attempt to it without moving it. A delivery appears once its first attempt is stored; one still waiting for its first attempt is not listed. Test sends are not listed. Another user's subscription is a 404, the same as one that does not exist. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    get: operations["listWebhookDeliveries"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/webhook-subscriptions/{id}/test": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Send a test webhook
+     * @description Sends one sample event to one of the signed-in user's subscriptions now and answers with the result. The request is signed and sent exactly as a real delivery, with the subscription's URL, format, payload version and current secret. A `standard` body has `test: true`; a Discord or Slack message's label starts with `Test: `. The event, meeting, agenda and transcript ids in it are new random ids that exist nowhere else, so each test has its own `webhook-id`. A paused subscription can be tested too. The URL's addresses are checked first, as when saving it; a refused URL is answered 200 with `succeeded: false` and nothing is sent. The receiver's answer, whatever it is, is also a 200 with the result. There are no retries, and test sends are not stored in the delivery log. A user may send at most 10 tests a minute (429). The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    post: operations["sendWebhookTest"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -614,6 +654,70 @@ export interface components {
     WebhookSubscriptionList: {
       subscriptions: components["schemas"]["WebhookSubscription"][];
     };
+    WebhookDeliveryList: {
+      deliveries: components["schemas"]["WebhookDelivery"][];
+      /** @description Pass as `cursor` to get the next page. Null on the last page. */
+      nextCursor: string | null;
+    };
+    /** @description One meeting event sent to the subscription, with its attempts. New optional members may be added; clients must ignore members they do not know. */
+    WebhookDelivery: {
+      /**
+       * Format: uuid
+       * @description The event's id, sent as `webhook-id` and as the payload's `id`.
+       */
+      eventId: string;
+      type: components["schemas"]["WebhookEventType"];
+      meeting: components["schemas"]["WebhookMeeting"];
+      /** @description Whether any attempt was answered with a 2xx. */
+      succeeded: boolean;
+      /** Format: date-time */
+      firstAttemptAt: string;
+      /** Format: date-time */
+      lastAttemptAt: string;
+      /** @description Every stored attempt, in the order they were made. */
+      attempts: components["schemas"]["WebhookDeliveryAttempt"][];
+    };
+    WebhookDeliveryAttempt: {
+      /** @description 1 for the first try, then counting up. */
+      attempt: number;
+      /**
+       * Format: date-time
+       * @description When the attempt was signed and sent.
+       */
+      startedAt: string;
+      /** @description How long the request took, in milliseconds. */
+      durationMs: number;
+      /** @description The receiver's HTTP status. Null when there was no answer. */
+      statusCode: number | null;
+      /** @description Why the attempt failed without an answer (a timeout, a refused address, a connection error), in plain text. Null for an HTTP answer, which `statusCode` describes. */
+      error: string | null;
+      /** @description Whether the receiver answered with a 2xx. */
+      succeeded: boolean;
+    };
+    WebhookTestInput: {
+      type?: components["schemas"]["WebhookEventType"];
+    };
+    WebhookTestResult: {
+      /**
+       * Format: uuid
+       * @description The test event's id, sent as `webhook-id` and as the payload's `id`.
+       */
+      id: string;
+      type: components["schemas"]["WebhookEventType"];
+      /**
+       * Format: date-time
+       * @description When the test was signed, the `webhook-timestamp` sent.
+       */
+      sentAt: string;
+      /** @description Whether the receiver answered with a 2xx. */
+      succeeded: boolean;
+      /** @description The receiver's HTTP status. Null when there was no answer. */
+      statusCode: number | null;
+      /** @description How long the request took, in milliseconds. 0 when nothing was sent. */
+      durationMs: number;
+      /** @description Why the test failed without an answer: the URL's addresses were refused, the request timed out or could not connect. Plain text. Null for an HTTP answer, which `statusCode` describes. */
+      error: string | null;
+    };
     PendingAgencySubmissionList: {
       submissions: components["schemas"]["PendingAgencySubmission"][];
     };
@@ -675,6 +779,8 @@ export interface components {
       meeting: components["schemas"]["WebhookMeeting"];
       agenda?: components["schemas"]["WebhookAgenda"];
       transcript?: components["schemas"]["WebhookTranscript"];
+      /** @description `true` on a test sent with `POST /webhook-subscriptions/{id}/test`, whose event, meeting, agenda and transcript ids are made up and found nowhere in the API. Absent on real deliveries. */
+      test?: boolean;
     };
     WebhookAgency: {
       slug: string;
@@ -937,7 +1043,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_status`, `nothing_to_update` for an update with no members, or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials`, `fragment`, `not_public` when the host is, or resolves to, an address that is not on the public internet (private, loopback, link-local, cloud metadata or reserved), or `unresolvable_host` when the host name has no address or cannot be looked up. */
+    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_status`, `nothing_to_update` for an update with no members, `invalid_event_type` for a test of a type that is not a `WebhookEventType`, or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials`, `fragment`, `not_public` when the host is, or resolves to, an address that is not on the public internet (private, loopback, link-local, cloud metadata or reserved), or `unresolvable_host` when the host name has no address or cannot be looked up. */
     InvalidWebhookSubscription: {
       headers: {
         "Cache-Control": components["headers"]["NoStore"];
@@ -977,7 +1083,19 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description A signing secret cannot be made right now. `code` is `webhooks_not_configured` when the API has no key to store secrets with, or `auth_not_configured` or `auth_unavailable` when the token cannot be checked (see `AuthUnavailable`). */
+    /** @description The user has sent 10 tests in the last minute. `code` is `test_limit_reached`; `Retry-After` says when the next one is allowed. */
+    WebhookTestLimit: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        /** @description Seconds until the next test is allowed. */
+        "Retry-After"?: number;
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description A signing secret cannot be made or used right now. `code` is `webhooks_not_configured` when the API has no key to store secrets with or cannot send tests, or `auth_not_configured` or `auth_unavailable` when the token cannot be checked (see `AuthUnavailable`). */
     WebhooksUnavailable: {
       headers: {
         "Cache-Control": components["headers"]["NoStore"];
@@ -1785,6 +1903,94 @@ export interface operations {
       402: components["responses"]["PaymentRequired"];
       404: components["responses"]["WebhookSubscriptionNotFound"];
       405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["WebhooksUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  listWebhookDeliveries: {
+    parameters: {
+      query?: {
+        /** @description Opaque cursor from a previous page's `nextCursor`. Omit for the first page. A cursor that is malformed, altered, or from another subscription is rejected with 400 `invalid_cursor`. */
+        cursor?: string;
+        /** @description Maximum number of deliveries to return. */
+        limit?: number;
+      };
+      header?: never;
+      path: {
+        /** @description The subscription's id. */
+        id: components["parameters"]["WebhookSubscriptionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description One page of the subscription's deliveries. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebhookDeliveryList"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  sendWebhookTest: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The subscription's id. */
+        id: components["parameters"]["WebhookSubscriptionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["WebhookTestInput"];
+      };
+    };
+    responses: {
+      /** @description The test was attempted; the result says how it went. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebhookTestResult"];
+        };
+      };
+      400: components["responses"]["InvalidWebhookSubscription"];
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      429: components["responses"]["WebhookTestLimit"];
       503: components["responses"]["WebhooksUnavailable"];
       /** @description Unexpected error. */
       default: {
