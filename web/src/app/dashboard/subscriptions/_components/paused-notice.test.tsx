@@ -3,10 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ActionState } from "../state";
 
-const mocks = vi.hoisted(() => ({
-  next: { kind: "idle" } as ActionState,
-  calls: [] as Record<string, unknown>[],
-}));
+const mocks = vi.hoisted(() => {
+  const idle = (): ActionState => ({ kind: "idle" });
+  return { next: idle(), calls: [] as Record<string, unknown>[] };
+});
 
 vi.mock("../actions", () => ({
   resumeSubscription: (_previous: ActionState, formData: FormData) => {

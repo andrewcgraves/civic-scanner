@@ -4,11 +4,12 @@ import type { UserApiClient, UserApiResult } from "@/lib/auth/api";
 
 const mocks = vi.hoisted(() => {
   const failed = (): UserApiResult<unknown> => ({ status: "failed" });
+  const noHeaders = (): Record<string, string> => ({});
   return {
     enabled: true,
     result: failed(),
     deleteStatus: 204,
-    headers: {} as Record<string, string>,
+    headers: noHeaders(),
     calls: [] as unknown[],
     answers: [] as unknown[],
     redirect: vi.fn((path: string) => {
