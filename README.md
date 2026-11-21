@@ -44,7 +44,7 @@ Generated files are committed and never edited by hand. CI regenerates them and 
 
 ## API
 
-Every route is under `/v1`. All are public except `GET /v1/me`, the checkout and portal routes under `POST /v1/billing/*` and `POST /v1/agency-submissions`, which need a WorkOS access token (see [Authentication](#authentication)). The Stripe webhook takes no token but a Stripe signature. `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
+Every route is under `/v1`. All are public except `GET /v1/me`, the checkout and portal routes under `POST /v1/billing/*`, `POST /v1/agency-submissions` and the `/v1/webhook-subscriptions` routes, which need a WorkOS access token (see [Authentication](#authentication)). The Stripe webhook takes no token but a Stripe signature. `openapi/v1.yaml` is the full contract. Errors are JSON `{"code", "message"}` bodies.
 
 | Route | Returns |
 | --- | --- |
@@ -59,6 +59,9 @@ Every route is under `/v1`. All are public except `GET /v1/me`, the checkout and
 | `POST /v1/billing/checkout-session` | `{"url"}` of a Stripe Checkout Session for the paid plan; behind `accounts` and `billing` (see [Billing](#billing)) |
 | `POST /v1/billing/portal-session` | `{"url"}` of a Stripe billing portal session for the user's Stripe customer; behind `accounts` and `billing` |
 | `POST /v1/billing/stripe-webhook` | Stripe's webhook endpoint, authenticated by the `Stripe-Signature` header instead of a token; keeps each user's plan current (see [The plan](#the-plan)) |
+| `GET`, `POST /v1/webhook-subscriptions` | lists the signed-in user's webhook subscriptions, or creates one and returns its signing secret once; paid plan only, behind the `accounts` and `webhook-subscriptions` flags (see [Webhook subscriptions](#webhook-subscriptions)) |
+| `GET`, `PATCH`, `DELETE /v1/webhook-subscriptions/{id}` | reads, changes (URL, payload version, pause or resume) or deletes one of the user's subscriptions |
+| `POST /v1/webhook-subscriptions/{id}/secret` | rotates the subscription's signing secret and returns the new one once |
 
 - **Not live is not found:** an unknown slug and a pending or rejected agency get the same 404 (`not_found`), so a caller cannot tell whether an unpublished agency exists. A live agency with no meetings returns an empty list.
 - **Meeting items** carry `id`, `title`, `startsAt` (UTC), `status` (`scheduled`, `held`, `cancelled`) and `sourceUrl`, the agency's page for the meeting, left out when the source gave none. New optional fields, such as agenda or summary links, can be added later without breaking clients, which must ignore fields they do not know.
@@ -390,7 +393,7 @@ Billing is the only feature whose bad configuration does not stop the binaries. 
 
 A malformed `PUBLIC_WEB_URL` still stops the API at startup, as before, because the RSS feed relies on it too.
 
-The key and the webhook secret are held in `config.Secret`, which prints as `[redacted]` through `fmt` (every verb, including `%#v`), `slog` (JSON and text handlers, via `LogValue`), `encoding/json` and `MarshalText`; only `Reveal()` returns them, and only `internal/billing` calls that. The other secrets in `config` (`AI_GATEWAY_API_KEY`, `GROQ_API_KEY`, `FIRECRAWL_API_KEY`, `STORAGE_SECRET_ACCESS_KEY`, `POSTHOG_API_KEY`) are still plain strings and would print if a whole config were logged; nothing logs one today. Moving them to `config.Secret` is a separate change across their packages.
+The key and the webhook secret are held in `config.Secret` (as is `WEBHOOK_SECRET_KEY`, see [Webhook subscriptions](#webhook-subscriptions)), which prints as `[redacted]` through `fmt` (every verb, including `%#v`), `slog` (JSON and text handlers, via `LogValue`), `encoding/json` and `MarshalText`; only `Reveal()` returns them, and only `internal/billing` and `internal/webhooks` call that. The other secrets in `config` (`AI_GATEWAY_API_KEY`, `GROQ_API_KEY`, `FIRECRAWL_API_KEY`, `STORAGE_SECRET_ACCESS_KEY`, `POSTHOG_API_KEY`) are still plain strings and would print if a whole config were logged; nothing logs one today. Moving them to `config.Secret` is a separate change across their packages.
 
 #### Turning billing on in production
 
@@ -456,15 +459,14 @@ Each applied event logs `stripe event processed` at `info` with the event id and
 
 ### Paid routes
 
-Paid routes answer 402 `payment_required` (`{"code":"payment_required","message":"this route needs the paid plan"}`) to every signed-in user on the free plan. No route is paid yet; CIV-46 is the first.
+Paid routes answer 402 `payment_required` (`{"code":"payment_required","message":"this route needs the paid plan"}`) to every signed-in user on the free plan. The webhook subscription routes are the only paid routes so far (see [Webhook subscriptions](#webhook-subscriptions)).
 
-- `paidGate` (`internal/httpapi/paid.go`) is a strict middleware keyed by operation id, like the admin backstop, so it runs on the operation chi actually dispatched to. It applies to the operations in `paidOperations` and passes every other one through untouched.
-- It checks, in this order: the token (401 or 503, exactly as for `GET /v1/me`), the `accounts` flag for that user (404 `not_found`, no user created), the user (`requireUser`, created on first sight; a database error is 500), and the plan. Only `plan = 'paid'` passes; an empty or unknown plan is free. Every response of a paid operation carries `Cache-Control: no-store`, refusals included. A refusal is logged at `info` as `paid route refused`. It does not check the `billing` flag: a feature's own flag decides whether its route exists.
-- It runs after the generated wrapper has bound parameters and decoded the body, so a malformed request from a free user is a 400, not a 402. Unlike an admin route, nothing about a paid route is secret, so a routing-time gate is not needed.
+- `paidGate` (`internal/httpapi/paid.go`) is a strict middleware keyed by operation id, like the admin backstop, so it runs on the operation chi actually dispatched to. It applies to the operations in `paidOperations` and passes every other one through untouched. `paidOperations` maps each paid operation to the feature flag its route is behind, or `""` for none.
+- It checks, in this order: the token (401 or 503, exactly as for `GET /v1/me`), the `accounts` flag for that user (404 `not_found`, no user created), the operation's own flag from `paidOperations` (also 404, no user created, so a free user cannot tell a dark route exists), the user (`requireUser`, created on first sight; a database error is 500), and the plan. Only `plan = 'paid'` passes; an empty or unknown plan is free. Every response of a paid operation carries `Cache-Control: no-store`, refusals included. A refusal is logged at `info` as `paid route refused`. It does not check the `billing` flag: a feature's own flag decides whether its route exists, and the gate checks that flag before the plan.
+- It runs after the generated wrapper has bound parameters and decoded the body, so a malformed request from a free user is a 400, not a 402. A route may run the same checks from the decode-error handler first, as the webhook subscription routes do (`webhookBodyError`), so that a body that does not decode is still answered 401, 404 or 402 before 400. A path parameter that does not parse (an id that is not a UUID) is answered 400 `invalid_parameter` by the router before any operation runs. Unlike an admin route, nothing about a paid route is secret, so a routing-time gate is not needed.
 - The plan is read from Postgres on every request with the user (`store.EnsureUser`), so a webhook's change applies to the next request.
 - A paid handler reads the user with `paidFrom(ctx)`, which is false unless the gate let a paid user through for this request; answer 402 when it is false.
-- **Adding a paid route:** in `openapi/v1.yaml` give the operation `x-paid: true`, `security: [bearerAuth: []]` and the `401`, `402` (`#/components/responses/PaymentRequired`), `404` and `503` responses; add `"OperationId": true` to `paidOperations`; call `paidFrom(ctx)` in the handler. `TestPaidOperationsMatchTheSpec` fails unless the operations marked `x-paid: true` are exactly the keys of `paidOperations` and exactly the operations that can answer `PaymentRequired`. Until the first one, `PaymentRequired` is an unused component, which Redocly reports as a warning.
-
+- **Adding a paid route:** in `openapi/v1.yaml` give the operation `x-paid: true`, `security: [bearerAuth: []]` and the `401`, `402` (`#/components/responses/PaymentRequired`), `404` and `503` responses; add `"OperationId": FlagOfTheFeature` (or `""`) to `paidOperations`; call `paidFrom(ctx)` in the handler. `TestPaidOperationsMatchTheSpec` fails unless the operations marked `x-paid: true` are exactly the keys of `paidOperations` and exactly the operations that can answer `PaymentRequired`. 
 ### Duplicate subscriptions
 
 Before creating a session for a customer that already existed, the API lists the customer's subscriptions and refuses a live one (statuses above; `incomplete` is not counted, so a user whose first payment failed can try again). This can be known without webhooks. It does not cover two Checkout Sessions opened before either is paid: both can complete. Stripe closes most of that gap itself: with the customer portal's login link on and "Limit customers to one subscription" turned on in the Checkout settings, Checkout sends a customer who already has an active subscription to the portal instead of taking a second payment ([Stripe: limit customers to one subscription](https://docs.stripe.com/payments/checkout/limit-subscriptions)). Turn that on in the Stripe dashboard. The gap remains even then (two sessions opened before either is paid, or the setting turned off), so a user can end up with a second live subscription; [The plan](#the-plan) says what happens then.
@@ -508,6 +510,63 @@ Not verified: no Stripe account exists yet (CIV-3), so nothing has run against S
 | `/billing/cancel` | Checkout's cancel URL. Says nothing was charged. |
 
 The actions (`startCheckoutAction`, `openBillingPortalAction`) call the API with `callApiAsUser` and redirect: to the returned URL when it is `https` without credentials, to sign-in when signed out, to `/billing?error=already-subscribed` or `?error=no-subscription` on a 409, and to `/billing?error=unavailable` otherwise. The web app never builds a Stripe URL or passes a return URL of its own. Each button is a plain form post, so it works without JavaScript; with JavaScript it is disabled and reads "Opening Stripe…" while the action runs (`useFormStatus`), so a double click sends one request. Without JavaScript the browser can still submit twice, which creates two sessions, not two customers or charges. Opening the account menu focuses its first item, `Billing` when it is shown.
+
+## Webhook subscriptions
+
+A user on the paid plan can subscribe to a live agency by webhook: an `https` URL that is to receive that agency's meeting events, signed with a secret of the subscription's own. This story is the API and the storage only. Nothing is sent yet: delivery, the signature scheme and the payload are CIV-50, refusing endpoints that resolve to non-public addresses is CIV-57, and the dashboard is CIV-51. `internal/httpapi/webhook_subscriptions.go`, `internal/store/webhook_subscriptions.go` and `internal/webhooks` hold it.
+
+| Route | Does |
+| --- | --- |
+| `GET /v1/webhook-subscriptions` | `{"subscriptions": [...]}`, every subscription of the signed-in user, oldest first (`created_at`, then `id`). |
+| `POST /v1/webhook-subscriptions` | Creates a subscription from `{"agency": "<slug>", "url": "https://...", "payloadVersion": "v1"}` (`payloadVersion` optional, default `v1`), status `active`, and answers 201 with the subscription and its `secret`. |
+| `GET /v1/webhook-subscriptions/{id}` | One subscription. |
+| `PATCH /v1/webhook-subscriptions/{id}` | Changes any of `url`, `payloadVersion` and `status` (`active` or `paused`); members left out, or `null`, are unchanged, and at least one is needed. Pausing is `{"status": "paused"}`, resuming `{"status": "active"}`. The agency cannot be changed: delete and create instead. |
+| `DELETE /v1/webhook-subscriptions/{id}` | 204, and the subscription and its secret are gone. |
+| `POST /v1/webhook-subscriptions/{id}/secret` | Replaces the signing secret with a new one and answers 200 with the subscription and the new `secret`. |
+
+A subscription is `id`, `agency` (the slug), `url` (as stored), `payloadVersion`, `status`, `createdAt`, `updatedAt` and `secretRotatedAt` (when the current secret was made). The secret appears in exactly two responses, the 201 of the create and the 200 of a rotation; no route reads it back. A lost secret is rotated, not recovered. A rotation takes effect at once: there is no period in which the old secret is still used.
+
+Checks, in order, the same on every route (`paidGate`, with the operations in `paidOperations` mapped to `webhook-subscriptions`):
+
+1. **Token.** 401 `unauthorized`, or 503 `auth_not_configured` / `auth_unavailable`, as for `GET /v1/me`.
+2. **Flags,** for that user: `accounts` and `webhook-subscriptions` must both be on, or it is a 404 `not_found` and no user row is created.
+3. **Plan.** The user is created on first sight; a user on the free plan gets 402 `payment_required`. A user who drops to the free plan keeps their subscriptions in the database but cannot list, change or delete them until they are paid again.
+4. **Body,** for create and update: a body that does not decode as a JSON object of the documented members is 400 `invalid_body`, but only after the checks above, because the decode-error handler runs them first (`webhookBodyError`). Unknown members are ignored. Then 400 with `code` naming the problem: `unknown_agency` (empty, unknown, or an agency that is not live), `invalid_payload_version`, `invalid_status`, `nothing_to_update`, or one of the URL codes below. An `{id}` that is not a UUID is 400 `invalid_parameter`, from the router, before these checks.
+5. **Ownership.** Another user's subscription is a 404 `not_found` on every route, the same as an id that does not exist: a user can neither read nor learn of another's subscriptions. Every query has `user_id = $user` in its `WHERE`.
+6. **Store.** 409 `already_subscribed` for a second subscription by the same user to the same agency and URL (also when an update moves a subscription onto one), 429 `subscription_limit_reached` at 25 subscriptions per user (`store.MaxWebhookSubscriptionsPerUser`; deleting one frees a place), 500 for a database error.
+
+Every response carries `Cache-Control: no-store`. Create, update, delete and rotate are logged at `info` with the subscription and user ids; neither the URL (its query may carry the receiver's own token) nor the secret is logged.
+
+### The URL
+
+`webhooks.NormalizeEndpoint`: surrounding whitespace is trimmed, then the URL must be absolute and `https` (`unsupported_scheme` for `http` or any other scheme), with a host, without a user name or password (`credentials`), without a fragment (`fragment`), without whitespace or control characters inside and in valid UTF-8 (`invalid_url`), with a port from 1 to 65535 if it has one (`invalid_url`), and at most 2,048 bytes (`too_long`); an empty one is `required`. The scheme and host are lower-cased; the path and query are kept as given. A custom port, an IP literal and a private host name are accepted here: refusing hosts that are or resolve to non-public addresses is CIV-57, and the delivery job must check the resolved address of every connection, as the fetcher does (see [Non-public addresses](#non-public-addresses)). The database also refuses a URL that does not start with `https://` or is over 2,048 bytes.
+
+### The signing secret
+
+`webhooks.NewSecret` makes `whsec_` followed by 32 bytes from `crypto/rand` in standard base64. The `whsec_` prefix and the encoding follow the Standard Webhooks convention, so receivers' libraries can take it as is; whether the signature follows that standard is CIV-50's decision. In memory the secret is a `config.Secret`, which prints as `[redacted]` everywhere (see [Configuration](#configuration)); only the handler calls `Reveal()`, to write the response.
+
+**How it is stored.** The delivery job will need the secret itself to compute an HMAC, so it cannot be hashed. It is encrypted instead, with AES-256-GCM under `WEBHOOK_SECRET_KEY`, and only the ciphertext is stored (`webhook_subscriptions.secret_ciphertext`): one version byte (`1`), a random 12-byte nonce, then the sealed secret and its tag. The additional data is a fixed context string and the subscription's id, so a ciphertext copied onto another subscription's row does not open. A database dump or backup alone does not reveal any secret; the key and the database together do. `webhooks.Sealer` does the sealing (`Seal`, `Open`); `store.WebhookSubscriptionSecret` reads the ciphertext for the delivery job, and no route returns it.
+
+| Variable | Meaning |
+| --- | --- |
+| `WEBHOOK_SECRET_KEY` | 32 random bytes in standard base64, from `openssl rand -base64 32`. A secret: set it in Railway, where it is declared on the API service with `preserve()`, and keep a copy outside Railway, since losing it makes every stored secret unreadable. Held in `config.Secret`. |
+
+Like billing, a missing or bad key does not stop any binary. Without one, creating a subscription and rotating a secret answer 503 `webhooks_not_configured` (nothing is stored); listing, reading, changing and deleting still work, since they never touch a secret. A value that is not standard base64 of exactly 32 bytes is logged once at startup at `error`, `webhook subscriptions are not configured: the secret key is invalid`, naming the variable, never its value; a good one logs `webhook secrets configured`. The worker does not read the key yet; CIV-50 must add it to the worker service too.
+
+Not done: rotating `WEBHOOK_SECRET_KEY` itself. The version byte leaves room for a second key, but today changing the key makes every stored secret unreadable, so the delivery job would have to fail those subscriptions until their owners rotate. Do not change it once subscriptions exist.
+
+### Storage
+
+Migration `00016` adds `webhook_subscriptions` and changes nothing else: `id`, `user_id` (cascades with the user), `agency_id` (cascades with the agency), `url`, `payload_version` (only `v1`), `status` (`active` or `paused`, default `active`), `secret_ciphertext` (not empty), `secret_rotated_at`, `created_at` and `updated_at`, with `UNIQUE (user_id, agency_id, url)` (`webhook_subscriptions_user_agency_url_unique`). `webhook_subscriptions_user_created_idx` on `(user_id, created_at, id)` serves the list, and the partial index `webhook_subscriptions_active_agency_idx` on `agency_id WHERE status = 'active'` is for the delivery job's fan-out from an agency's events to its active subscriptions.
+
+`store.CreateWebhookSubscription` runs in one transaction: it locks the user's row (`SELECT ... FOR UPDATE`), counts the user's subscriptions, and inserts the row only if a live agency has the slug, so the limit holds under concurrent creates (tested with 35 at once: 25 succeed). The unique constraint decides duplicates. Updates, rotations and deletes are single statements filtered by the user's id.
+
+### Turning it on
+
+1. Generate the key (`openssl rand -base64 32`), keep a copy outside Railway, and set it as `WEBHOOK_SECRET_KEY` on the API service in the Railway dashboard. The API logs `webhook secrets configured`.
+2. Create the `webhook-subscriptions` flag in PostHog, off. Turn it on for the users who should have it, with `accounts` already on; billing must be live for anyone to be on the paid plan. There is no web flag: the web app has no webhook pages yet (CIV-51).
+
+Turning the flag on before delivery exists (CIV-50) lets paid users create subscriptions that receive nothing yet.
 
 ## Feature flags
 
@@ -2136,6 +2195,7 @@ Merging to `main` deploys both sides.
   - A deploy goes live only once `/v1/healthz` returns 200 within 60 seconds.
   - `DATABASE_URL` references the database over Railway's private network.
   - `POSTHOG_API_KEY` is declared with `preserve()`: its value is set in Railway, and PostHog decides the API's flags.
+  - `WEBHOOK_SECRET_KEY` is declared with `preserve()`; until its value is set in Railway, webhook subscriptions cannot be created (see [Webhook subscriptions](#webhook-subscriptions)).
   - `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` are declared with `preserve()`; `STRIPE_PRICE_ID`, `PUBLIC_WEB_URL` and the WorkOS variables are not set yet, so billing is off in production (see [Billing](#billing)).
 - **Worker on Railway**, also in `.railway/railway.ts`: the `civic-scanner-worker` service runs the River worker (`api/cmd/worker`) against the same `Postgres` database. It builds `api/Dockerfile.worker` (`build.dockerfilePath`, relative to the `/api` root directory) from the same commit, with the same watch paths and Wait for CI. It has no start command: the image's entrypoint runs `/app/worker` as PID 1 (see [The worker image](#the-worker-image)).
   - `/app/migrate up` runs as its pre-deploy step too, so the worker never starts new code before its schema exists, whichever service deploys first. Both services may run it at once: `migrations.Up` holds a Postgres advisory lock, so the second run waits and then finds nothing to apply.

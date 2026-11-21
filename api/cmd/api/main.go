@@ -18,6 +18,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/httpapi"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
+	"github.com/andrewcgraves/civic-scanner/api/internal/webhooks"
 )
 
 const shutdownTimeout = 25 * time.Second
@@ -42,6 +43,9 @@ func run(ctx context.Context) error {
 	logger := config.NewLogger(cfg)
 	if cfg.Stripe.Problem != "" {
 		logger.ErrorContext(ctx, "billing is not configured: the Stripe settings are invalid", "problem", cfg.Stripe.Problem)
+	}
+	if cfg.Webhooks.Problem != "" {
+		logger.ErrorContext(ctx, "webhook subscriptions are not configured: the secret key is invalid", "problem", cfg.Webhooks.Problem)
 	}
 	if cfg.Stripe.WebhookProblem != "" {
 		logger.ErrorContext(ctx, "stripe webhooks are not configured: the signing secret is invalid", "problem", cfg.Stripe.WebhookProblem)
@@ -77,6 +81,14 @@ func run(ctx context.Context) error {
 		logger.InfoContext(ctx, "stripe webhooks configured")
 	}
 
+	var sealer *webhooks.Sealer
+	if cfg.Webhooks.Configured() {
+		if sealer, err = webhooks.NewSealer(cfg.Webhooks.SecretKey); err != nil {
+			return err
+		}
+		logger.InfoContext(ctx, "webhook secrets configured")
+	}
+
 	srv := &http.Server{
 		Addr: net.JoinHostPort("", cfg.Port),
 		Handler: httpapi.NewRouter(httpapi.NewHandler(db, logger, version,
@@ -84,6 +96,7 @@ func run(ctx context.Context) error {
 			httpapi.WithPublicWebURL(cfg.Web.PublicURL),
 			httpapi.WithBilling(biller),
 			httpapi.WithStripeEvents(stripeEvents),
+			httpapi.WithWebhookSealer(sealer),
 		), logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

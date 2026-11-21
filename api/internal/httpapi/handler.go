@@ -13,6 +13,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
+	"github.com/andrewcgraves/civic-scanner/api/internal/webhooks"
 )
 
 const healthTimeout = 2 * time.Second
@@ -26,6 +27,12 @@ type Store interface {
 	GetLiveAgencyFeed(ctx context.Context, slug string) (store.AgencyFeed, error)
 	EnsureUser(ctx context.Context, in store.UserInput) (store.User, bool, error)
 	CreateAgencySubmission(ctx context.Context, in store.AgencySubmissionInput) (store.AgencySubmission, error)
+	ListWebhookSubscriptions(ctx context.Context, userID uuid.UUID) ([]store.WebhookSubscription, error)
+	CreateWebhookSubscription(ctx context.Context, in store.WebhookSubscriptionInput) (store.WebhookSubscription, error)
+	GetWebhookSubscription(ctx context.Context, userID, id uuid.UUID) (store.WebhookSubscription, error)
+	UpdateWebhookSubscription(ctx context.Context, userID, id uuid.UUID, update store.WebhookSubscriptionUpdate) (store.WebhookSubscription, error)
+	RotateWebhookSubscriptionSecret(ctx context.Context, userID, id uuid.UUID, ciphertext []byte) (store.WebhookSubscription, error)
+	DeleteWebhookSubscription(ctx context.Context, userID, id uuid.UUID) error
 }
 
 type Handler struct {
@@ -37,6 +44,8 @@ type Handler struct {
 	webURL  string
 	feeds   *feedCache
 	billing Biller
+
+	webhookSealer *webhooks.Sealer
 
 	stripeEvents StripeEventReceiver
 }

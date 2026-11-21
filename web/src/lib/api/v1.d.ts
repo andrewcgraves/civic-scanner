@@ -228,6 +228,78 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/webhook-subscriptions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List the signed-in user's webhook subscriptions
+     * @description Returns every webhook subscription of the signed-in user, oldest first. Other users' subscriptions are never listed. The signing secrets are not returned. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    get: operations["listWebhookSubscriptions"];
+    put?: never;
+    /**
+     * Subscribe to an agency by webhook
+     * @description Creates a webhook subscription to a live agency for the signed-in user, with a new signing secret. The response is the only time the secret is returned; it cannot be read again, only rotated. The subscription starts `active`. The URL must be `https`. A user may have at most 25 subscriptions (429), and one subscription per agency and URL (409). The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    post: operations["createWebhookSubscription"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/webhook-subscriptions/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get a webhook subscription
+     * @description Returns one of the signed-in user's subscriptions, without its secret. Another user's subscription is a 404, the same as one that does not exist. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    get: operations["getWebhookSubscription"];
+    put?: never;
+    post?: never;
+    /**
+     * Delete a webhook subscription
+     * @description Deletes one of the signed-in user's subscriptions and its secret. Deleting it again is a 404. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    delete: operations["deleteWebhookSubscription"];
+    options?: never;
+    head?: never;
+    /**
+     * Change, pause or resume a webhook subscription
+     * @description Changes the URL, the payload version or the status of one of the signed-in user's subscriptions. Members left out are unchanged; at least one is required. `status: paused` pauses the subscription and `status: active` resumes it. The agency and the secret cannot be changed here. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    patch: operations["updateWebhookSubscription"];
+    trace?: never;
+  };
+  "/webhook-subscriptions/{id}/secret": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Rotate a webhook subscription's signing secret
+     * @description Replaces the signing secret of one of the signed-in user's subscriptions with a new one and returns it. The old secret stops being used at once. The response is the only time the new secret is returned. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    post: operations["rotateWebhookSubscriptionSecret"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -416,6 +488,62 @@ export interface components {
       status: "pending";
       /** Format: date-time */
       submittedAt: string;
+    };
+    WebhookSubscriptionInput: {
+      /** @description The slug of the live agency to subscribe to. */
+      agency: string;
+      /** @description Where to send the webhooks: an absolute `https` URL of at most 2,048 bytes, without a user name, password or fragment. The scheme and host are stored in lower case; the path and query as given. */
+      url: string;
+      payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
+    };
+    WebhookSubscriptionUpdate: {
+      /** @description A new URL, with the same rules as when creating. */
+      url?: string;
+      payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
+      status?: components["schemas"]["WebhookSubscriptionStatus"];
+    };
+    /**
+     * @description The version of the payload to send. `v1` is the only one.
+     * @default v1
+     * @enum {string}
+     */
+    WebhookPayloadVersion: "v1";
+    /**
+     * @description Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
+     * @enum {string}
+     */
+    WebhookSubscriptionStatus: "active" | "paused";
+    WebhookSubscription: {
+      /** Format: uuid */
+      id: string;
+      /** @description The slug of the agency. */
+      agency: string;
+      /**
+       * Format: uri
+       * @description The URL as stored.
+       */
+      url: string;
+      payloadVersion: components["schemas"]["WebhookPayloadVersion"];
+      status: components["schemas"]["WebhookSubscriptionStatus"];
+      /** Format: date-time */
+      createdAt: string;
+      /**
+       * Format: date-time
+       * @description When the subscription or its secret last changed.
+       */
+      updatedAt: string;
+      /**
+       * Format: date-time
+       * @description When the current signing secret was made.
+       */
+      secretRotatedAt: string;
+    };
+    WebhookSubscriptionWithSecret: components["schemas"]["WebhookSubscription"] & {
+      /** @description The signing secret, `whsec_` followed by 32 random bytes in standard base64. Returned only in this response; store it now. */
+      secret: string;
+    };
+    WebhookSubscriptionList: {
+      subscriptions: components["schemas"]["WebhookSubscription"][];
     };
     ValidationError: {
       /** @description Stable machine-readable error code. */
@@ -638,6 +766,56 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
+    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_status`, `nothing_to_update` for an update with no members, or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials` or `fragment`. */
+    InvalidWebhookSubscription: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The signed-in user has no subscription with this id (another user's subscription is not found either), or webhook subscriptions are turned off for the user. `code` is `not_found`. */
+    WebhookSubscriptionNotFound: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The user already has a subscription to this agency at this URL. `code` is `already_subscribed`. */
+    WebhookSubscriptionExists: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The user already has 25 subscriptions. `code` is `subscription_limit_reached`; deleting one frees a place. */
+    WebhookSubscriptionLimit: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description A signing secret cannot be made right now. `code` is `webhooks_not_configured` when the API has no key to store secrets with, or `auth_not_configured` or `auth_unavailable` when the token cannot be checked (see `AuthUnavailable`). */
+    WebhooksUnavailable: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
     /** @description The path does not support the requested method. */
     MethodNotAllowed: {
       headers: {
@@ -651,6 +829,8 @@ export interface components {
     };
   };
   parameters: {
+    /** @description The subscription's id. */
+    WebhookSubscriptionId: string;
     /** @description The agency's slug, e.g. `la-metro`. */
     AgencySlug: string;
     /** @description ETags from earlier responses. When one matches the current feed, the response is 304 with no body. */
@@ -1059,6 +1239,242 @@ export interface operations {
       413: components["responses"]["StripeEventTooLarge"];
       503: components["responses"]["StripeWebhookNotConfigured"];
       /** @description Unexpected error, such as a database error. Stripe retries the event later. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  listWebhookSubscriptions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The user's subscriptions. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebhookSubscriptionList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  createWebhookSubscription: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WebhookSubscriptionInput"];
+      };
+    };
+    responses: {
+      /** @description The subscription, with its signing secret. */
+      201: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebhookSubscriptionWithSecret"];
+        };
+      };
+      400: components["responses"]["InvalidWebhookSubscription"];
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      409: components["responses"]["WebhookSubscriptionExists"];
+      429: components["responses"]["WebhookSubscriptionLimit"];
+      503: components["responses"]["WebhooksUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  getWebhookSubscription: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The subscription's id. */
+        id: components["parameters"]["WebhookSubscriptionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The subscription. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebhookSubscription"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  deleteWebhookSubscription: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The subscription's id. */
+        id: components["parameters"]["WebhookSubscriptionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The subscription was deleted. */
+      204: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  updateWebhookSubscription: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The subscription's id. */
+        id: components["parameters"]["WebhookSubscriptionId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WebhookSubscriptionUpdate"];
+      };
+    };
+    responses: {
+      /** @description The subscription as changed. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebhookSubscription"];
+        };
+      };
+      400: components["responses"]["InvalidWebhookSubscription"];
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      409: components["responses"]["WebhookSubscriptionExists"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  rotateWebhookSubscriptionSecret: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The subscription's id. */
+        id: components["parameters"]["WebhookSubscriptionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The subscription, with its new signing secret. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebhookSubscriptionWithSecret"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["WebhooksUnavailable"];
+      /** @description Unexpected error. */
       default: {
         headers: {
           [name: string]: unknown;
