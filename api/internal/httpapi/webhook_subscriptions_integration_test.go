@@ -160,7 +160,8 @@ func TestWebhookSubscriptionsAgainstPostgres(t *testing.T) {
 
 	status, _, raw = callJSON(t, http.MethodPatch, one, owner, `{"status":"paused"}`)
 	var updated v1.WebhookSubscription
-	if err := json.Unmarshal(raw, &updated); status != http.StatusOK || err != nil || updated.Status != v1.WebhookSubscriptionPaused {
+	if err := json.Unmarshal(raw, &updated); status != http.StatusOK || err != nil || updated.Status != v1.WebhookSubscriptionPaused ||
+		updated.PausedReason == nil || *updated.PausedReason != v1.WebhookPausedByOwner || updated.PausedAt == nil {
 		t.Errorf("pause: %d %s", status, raw)
 	}
 	status, _, raw = callJSON(t, http.MethodPost, one+"/secret", owner, "")
@@ -179,6 +180,22 @@ func TestWebhookSubscriptionsAgainstPostgres(t *testing.T) {
 	status, _, raw = callJSON(t, http.MethodGet, base, owner, "")
 	if err := json.Unmarshal(raw, &list); status != http.StatusOK || err != nil || len(list.Subscriptions) != 1 || list.Subscriptions[0].Status != v1.WebhookSubscriptionPaused || strings.Contains(string(raw), "secret\"") {
 		t.Errorf("owner list: %d %s", status, raw)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE webhook_subscriptions SET paused_reason = 'failed_deliveries', consecutive_failed_events = 5 WHERE id = $1`, created.Id); err != nil {
+		t.Fatal(err)
+	}
+	status, _, raw = callJSON(t, http.MethodGet, one, owner, "")
+	var failed v1.WebhookSubscription
+	if err := json.Unmarshal(raw, &failed); status != http.StatusOK || err != nil || failed.PausedReason == nil ||
+		*failed.PausedReason != v1.WebhookPausedFailedDeliveries || failed.PausedAt == nil || failed.ConsecutiveFailedEvents != 5 {
+		t.Errorf("paused for failed deliveries: %d %s", status, raw)
+	}
+	status, _, raw = callJSON(t, http.MethodPatch, one, owner, `{"status":"active"}`)
+	var resumed map[string]any
+	if err := json.Unmarshal(raw, &resumed); status != http.StatusOK || err != nil || resumed["status"] != "active" ||
+		resumed["pausedReason"] != nil || resumed["pausedAt"] != nil || resumed["consecutiveFailedEvents"] != float64(0) {
+		t.Errorf("resume: %d %s", status, raw)
 	}
 
 	if status, _, raw := callJSON(t, http.MethodDelete, one, owner, ""); status != http.StatusNoContent {

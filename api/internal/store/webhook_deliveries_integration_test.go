@@ -178,7 +178,7 @@ func TestWebhookDeliveryReadsTheSubscriptionAndTheEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d.SubscriptionID != sub.ID || d.UserID != user.ID || d.WorkOSUserID != user.WorkOSUserID || !d.Paid ||
-		d.URL != "https://hooks.example/read?token=x" || d.PayloadVersion != "v1" || d.Status != store.WebhookActive ||
+		d.URL != "https://hooks.example/read?token=x" || d.PayloadVersion != "v1" || d.Format != store.WebhookFormatStandard || d.Status != store.WebhookActive ||
 		!strings.HasPrefix(string(d.SecretCiphertext), "sealed-") {
 		t.Errorf("subscription side = %+v", d)
 	}
@@ -243,5 +243,131 @@ func TestWebhookAttemptsAreRecordedAndListedNewestFirst(t *testing.T) {
 	}
 	if attempts, err = s.ListWebhookAttempts(ctx, sub.ID); err != nil || len(attempts) != 0 {
 		t.Errorf("attempts after the subscription is deleted = %d, %v", len(attempts), err)
+	}
+}
+
+func TestFailedWebhookEventsPauseTheSubscriptionUntilResumed(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	f := seedDeliveryFixture(t, pool)
+	user, sub := paidSubscription(t, pool, f.slug, "https://hooks.example/pause", true)
+
+	for i := 1; i <= 2; i++ {
+		got, err := s.RecordWebhookEventFailed(ctx, sub.ID, 3)
+		if err != nil || got != (store.WebhookEventFailure{ConsecutiveFailedEvents: i}) {
+			t.Fatalf("failure %d = %+v, %v", i, got, err)
+		}
+	}
+	if err := s.RecordWebhookEventDelivered(ctx, sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	read, err := s.GetWebhookSubscription(ctx, user.ID, sub.ID)
+	if err != nil || read.ConsecutiveFailedEvents != 0 || read.Status != store.WebhookActive {
+		t.Fatalf("a delivered event resets the count: %+v, %v", read, err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		got, err := s.RecordWebhookEventFailed(ctx, sub.ID, 3)
+		if err != nil || got.ConsecutiveFailedEvents != i || got.Paused != (i == 3) {
+			t.Fatalf("failure %d after reset = %+v, %v", i, got, err)
+		}
+	}
+	read, err = s.GetWebhookSubscription(ctx, user.ID, sub.ID)
+	if err != nil || read.Status != store.WebhookPaused || read.PausedReason == nil || *read.PausedReason != store.WebhookPausedFailedDeliveries ||
+		read.PausedAt == nil || read.ConsecutiveFailedEvents != 3 {
+		t.Fatalf("paused = %+v, %v", read, err)
+	}
+	fo, err := s.WebhookFanOutTargets(ctx, f.event.ID)
+	if err != nil || len(fo.Targets) != 0 {
+		t.Errorf("a paused subscription is not a fan-out target: %+v, %v", fo.Targets, err)
+	}
+
+	got, err := s.RecordWebhookEventFailed(ctx, sub.ID, 3)
+	if err != nil || got.Paused || got.ConsecutiveFailedEvents != 4 {
+		t.Errorf("a late failure while paused does not pause again: %+v, %v", got, err)
+	}
+	pausedAt := *read.PausedAt
+	paused := store.WebhookPaused
+	read, err = s.UpdateWebhookSubscription(ctx, user.ID, sub.ID, store.WebhookSubscriptionUpdate{Status: &paused})
+	if err != nil || *read.PausedReason != store.WebhookPausedFailedDeliveries || !read.PausedAt.Equal(pausedAt) {
+		t.Errorf("pausing again keeps why and when: %+v, %v", read, err)
+	}
+
+	active := store.WebhookActive
+	read, err = s.UpdateWebhookSubscription(ctx, user.ID, sub.ID, store.WebhookSubscriptionUpdate{Status: &active})
+	if err != nil || read.Status != store.WebhookActive || read.PausedReason != nil || read.PausedAt != nil || read.ConsecutiveFailedEvents != 0 {
+		t.Fatalf("resumed = %+v, %v", read, err)
+	}
+	var reason *string
+	if err := pool.QueryRow(ctx, `SELECT paused_reason FROM webhook_subscriptions WHERE id = $1`, sub.ID).Scan(&reason); err != nil || reason != nil {
+		t.Errorf("stored reason after resuming = %v, %v", reason, err)
+	}
+
+	read, err = s.UpdateWebhookSubscription(ctx, user.ID, sub.ID, store.WebhookSubscriptionUpdate{Status: &paused})
+	if err != nil || read.PausedReason == nil || *read.PausedReason != store.WebhookPausedByOwner || read.PausedAt == nil {
+		t.Errorf("paused by the owner = %+v, %v", read, err)
+	}
+	url := "https://hooks.example/pause-2"
+	read, err = s.UpdateWebhookSubscription(ctx, user.ID, sub.ID, store.WebhookSubscriptionUpdate{URL: &url})
+	if err != nil || read.Status != store.WebhookPaused || *read.PausedReason != store.WebhookPausedByOwner {
+		t.Errorf("changing the URL does not resume: %+v, %v", read, err)
+	}
+
+	if _, err := s.RecordWebhookEventFailed(ctx, uuid.New(), 3); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("unknown subscription: %v", err)
+	}
+	if err := s.RecordWebhookEventDelivered(ctx, uuid.New()); err != nil {
+		t.Errorf("unknown subscription delivered: %v", err)
+	}
+}
+
+func TestFailedWebhookEventsAreCountedOnceEachUnderConcurrency(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	f := seedDeliveryFixture(t, pool)
+	_, sub := paidSubscription(t, pool, f.slug, "https://hooks.example/concurrent", true)
+
+	const n = 8
+	results := make(chan store.WebhookEventFailure, n)
+	errs := make(chan error, n)
+	for range n {
+		go func() {
+			got, err := s.RecordWebhookEventFailed(ctx, sub.ID, 5)
+			results <- got
+			errs <- err
+		}()
+	}
+	pauses := 0
+	var counts []int
+	for range n {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		got := <-results
+		counts = append(counts, got.ConsecutiveFailedEvents)
+		if got.Paused {
+			pauses++
+		}
+	}
+	slices.Sort(counts)
+	if !slices.Equal(counts, []int{1, 2, 3, 4, 5, 6, 7, 8}) || pauses != 1 {
+		t.Errorf("counts = %v, pauses = %d", counts, pauses)
+	}
+}
+
+func TestAPausedRowWithoutAReasonReadsAsPausedByItsOwner(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	s := store.New(pool)
+	f := seedDeliveryFixture(t, pool)
+	user, sub := paidSubscription(t, pool, f.slug, "https://hooks.example/legacy", true)
+	if _, err := pool.Exec(ctx, `UPDATE webhook_subscriptions SET status = 'paused', paused_reason = NULL, paused_at = NULL WHERE id = $1`, sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	read, err := s.GetWebhookSubscription(ctx, user.ID, sub.ID)
+	if err != nil || read.PausedReason == nil || *read.PausedReason != store.WebhookPausedByOwner || read.PausedAt == nil || !read.PausedAt.Equal(read.UpdatedAt) {
+		t.Errorf("legacy paused row = %+v, %v", read, err)
 	}
 }

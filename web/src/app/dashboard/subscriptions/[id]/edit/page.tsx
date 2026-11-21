@@ -72,6 +72,7 @@ export default async function EditSubscriptionPage({
           agency: result.data.agency,
           agencyName: name,
           url: result.data.url,
+          format: result.data.format,
         }}
       />
     </>

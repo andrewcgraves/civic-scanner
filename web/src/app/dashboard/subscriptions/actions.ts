@@ -8,8 +8,10 @@ import { isSubscriptionsEnabled } from "./server";
 import {
   SUBSCRIPTIONS_PATH,
   SUBSCRIPTIONS_SIGN_IN_PATH,
+  checkFormat,
   checkUrl,
   checkValues,
+  isFormat,
   isSlug,
   isSubscriptionId,
   outcomePath,
@@ -88,7 +90,11 @@ export async function createSubscription(
   }
   const result = await callApiAsUser((api) =>
     api.POST("/webhook-subscriptions", {
-      body: { agency: values.agency, url: values.url.trim() },
+      body: {
+        agency: values.agency,
+        url: values.url.trim(),
+        format: isFormat(values.format) ? values.format : undefined,
+      },
     }),
   );
   if (result.status === "ok") {
@@ -113,14 +119,25 @@ export async function updateSubscription(
   if (!(await isSubscriptionsEnabled()) || !isSubscriptionId(id)) {
     return { kind: "gone", values };
   }
-  const error = checkUrl(values.url);
-  if (error !== undefined) {
-    return { kind: "invalid", values, errors: { url: error } };
+  const urlError = checkUrl(values.url);
+  const formatError = checkFormat(values.format);
+  if (urlError !== undefined || formatError !== undefined) {
+    return {
+      kind: "invalid",
+      values,
+      errors: {
+        ...(urlError === undefined ? {} : { url: urlError }),
+        ...(formatError === undefined ? {} : { format: formatError }),
+      },
+    };
   }
   const result = await callApiAsUser((api) =>
     api.PATCH("/webhook-subscriptions/{id}", {
       params: { path: { id } },
-      body: { url: values.url.trim() },
+      body: {
+        url: values.url.trim(),
+        format: isFormat(values.format) ? values.format : undefined,
+      },
     }),
   );
   if (result.status === "ok") {

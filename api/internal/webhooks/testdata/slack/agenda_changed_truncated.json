@@ -1,0 +1,59 @@
+{
+  "text": "Agenda changed: Board of Directors (LA Metro)",
+  "blocks": [
+    {
+      "type": "header",
+      "text": {
+        "type": "plain_text",
+        "text": "Agenda changed: Board of Directors",
+        "emoji": false
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "plain_text",
+          "text": "LA Metro",
+          "emoji": false
+        },
+        {
+          "type": "mrkdwn",
+          "text": "Starts <!date^1795197600^{date_long_pretty} at {time}|Friday, November 20, 2026 at 6:00 PM UTC>"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "plain_text",
+        "text": "The agenda changed (now version 4).\n\nEin Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 2027 🚆 — Ein Fahrplan für 20…",
+        "emoji": false
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "plain_text",
+          "text": "Change described by a language model.",
+          "emoji": false
+        }
+      ]
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Open the meeting",
+            "emoji": false
+          },
+          "url": "https://civic.example/meetings/11111111-2222-4333-8444-555555555555"
+        }
+      ]
+    }
+  ]
+}

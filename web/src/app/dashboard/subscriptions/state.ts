@@ -5,6 +5,7 @@ import { SUBSCRIPTIONS_PATH } from "../paths";
 export { SUBSCRIPTIONS_PATH };
 
 export type Subscription = components["schemas"]["WebhookSubscription"];
+export type SubscriptionFormat = components["schemas"]["WebhookFormat"];
 
 export const NEW_SUBSCRIPTION_PATH = `${SUBSCRIPTIONS_PATH}/new`;
 export const SUBSCRIPTIONS_SIGN_IN_PATH = `/auth/sign-in?returnTo=${encodeURIComponent(SUBSCRIPTIONS_PATH)}`;
@@ -31,15 +32,38 @@ export function editPath(id: string): string {
   return `${SUBSCRIPTIONS_PATH}/${encodeURIComponent(id)}/edit`;
 }
 
-export type SubscriptionField = "agency" | "url";
+export type SubscriptionField = "agency" | "url" | "format";
 
 export type SubscriptionValues = Record<SubscriptionField, string>;
+
+export const FORMATS: readonly SubscriptionFormat[] = [
+  "standard",
+  "discord",
+  "slack",
+];
+
+export const DEFAULT_FORMAT: SubscriptionFormat = "standard";
+
+export const FORMAT_LABELS: Record<SubscriptionFormat, string> = {
+  standard: "Standard JSON",
+  discord: "Discord",
+  slack: "Slack",
+};
+
+export function isFormat(value: unknown): value is SubscriptionFormat {
+  return FORMATS.includes(value as SubscriptionFormat);
+}
+
+export function formatLabel(value: string): string {
+  return isFormat(value) ? FORMAT_LABELS[value] : value;
+}
 
 export type FieldErrors = Partial<Record<SubscriptionField, string>>;
 
 export const FIELD_LABELS: Record<SubscriptionField, string> = {
   agency: "Agency",
   url: "Endpoint URL",
+  format: "Message format",
 };
 
 export type FormState =
@@ -81,7 +105,11 @@ const OUTCOME_KINDS = ["updated", "paused", "resumed", "deleted"] as const;
 export function initialForm(values: Partial<SubscriptionValues>): FormState {
   return {
     kind: "idle",
-    values: { agency: values.agency ?? "", url: values.url ?? "" },
+    values: {
+      agency: values.agency ?? "",
+      url: values.url ?? "",
+      format: values.format ?? DEFAULT_FORMAT,
+    },
   };
 }
 
@@ -93,6 +121,7 @@ export function readValues(formData: FormData): SubscriptionValues {
   return {
     agency: text(formData.get("agency")).trim(),
     url: text(formData.get("url")),
+    format: text(formData.get("format")).trim() || DEFAULT_FORMAT,
   };
 }
 
@@ -119,6 +148,10 @@ export function checkUrl(url: string): string | undefined {
   return undefined;
 }
 
+export function checkFormat(format: string): string | undefined {
+  return isFormat(format) ? undefined : "Choose a message format.";
+}
+
 export function checkValues(values: SubscriptionValues): FieldErrors {
   const errors: FieldErrors = {};
   if (!isSlug(values.agency)) {
@@ -127,6 +160,10 @@ export function checkValues(values: SubscriptionValues): FieldErrors {
   const url = checkUrl(values.url);
   if (url !== undefined) {
     errors.url = url;
+  }
+  const format = checkFormat(values.format);
+  if (format !== undefined) {
+    errors.format = format;
   }
   return errors;
 }
@@ -147,7 +184,7 @@ function sentence(value: unknown): string | undefined {
 }
 
 function isField(value: unknown): value is SubscriptionField {
-  return value === "agency" || value === "url";
+  return value === "agency" || value === "url" || value === "format";
 }
 
 function listedErrors(fields: unknown): FieldErrors {
@@ -176,6 +213,9 @@ export function rejection(body: unknown): {
   }
   if (code === "unknown_agency") {
     return { errors: { agency: "Choose an agency from the list." } };
+  }
+  if (code === "invalid_format") {
+    return { errors: { format: "Choose a message format from the list." } };
   }
   if (typeof code !== "string" || FORM_CODES.has(code)) {
     return { errors: {}, message: FORM_ERROR };

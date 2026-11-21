@@ -106,6 +106,7 @@ func run(ctx context.Context) error {
 			httpapi.WithBilling(biller),
 			httpapi.WithStripeEvents(stripeEvents),
 			httpapi.WithWebhookSealer(sealer),
+			httpapi.WithWebhookSender(webhooks.NewSender(cfg.Fetch.UserAgent)),
 			httpapi.WithSubmissionFollowUp(jobs.EnqueueScreenAgency{Client: inserter, Enabled: featureflags.Enabled}),
 		), logger),
 		ReadHeaderTimeout: 10 * time.Second,

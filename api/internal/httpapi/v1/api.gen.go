@@ -210,6 +210,27 @@ func (e WebhookEventType) Valid() bool {
 	}
 }
 
+// Defines values for WebhookFormat.
+const (
+	WebhookFormatDiscord  WebhookFormat = "discord"
+	WebhookFormatSlack    WebhookFormat = "slack"
+	WebhookFormatStandard WebhookFormat = "standard"
+)
+
+// Valid indicates whether the value is a known member of the WebhookFormat enum.
+func (e WebhookFormat) Valid() bool {
+	switch e {
+	case WebhookFormatDiscord:
+		return true
+	case WebhookFormatSlack:
+		return true
+	case WebhookFormatStandard:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for WebhookMessageSource.
 const (
 	WebhookMessageFromDirectedPrompt WebhookMessageSource = "directed_prompt"
@@ -234,6 +255,24 @@ const (
 func (e WebhookPayloadVersion) Valid() bool {
 	switch e {
 	case WebhookPayloadV1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WebhookSubscriptionPausedReason.
+const (
+	WebhookPausedByOwner          WebhookSubscriptionPausedReason = "owner"
+	WebhookPausedFailedDeliveries WebhookSubscriptionPausedReason = "failed_deliveries"
+)
+
+// Valid indicates whether the value is a known member of the WebhookSubscriptionPausedReason enum.
+func (e WebhookSubscriptionPausedReason) Valid() bool {
+	switch e {
+	case WebhookPausedByOwner:
+		return true
+	case WebhookPausedFailedDeliveries:
 		return true
 	default:
 		return false
@@ -553,6 +592,53 @@ type WebhookAgenda struct {
 // WebhookAgendaChangeNoteSource Who wrote `changeNote`: `model` when a language model described the change, `diff` when it was built from the word differences.
 type WebhookAgendaChangeNoteSource string
 
+// WebhookDelivery One meeting event sent to the subscription, with its attempts. New optional members may be added; clients must ignore members they do not know.
+type WebhookDelivery struct {
+	// Attempts Every stored attempt, in the order they were made.
+	Attempts []WebhookDeliveryAttempt `json:"attempts"`
+
+	// EventId The event's id, sent as `webhook-id` and as the payload's `id`.
+	EventId        openapi_types.UUID `json:"eventId"`
+	FirstAttemptAt time.Time          `json:"firstAttemptAt"`
+	LastAttemptAt  time.Time          `json:"lastAttemptAt"`
+	Meeting        WebhookMeeting     `json:"meeting"`
+
+	// Succeeded Whether any attempt was answered with a 2xx.
+	Succeeded bool `json:"succeeded"`
+
+	// Type What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
+	Type WebhookEventType `json:"type"`
+}
+
+// WebhookDeliveryAttempt defines model for WebhookDeliveryAttempt.
+type WebhookDeliveryAttempt struct {
+	// Attempt 1 for the first try, then counting up.
+	Attempt int `json:"attempt"`
+
+	// DurationMs How long the request took, in milliseconds.
+	DurationMs int `json:"durationMs"`
+
+	// Error Why the attempt failed without an answer (a timeout, a refused address, a connection error), in plain text. Null for an HTTP answer, which `statusCode` describes.
+	Error *string `json:"error"`
+
+	// StartedAt When the attempt was signed and sent.
+	StartedAt time.Time `json:"startedAt"`
+
+	// StatusCode The receiver's HTTP status. Null when there was no answer.
+	StatusCode *int `json:"statusCode"`
+
+	// Succeeded Whether the receiver answered with a 2xx.
+	Succeeded bool `json:"succeeded"`
+}
+
+// WebhookDeliveryList defines model for WebhookDeliveryList.
+type WebhookDeliveryList struct {
+	Deliveries []WebhookDelivery `json:"deliveries"`
+
+	// NextCursor Pass as `cursor` to get the next page. Null on the last page.
+	NextCursor *string `json:"nextCursor"`
+}
+
 // WebhookEventType What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
 type WebhookEventType string
 
@@ -573,8 +659,11 @@ type WebhookEventV1 struct {
 	// OccurredAt When what the event describes happened. For `agenda_changed`, when the change was found, which can be earlier than the delivery of an event sent before it.
 	OccurredAt time.Time `json:"occurredAt"`
 
-	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
+
+	// Test `true` on a test sent with `POST /webhook-subscriptions/{id}/test`, whose event, meeting, agenda and transcript ids are made up and found nowhere in the API. Absent on real deliveries.
+	Test *bool `json:"test,omitempty"`
 
 	// Transcript Present for `transcript_ready`.
 	Transcript *WebhookTranscript `json:"transcript,omitempty"`
@@ -582,6 +671,9 @@ type WebhookEventV1 struct {
 	// Type What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
 	Type WebhookEventType `json:"type"`
 }
+
+// WebhookFormat The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+type WebhookFormat string
 
 // WebhookMeeting defines model for WebhookMeeting.
 type WebhookMeeting struct {
@@ -605,7 +697,7 @@ type WebhookMessage struct {
 // WebhookMessageSource What the message was written from. `directed_prompt` is the only one; new values may be added.
 type WebhookMessageSource string
 
-// WebhookPayloadVersion The version of the payload to send. `v1` is the only one.
+// WebhookPayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 type WebhookPayloadVersion string
 
 // WebhookPrompt A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner.
@@ -614,11 +706,23 @@ type WebhookPrompt = string
 // WebhookSubscription defines model for WebhookSubscription.
 type WebhookSubscription struct {
 	// Agency The slug of the agency.
-	Agency    string             `json:"agency"`
-	CreatedAt time.Time          `json:"createdAt"`
-	Id        openapi_types.UUID `json:"id"`
+	Agency string `json:"agency"`
 
-	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	// ConsecutiveFailedEvents How many events in a row failed to be delivered after every retry. A delivered event and resuming the subscription reset it to 0.
+	ConsecutiveFailedEvents int64     `json:"consecutiveFailedEvents"`
+	CreatedAt               time.Time `json:"createdAt"`
+
+	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+	Format WebhookFormat      `json:"format"`
+	Id     openapi_types.UUID `json:"id"`
+
+	// PausedAt When the subscription was paused; null while it is active.
+	PausedAt *time.Time `json:"pausedAt"`
+
+	// PausedReason Why the subscription is paused; null while it is active.
+	PausedReason *WebhookSubscriptionPausedReason `json:"pausedReason"`
+
+	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
 
 	// Prompt A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner.
@@ -642,7 +746,10 @@ type WebhookSubscriptionInput struct {
 	// Agency The slug of the live agency to subscribe to.
 	Agency string `json:"agency"`
 
-	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+	Format *WebhookFormat `json:"format,omitempty"`
+
+	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion *WebhookPayloadVersion `json:"payloadVersion,omitempty"`
 
 	// Prompt A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner.
@@ -657,12 +764,18 @@ type WebhookSubscriptionList struct {
 	Subscriptions []WebhookSubscription `json:"subscriptions"`
 }
 
+// WebhookSubscriptionPausedReason Why a subscription is paused: `owner` when its owner paused it, `failed_deliveries` when deliveries of five events in a row failed after every retry. A delivery is retried for about a day before it counts as failed. Setting `status: active` resumes the subscription either way.
+type WebhookSubscriptionPausedReason string
+
 // WebhookSubscriptionStatus Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
 type WebhookSubscriptionStatus string
 
 // WebhookSubscriptionUpdate defines model for WebhookSubscriptionUpdate.
 type WebhookSubscriptionUpdate struct {
-	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+	Format *WebhookFormat `json:"format,omitempty"`
+
+	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion *WebhookPayloadVersion `json:"payloadVersion,omitempty"`
 
 	// Prompt A new directed prompt, with the same rules as when creating. An empty string, or one of only white space, removes the prompt, and the subscription is sent standard deliveries again.
@@ -678,11 +791,23 @@ type WebhookSubscriptionUpdate struct {
 // WebhookSubscriptionWithSecret defines model for WebhookSubscriptionWithSecret.
 type WebhookSubscriptionWithSecret struct {
 	// Agency The slug of the agency.
-	Agency    string             `json:"agency"`
-	CreatedAt time.Time          `json:"createdAt"`
-	Id        openapi_types.UUID `json:"id"`
+	Agency string `json:"agency"`
 
-	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	// ConsecutiveFailedEvents How many events in a row failed to be delivered after every retry. A delivered event and resuming the subscription reset it to 0.
+	ConsecutiveFailedEvents int64     `json:"consecutiveFailedEvents"`
+	CreatedAt               time.Time `json:"createdAt"`
+
+	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+	Format WebhookFormat      `json:"format"`
+	Id     openapi_types.UUID `json:"id"`
+
+	// PausedAt When the subscription was paused; null while it is active.
+	PausedAt *time.Time `json:"pausedAt"`
+
+	// PausedReason Why the subscription is paused; null while it is active.
+	PausedReason *WebhookSubscriptionPausedReason `json:"pausedReason"`
+
+	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
 
 	// Prompt A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner.
@@ -702,6 +827,36 @@ type WebhookSubscriptionWithSecret struct {
 
 	// Url The URL as stored.
 	Url string `json:"url"`
+}
+
+// WebhookTestInput defines model for WebhookTestInput.
+type WebhookTestInput struct {
+	// Type What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
+	Type *WebhookEventType `json:"type,omitempty"`
+}
+
+// WebhookTestResult defines model for WebhookTestResult.
+type WebhookTestResult struct {
+	// DurationMs How long the request took, in milliseconds. 0 when nothing was sent.
+	DurationMs int `json:"durationMs"`
+
+	// Error Why the test failed without an answer: the URL's addresses were refused, the request timed out or could not connect. Plain text. Null for an HTTP answer, which `statusCode` describes.
+	Error *string `json:"error"`
+
+	// Id The test event's id, sent as `webhook-id` and as the payload's `id`.
+	Id openapi_types.UUID `json:"id"`
+
+	// SentAt When the test was signed, the `webhook-timestamp` sent.
+	SentAt time.Time `json:"sentAt"`
+
+	// StatusCode The receiver's HTTP status. Null when there was no answer.
+	StatusCode *int `json:"statusCode"`
+
+	// Succeeded Whether the receiver answered with a 2xx.
+	Succeeded bool `json:"succeeded"`
+
+	// Type What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
+	Type WebhookEventType `json:"type"`
 }
 
 // WebhookTranscript Present for `transcript_ready`.
@@ -794,6 +949,9 @@ type WebhookSubscriptionLimit = Error
 // WebhookSubscriptionNotFound defines model for WebhookSubscriptionNotFound.
 type WebhookSubscriptionNotFound = Error
 
+// WebhookTestLimit defines model for WebhookTestLimit.
+type WebhookTestLimit = Error
+
 // WebhooksUnavailable defines model for WebhooksUnavailable.
 type WebhooksUnavailable = Error
 
@@ -824,6 +982,15 @@ type ReceiveStripeEventParams struct {
 	StripeSignature *string `json:"Stripe-Signature,omitempty"`
 }
 
+// ListWebhookDeliveriesParams defines parameters for ListWebhookDeliveries.
+type ListWebhookDeliveriesParams struct {
+	// Cursor Opaque cursor from a previous page's `nextCursor`. Omit for the first page. A cursor that is malformed, altered, or from another subscription is rejected with 400 `invalid_cursor`.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum number of deliveries to return.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // ApproveAgencySubmissionJSONRequestBody defines body for ApproveAgencySubmission for application/json ContentType.
 type ApproveAgencySubmissionJSONRequestBody = AgencyApprovalInput
 
@@ -838,6 +1005,9 @@ type CreateWebhookSubscriptionJSONRequestBody = WebhookSubscriptionInput
 
 // UpdateWebhookSubscriptionJSONRequestBody defines body for UpdateWebhookSubscription for application/json ContentType.
 type UpdateWebhookSubscriptionJSONRequestBody = WebhookSubscriptionUpdate
+
+// SendWebhookTestJSONRequestBody defines body for SendWebhookTest for application/json ContentType.
+type SendWebhookTestJSONRequestBody = WebhookTestInput
 
 // Getter for additional properties for StripeEvent. Returns the specified
 // element and whether it was found
@@ -995,9 +1165,15 @@ type ServerInterface interface {
 	// UpdateWebhookSubscription Change, pause or resume a webhook subscription
 	// (PATCH /webhook-subscriptions/{id})
 	UpdateWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId)
+	// ListWebhookDeliveries List a webhook subscription's deliveries
+	// (GET /webhook-subscriptions/{id}/deliveries)
+	ListWebhookDeliveries(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId, params ListWebhookDeliveriesParams)
 	// RotateWebhookSubscriptionSecret Rotate a webhook subscription's signing secret
 	// (POST /webhook-subscriptions/{id}/secret)
 	RotateWebhookSubscriptionSecret(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId)
+	// SendWebhookTest Send a test webhook
+	// (POST /webhook-subscriptions/{id}/test)
+	SendWebhookTest(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -1124,9 +1300,21 @@ func (_ Unimplemented) UpdateWebhookSubscription(w http.ResponseWriter, r *http.
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ListWebhookDeliveries List a webhook subscription's deliveries
+// (GET /webhook-subscriptions/{id}/deliveries)
+func (_ Unimplemented) ListWebhookDeliveries(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId, params ListWebhookDeliveriesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // RotateWebhookSubscriptionSecret Rotate a webhook subscription's signing secret
 // (POST /webhook-subscriptions/{id}/secret)
 func (_ Unimplemented) RotateWebhookSubscriptionSecret(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// SendWebhookTest Send a test webhook
+// (POST /webhook-subscriptions/{id}/test)
+func (_ Unimplemented) SendWebhookTest(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1643,6 +1831,61 @@ func (siw *ServerInterfaceWrapper) UpdateWebhookSubscription(w http.ResponseWrit
 	handler.ServeHTTP(w, r)
 }
 
+// ListWebhookDeliveries operation middleware
+func (siw *ServerInterfaceWrapper) ListWebhookDeliveries(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id WebhookSubscriptionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListWebhookDeliveriesParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWebhookDeliveries(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // RotateWebhookSubscriptionSecret operation middleware
 func (siw *ServerInterfaceWrapper) RotateWebhookSubscriptionSecret(w http.ResponseWriter, r *http.Request) {
 
@@ -1660,6 +1903,32 @@ func (siw *ServerInterfaceWrapper) RotateWebhookSubscriptionSecret(w http.Respon
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RotateWebhookSubscriptionSecret(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SendWebhookTest operation middleware
+func (siw *ServerInterfaceWrapper) SendWebhookTest(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id WebhookSubscriptionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SendWebhookTest(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1844,6 +2113,12 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/webhook-subscriptions/{id}/secret", wrapper.RotateWebhookSubscriptionSecret)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/webhook-subscriptions/{id}/deliveries", wrapper.ListWebhookDeliveries)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/webhook-subscriptions/{id}/test", wrapper.SendWebhookTest)
 	})
 
 	return r
@@ -2057,6 +2332,16 @@ type WebhookSubscriptionNotFoundJSONResponse struct {
 	Body Error
 
 	Headers WebhookSubscriptionNotFoundResponseHeaders
+}
+
+type WebhookTestLimitResponseHeaders struct {
+	CacheControl *string
+	RetryAfter   *int
+}
+type WebhookTestLimitJSONResponse struct {
+	Body Error
+
+	Headers WebhookTestLimitResponseHeaders
 }
 
 type WebhooksUnavailableResponseHeaders struct {
@@ -4568,6 +4853,158 @@ func (response UpdateWebhookSubscriptiondefaultJSONResponse) VisitUpdateWebhookS
 	return err
 }
 
+type ListWebhookDeliveriesRequestObject struct {
+	Id     WebhookSubscriptionId `json:"id"`
+	Params ListWebhookDeliveriesParams
+}
+
+type ListWebhookDeliveriesResponseObject interface {
+	VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error
+}
+
+type ListWebhookDeliveries200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type ListWebhookDeliveries200JSONResponse struct {
+	Body    WebhookDeliveryList
+	Headers ListWebhookDeliveries200ResponseHeaders
+}
+
+func (response ListWebhookDeliveries200JSONResponse) VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookDeliveries400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response ListWebhookDeliveries400JSONResponse) VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookDeliveries401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListWebhookDeliveries401JSONResponse) VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookDeliveries402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response ListWebhookDeliveries402JSONResponse) VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookDeliveries404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response ListWebhookDeliveries404JSONResponse) VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookDeliveries405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response ListWebhookDeliveries405JSONResponse) VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookDeliveries503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response ListWebhookDeliveries503JSONResponse) VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookDeliveriesdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ListWebhookDeliveriesdefaultJSONResponse) VisitListWebhookDeliveriesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type RotateWebhookSubscriptionSecretRequestObject struct {
 	Id WebhookSubscriptionId `json:"id"`
 }
@@ -4721,6 +5158,185 @@ func (response RotateWebhookSubscriptionSecretdefaultJSONResponse) VisitRotateWe
 	return err
 }
 
+type SendWebhookTestRequestObject struct {
+	Id   WebhookSubscriptionId `json:"id"`
+	Body *SendWebhookTestJSONRequestBody
+}
+
+type SendWebhookTestResponseObject interface {
+	VisitSendWebhookTestResponse(w http.ResponseWriter) error
+}
+
+type SendWebhookTest200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type SendWebhookTest200JSONResponse struct {
+	Body    WebhookTestResult
+	Headers SendWebhookTest200ResponseHeaders
+}
+
+func (response SendWebhookTest200JSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendWebhookTest400JSONResponse struct {
+	InvalidWebhookSubscriptionJSONResponse
+}
+
+func (response SendWebhookTest400JSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendWebhookTest401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response SendWebhookTest401JSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendWebhookTest402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response SendWebhookTest402JSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendWebhookTest404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response SendWebhookTest404JSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendWebhookTest405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response SendWebhookTest405JSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendWebhookTest429JSONResponse struct{ WebhookTestLimitJSONResponse }
+
+func (response SendWebhookTest429JSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendWebhookTest503JSONResponse struct {
+	WebhooksUnavailableJSONResponse
+}
+
+func (response SendWebhookTest503JSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SendWebhookTestdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response SendWebhookTestdefaultJSONResponse) VisitSendWebhookTestResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// ListPendingAgencySubmissions List agencies awaiting review
@@ -4783,9 +5399,15 @@ type StrictServerInterface interface {
 	// UpdateWebhookSubscription Change, pause or resume a webhook subscription
 	// (PATCH /webhook-subscriptions/{id})
 	UpdateWebhookSubscription(ctx context.Context, request UpdateWebhookSubscriptionRequestObject) (UpdateWebhookSubscriptionResponseObject, error)
+	// ListWebhookDeliveries List a webhook subscription's deliveries
+	// (GET /webhook-subscriptions/{id}/deliveries)
+	ListWebhookDeliveries(ctx context.Context, request ListWebhookDeliveriesRequestObject) (ListWebhookDeliveriesResponseObject, error)
 	// RotateWebhookSubscriptionSecret Rotate a webhook subscription's signing secret
 	// (POST /webhook-subscriptions/{id}/secret)
 	RotateWebhookSubscriptionSecret(ctx context.Context, request RotateWebhookSubscriptionSecretRequestObject) (RotateWebhookSubscriptionSecretResponseObject, error)
+	// SendWebhookTest Send a test webhook
+	// (POST /webhook-subscriptions/{id}/test)
+	SendWebhookTest(ctx context.Context, request SendWebhookTestRequestObject) (SendWebhookTestResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -5367,6 +5989,33 @@ func (sh *strictHandler) UpdateWebhookSubscription(w http.ResponseWriter, r *htt
 	}
 }
 
+// ListWebhookDeliveries operation middleware
+func (sh *strictHandler) ListWebhookDeliveries(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId, params ListWebhookDeliveriesParams) {
+	var request ListWebhookDeliveriesRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListWebhookDeliveries(ctx, request.(ListWebhookDeliveriesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListWebhookDeliveries")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListWebhookDeliveriesResponseObject); ok {
+		if err := validResponse.VisitListWebhookDeliveriesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // RotateWebhookSubscriptionSecret operation middleware
 func (sh *strictHandler) RotateWebhookSubscriptionSecret(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
 	var request RotateWebhookSubscriptionSecretRequestObject
@@ -5386,6 +6035,42 @@ func (sh *strictHandler) RotateWebhookSubscriptionSecret(w http.ResponseWriter, 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RotateWebhookSubscriptionSecretResponseObject); ok {
 		if err := validResponse.VisitRotateWebhookSubscriptionSecretResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SendWebhookTest operation middleware
+func (sh *strictHandler) SendWebhookTest(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	var request SendWebhookTestRequestObject
+
+	request.Id = id
+
+	var body SendWebhookTestJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SendWebhookTest(ctx, request.(SendWebhookTestRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SendWebhookTest")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SendWebhookTestResponseObject); ok {
+		if err := validResponse.VisitSendWebhookTestResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

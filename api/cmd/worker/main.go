@@ -113,7 +113,7 @@ func run(ctx context.Context) error {
 		LLM:          summarizer,
 		SummaryTier:  llm.Tier(cfg.Summary.AgendaTier),
 		LLMTimeout:   cfg.LLM.Timeout,
-		Webhooks:     jobs.Webhooks{Sealer: sealer, Sender: webhooks.NewSender(cfg.Fetch.UserAgent)},
+		Webhooks:     jobs.Webhooks{Sealer: sealer, Sender: webhooks.NewSender(cfg.Fetch.UserAgent), PublicWebURL: cfg.Web.PublicURL},
 		Transcription: jobs.Transcription{
 			Client:          transcriber,
 			Model:           cfg.Transcription.Provider + "/" + cfg.Transcription.Model,

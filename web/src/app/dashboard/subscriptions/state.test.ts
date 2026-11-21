@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  FORMATS,
   FORM_ERROR,
   NEW_SUBSCRIPTION_PATH,
   SUBSCRIPTIONS_PATH,
@@ -9,6 +10,7 @@ import {
   checkUrl,
   checkValues,
   editPath,
+  formatLabel,
   initialForm,
   isSlug,
   isSubscriptionId,
@@ -50,11 +52,11 @@ describe("initialForm", () => {
   it("starts idle with the given values", () => {
     expect(initialForm({ agency: "octa" })).toEqual({
       kind: "idle",
-      values: { agency: "octa", url: "" },
+      values: { agency: "octa", url: "", format: "standard" },
     });
-    expect(initialForm({ url: "https://a.example" })).toEqual({
+    expect(initialForm({ url: "https://a.example", format: "slack" })).toEqual({
       kind: "idle",
-      values: { agency: "", url: "https://a.example" },
+      values: { agency: "", url: "https://a.example", format: "slack" },
     });
   });
 });
@@ -64,12 +66,14 @@ describe("readValues and readId", () => {
     const data = form({
       agency: " octa ",
       url: " https://a.example ",
+      format: " discord ",
       id: ` ${ID} `,
     });
 
     expect(readValues(data)).toEqual({
       agency: "octa",
       url: " https://a.example ",
+      format: "discord",
     });
     expect(readId(data)).toBe(ID);
   });
@@ -77,7 +81,11 @@ describe("readValues and readId", () => {
   it("reads missing or file fields as empty, and caps long input", () => {
     const data = form({ url: "x".repeat(5000), agency: new Blob(["a"]) });
 
-    expect(readValues(data)).toEqual({ agency: "", url: "x".repeat(4096) });
+    expect(readValues(data)).toEqual({
+      agency: "",
+      url: "x".repeat(4096),
+      format: "standard",
+    });
     expect(readId(new FormData())).toBe("");
   });
 });
@@ -106,14 +114,26 @@ describe("checkUrl and checkValues", () => {
     expect(checkUrl(" https://a.example/hooks ")).toBeUndefined();
   });
 
-  it("requires an agency slug and a URL", () => {
-    expect(checkValues({ agency: "", url: "" })).toEqual({
+  it("requires an agency slug, a URL and a known format", () => {
+    expect(checkValues({ agency: "", url: "", format: "teams" })).toEqual({
       agency: "Choose an agency.",
       url: "Enter the URL to send webhooks to.",
+      format: "Choose a message format.",
     });
-    expect(checkValues({ agency: "octa", url: "https://a.example" })).toEqual(
-      {},
-    );
+    for (const format of FORMATS) {
+      expect(
+        checkValues({ agency: "octa", url: "https://a.example", format }),
+      ).toEqual({});
+    }
+  });
+
+  it("names each format", () => {
+    expect(FORMATS.map(formatLabel)).toEqual([
+      "Standard JSON",
+      "Discord",
+      "Slack",
+    ]);
+    expect(formatLabel("teams")).toBe("teams");
   });
 });
 
@@ -160,6 +180,12 @@ describe("rejection", () => {
   it("puts an unknown agency next to the agency", () => {
     expect(rejection({ code: "unknown_agency", message: "x" })).toEqual({
       errors: { agency: "Choose an agency from the list." },
+    });
+  });
+
+  it("puts an unknown format next to the format", () => {
+    expect(rejection({ code: "invalid_format", message: "x" })).toEqual({
+      errors: { format: "Choose a message format from the list." },
     });
   });
 
