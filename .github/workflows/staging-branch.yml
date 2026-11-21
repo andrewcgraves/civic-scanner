@@ -1,0 +1,41 @@
+name: Staging branch
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: staging-branch
+  cancel-in-progress: false
+
+jobs:
+  move:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Move staging to the commit CI passed on
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if current="$(git rev-parse --verify --quiet origin/staging)"; then
+            if git merge-base --is-ancestor "$SHA" "$current"; then
+              echo "staging is already at $current, which contains $SHA"
+              exit 0
+            fi
+            if ! git merge-base --is-ancestor "$current" "$SHA"; then
+              echo "staging is at $current, which is not an ancestor of $SHA; reset it to main by hand" >&2
+              exit 1
+            fi
+          fi
+          git push origin "$SHA:refs/heads/staging"
+          echo "staging moved to $SHA"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"testing"
 	"time"
 
@@ -174,6 +175,34 @@ func TestPeriodicChecksTargetTheCurrentSlot(t *testing.T) {
 	clock.Set(time.Date(2026, 11, 18, 2, 0, 0, 0, time.UTC))
 	if args, _ := construct(); args != want {
 		t.Errorf("after midnight before the hour: args = %+v, want the previous slot %+v", args, want)
+	}
+}
+
+func TestPeriodicJobsWithoutScheduledChecks(t *testing.T) {
+	kinds := func(cfg Config) []string {
+		var out []string
+		for _, p := range periodicJobs(cfg) {
+			out = append(out, p.kind)
+		}
+		return out
+	}
+	sweeps := []string{
+		EnqueueAgendaSummariesArgs{}.Kind(),
+		EnqueueAgendaChangesArgs{}.Kind(),
+		EnqueueTranscriptionsArgs{}.Kind(),
+		EnqueueTranscriptSummariesArgs{}.Kind(),
+		DeleteExpiredAudioArgs{}.Kind(),
+	}
+	clock := sourcestest.NewClock(time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC))
+
+	scheduled := kinds(Config{Clock: clock, Queue: "ingest"})
+	if want := append([]string{EnqueueAgencyChecksArgs{}.Kind()}, sweeps...); !slices.Equal(scheduled, want) {
+		t.Errorf("scheduled checks on: kinds = %v, want %v", scheduled, want)
+	}
+
+	manual := kinds(Config{Clock: clock, Queue: "ingest", NoScheduledChecks: true})
+	if !slices.Equal(manual, sweeps) {
+		t.Errorf("scheduled checks off: kinds = %v, want %v", manual, sweeps)
 	}
 }
 

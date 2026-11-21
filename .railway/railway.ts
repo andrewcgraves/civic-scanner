@@ -1,6 +1,10 @@
 import { bucket, defineRailway, github, postgres, preserve, project, service, volume } from "railway/iac";
 
-export default defineRailway(() => {
+const STAGING_WEB_URL = "https://civic-scanner-git-staging-andrewcgraves-projects.vercel.app";
+
+export default defineRailway((ctx) => {
+  const production = ctx.isEnvironment("production");
+
   const db = postgres("Postgres", { region: "sfo" });
   db.networking = { privateNetworkEndpoint: "postgres" };
 
@@ -8,7 +12,7 @@ export default defineRailway(() => {
     alerts: { usage: { "100": {}, "80": {}, "95": {} } },
     allowOnlineResize: true,
     region: "sfo",
-    sizeMB: 50000,
+    sizeMB: production ? 50000 : 5000,
   });
 
   const audio = bucket("audio", { region: "sjc" });
@@ -34,13 +38,20 @@ export default defineRailway(() => {
     replicas: { sfo: 1 },
     env: {
       DATABASE_URL: db.env.DATABASE_URL,
-      APP_ENV: "production",
+      APP_ENV: production ? "production" : "staging",
       LOG_LEVEL: "info",
       PORT: "8080",
       STRIPE_SECRET_KEY: preserve(),
       STRIPE_WEBHOOK_SECRET: preserve(),
       WEBHOOK_SECRET_KEY: preserve(),
-      POSTHOG_API_KEY: preserve(),
+      ...(production
+        ? { POSTHOG_API_KEY: preserve() }
+        : {
+            FEATURE_FLAGS: "*",
+            STRIPE_PRICE_ID: preserve(),
+            WORKOS_CLIENT_ID: preserve(),
+            PUBLIC_WEB_URL: STAGING_WEB_URL,
+          }),
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
       STORAGE_REGION: "${{audio.REGION}}",
       STORAGE_BUCKET: "${{audio.BUCKET}}",
@@ -71,17 +82,21 @@ export default defineRailway(() => {
     replicas: { sfo: 1 },
     env: {
       DATABASE_URL: db.env.DATABASE_URL,
-      APP_ENV: "production",
+      APP_ENV: production ? "production" : "staging",
       LOG_LEVEL: "info",
-      POSTHOG_API_KEY: preserve(),
       AUDIO_MEDIA_USER_AGENT:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       LLM_PROVIDER: "anthropic",
       TRANSCRIPTION_CONCURRENCY: "1",
       TRANSCRIPTION_CHUNK_RETRIES: "10",
-      ANTHROPIC_API_KEY: preserve(),
-      AI_GATEWAY_API_KEY: preserve(),
-      FIRECRAWL_API_KEY: preserve(),
+      ...(production
+        ? {
+            POSTHOG_API_KEY: preserve(),
+            ANTHROPIC_API_KEY: preserve(),
+            AI_GATEWAY_API_KEY: preserve(),
+            FIRECRAWL_API_KEY: preserve(),
+          }
+        : { FEATURE_FLAGS: "*", INGEST_SCHEDULE: "off" }),
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
       STORAGE_REGION: "${{audio.REGION}}",
       STORAGE_BUCKET: "${{audio.BUCKET}}",

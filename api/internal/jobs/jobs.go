@@ -23,29 +23,30 @@ import (
 const FlagCheckAgencies = "ingest-check-agencies"
 
 type Config struct {
-	Registry       *sources.Registry
-	Fetcher        fetch.Fetcher
-	Fallback       fetch.Fetcher
-	Extractor      TextExtractor
-	Clock          sources.Clock
-	CheckHourUTC   int
-	AgendaGrace    time.Duration
-	Enabled        func(ctx context.Context, flag string) bool
-	FollowUp       FollowUp
-	AgendaFollowUp AgendaFollowUp
-	Storage        storage.Store
-	Audio          AudioDownloader
-	AudioTimeout   time.Duration
-	AudioFollowUp  AudioFollowUp
-	AudioQueue     string
-	AudioTempDir   string
-	Transcription  Transcription
-	LLM            llm.Client
-	SummaryTier    llm.Tier
-	TranscriptTier llm.Tier
-	LLMTimeout     time.Duration
-	Queue          string
-	NoPeriodicJobs bool
+	Registry          *sources.Registry
+	Fetcher           fetch.Fetcher
+	Fallback          fetch.Fetcher
+	Extractor         TextExtractor
+	Clock             sources.Clock
+	CheckHourUTC      int
+	AgendaGrace       time.Duration
+	Enabled           func(ctx context.Context, flag string) bool
+	FollowUp          FollowUp
+	AgendaFollowUp    AgendaFollowUp
+	Storage           storage.Store
+	Audio             AudioDownloader
+	AudioTimeout      time.Duration
+	AudioFollowUp     AudioFollowUp
+	AudioQueue        string
+	AudioTempDir      string
+	Transcription     Transcription
+	LLM               llm.Client
+	SummaryTier       llm.Tier
+	TranscriptTier    llm.Tier
+	LLMTimeout        time.Duration
+	Queue             string
+	NoPeriodicJobs    bool
+	NoScheduledChecks bool
 }
 
 func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
@@ -219,35 +220,9 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 
 	var periodic []*river.PeriodicJob
 	if !cfg.NoPeriodicJobs {
-		schedule := dailySchedule{hourUTC: cfg.CheckHourUTC}
-		periodic = append(periodic, river.NewPeriodicJob(
-			schedule,
-			periodicChecks(schedule, cfg.Clock, cfg.Queue),
-			&river.PeriodicJobOpts{ID: EnqueueAgencyChecksArgs{}.Kind(), RunOnStart: true},
-		), river.NewPeriodicJob(
-			river.PeriodicInterval(summarySweepInterval),
-			periodicSummarySweep(cfg.Clock, cfg.Queue),
-			&river.PeriodicJobOpts{ID: EnqueueAgendaSummariesArgs{}.Kind(), RunOnStart: true},
-		), river.NewPeriodicJob(
-			river.PeriodicInterval(changeSweepInterval),
-			periodicChangeSweep(cfg.Clock, cfg.Queue),
-			&river.PeriodicJobOpts{ID: EnqueueAgendaChangesArgs{}.Kind(), RunOnStart: true},
-		))
-		periodic = append(periodic, river.NewPeriodicJob(
-			river.PeriodicInterval(transcriptSweepInterval),
-			periodicTranscriptSweep(cfg.Clock, cfg.Queue),
-			&river.PeriodicJobOpts{ID: EnqueueTranscriptionsArgs{}.Kind(), RunOnStart: true},
-		), river.NewPeriodicJob(
-			river.PeriodicInterval(transcriptSummarySweepInterval),
-			periodicTranscriptSummarySweep(cfg.Clock, cfg.Queue),
-			&river.PeriodicJobOpts{ID: EnqueueTranscriptSummariesArgs{}.Kind(), RunOnStart: true},
-		))
-		retention := dailySchedule{hourUTC: audioRetentionHourUTC}
-		periodic = append(periodic, river.NewPeriodicJob(
-			retention,
-			periodicAudioRetention(retention, cfg.Clock, cfg.Queue),
-			&river.PeriodicJobOpts{ID: DeleteExpiredAudioArgs{}.Kind(), RunOnStart: true},
-		))
+		for _, p := range periodicJobs(cfg) {
+			periodic = append(periodic, p.job)
+		}
 	}
 
 	return river.NewClient(riverpgxv5.New(pool), &river.Config{
@@ -266,4 +241,31 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 func unconfiguredStorage() storage.Store {
 	store, _ := storage.New(config.Storage{})
 	return store
+}
+
+type periodicJob struct {
+	kind string
+	job  *river.PeriodicJob
+}
+
+func periodicJobs(cfg Config) []periodicJob {
+	var jobs []periodicJob
+	add := func(kind string, schedule river.PeriodicSchedule, construct river.PeriodicJobConstructor) {
+		jobs = append(jobs, periodicJob{kind: kind, job: river.NewPeriodicJob(
+			schedule,
+			construct,
+			&river.PeriodicJobOpts{ID: kind, RunOnStart: true},
+		)})
+	}
+	if !cfg.NoScheduledChecks {
+		schedule := dailySchedule{hourUTC: cfg.CheckHourUTC}
+		add(EnqueueAgencyChecksArgs{}.Kind(), schedule, periodicChecks(schedule, cfg.Clock, cfg.Queue))
+	}
+	add(EnqueueAgendaSummariesArgs{}.Kind(), river.PeriodicInterval(summarySweepInterval), periodicSummarySweep(cfg.Clock, cfg.Queue))
+	add(EnqueueAgendaChangesArgs{}.Kind(), river.PeriodicInterval(changeSweepInterval), periodicChangeSweep(cfg.Clock, cfg.Queue))
+	add(EnqueueTranscriptionsArgs{}.Kind(), river.PeriodicInterval(transcriptSweepInterval), periodicTranscriptSweep(cfg.Clock, cfg.Queue))
+	add(EnqueueTranscriptSummariesArgs{}.Kind(), river.PeriodicInterval(transcriptSummarySweepInterval), periodicTranscriptSummarySweep(cfg.Clock, cfg.Queue))
+	retention := dailySchedule{hourUTC: audioRetentionHourUTC}
+	add(DeleteExpiredAudioArgs{}.Kind(), retention, periodicAudioRetention(retention, cfg.Clock, cfg.Queue))
+	return jobs
 }

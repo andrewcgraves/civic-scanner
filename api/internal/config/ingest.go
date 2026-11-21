@@ -11,6 +11,7 @@ const DefaultAgendaRefreshGrace = 48 * time.Hour
 type Ingest struct {
 	CheckHourUTC       int
 	AgendaRefreshGrace time.Duration
+	ScheduledChecks    bool
 }
 
 func loadIngest() (Ingest, error) {
@@ -25,5 +26,13 @@ func loadIngest() (Ingest, error) {
 	if err != nil {
 		return Ingest{}, err
 	}
-	return Ingest{CheckHourUTC: hour, AgendaRefreshGrace: grace}, nil
+	var scheduled bool
+	switch schedule := envOr("INGEST_SCHEDULE", "on"); schedule {
+	case "on":
+		scheduled = true
+	case "off":
+	default:
+		return Ingest{}, fmt.Errorf("INGEST_SCHEDULE: must be \"on\" or \"off\", got %q", schedule)
+	}
+	return Ingest{CheckHourUTC: hour, AgendaRefreshGrace: grace, ScheduledChecks: scheduled}, nil
 }
