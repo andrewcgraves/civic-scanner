@@ -28,9 +28,15 @@ const FORM_CODES = new Set([
 
 export const FORM_ERROR = "Check the form and try again.";
 
-export function editPath(id: string): string {
-  return `${SUBSCRIPTIONS_PATH}/${encodeURIComponent(id)}/edit`;
+export function subscriptionPath(id: string): string {
+  return `${SUBSCRIPTIONS_PATH}/${encodeURIComponent(id)}`;
 }
+
+export function editPath(id: string): string {
+  return `${subscriptionPath(id)}/edit`;
+}
+
+export const RETURN_TO_SUBSCRIPTION = "subscription";
 
 export type SubscriptionField = "agency" | "url" | "format";
 
@@ -129,6 +135,10 @@ export function readId(formData: FormData): string {
   return text(formData.get("id")).trim();
 }
 
+export function readReturnsToSubscription(formData: FormData): boolean {
+  return formData.get("returnTo") === RETURN_TO_SUBSCRIPTION;
+}
+
 export function isSubscriptionId(value: string): boolean {
   return UUID_PATTERN.test(value);
 }
@@ -174,7 +184,7 @@ function record(body: unknown): Record<string, unknown> {
     : {};
 }
 
-function sentence(value: unknown): string | undefined {
+export function sentence(value: unknown): string | undefined {
   if (typeof value !== "string" || value.trim() === "") {
     return undefined;
   }
@@ -229,6 +239,14 @@ function single(value: string | string[] | undefined): string | undefined {
 
 export function outcomePath(kind: Outcome["kind"], agency: string): string {
   return `${SUBSCRIPTIONS_PATH}?${kind}=${encodeURIComponent(agency)}`;
+}
+
+export function subscriptionOutcomePath(
+  id: string,
+  kind: Outcome["kind"],
+  agency: string,
+): string {
+  return `${subscriptionPath(id)}?${kind}=${encodeURIComponent(agency)}`;
 }
 
 export function readOutcome(

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
     enabled: true,
     result: failed(),
     deleteStatus: 204,
+    headers: {} as Record<string, string>,
     calls: [] as unknown[],
     answers: [] as unknown[],
     redirect: vi.fn((path: string) => {
@@ -29,7 +30,10 @@ vi.mock("@/lib/auth/api", () => ({
       (path: string, init: unknown): Promise<unknown> => {
         mocks.calls.push({ method, path, init });
         return Promise.resolve({
-          response: new Response(null, { status: mocks.deleteStatus }),
+          response: new Response(null, {
+            status: mocks.deleteStatus,
+            headers: mocks.headers,
+          }),
         });
       };
     const client = {
@@ -48,8 +52,10 @@ const {
   pauseSubscription,
   resumeSubscription,
   rotateSecret,
+  sendTest,
   updateSubscription,
 } = await import("./actions");
+const { IDLE_TEST } = await import("./deliveries");
 const { FORM_ERROR, IDLE_ACTION, initialForm } = await import("./state");
 
 const ID = "8b0e6c43-3f3b-4f39-9a31-2a1f7c1a9e10";
@@ -83,6 +89,7 @@ beforeEach(() => {
   mocks.enabled = true;
   mocks.result = { status: "failed" };
   mocks.deleteStatus = 204;
+  mocks.headers = {};
   mocks.calls = [];
   mocks.answers = [];
   mocks.redirect.mockClear();
@@ -335,6 +342,33 @@ describe("pauseSubscription and resumeSubscription", () => {
     ]);
   });
 
+  it("returns to the subscription's page when asked", async () => {
+    mocks.result = { status: "ok", data: SUBSCRIPTION };
+
+    await expect(
+      resumeSubscription(
+        IDLE_ACTION,
+        form({ id: ID, returnTo: "subscription" }),
+      ),
+    ).rejects.toThrow(
+      `NEXT_REDIRECT /dashboard/subscriptions/${ID}?resumed=la-metro`,
+    );
+  });
+
+  it("returns to the plain list when the answer has an odd agency", async () => {
+    mocks.result = {
+      status: "ok",
+      data: { ...SUBSCRIPTION, agency: "Not A Slug" },
+    };
+
+    await expect(
+      resumeSubscription(
+        IDLE_ACTION,
+        form({ id: ID, returnTo: "subscription" }),
+      ),
+    ).rejects.toThrow(/^NEXT_REDIRECT \/dashboard\/subscriptions$/);
+  });
+
   it("is gone for a bad id, without calling the API", async () => {
     expect(await pauseSubscription(IDLE_ACTION, form({ id: "x" }))).toEqual({
       kind: "gone",
@@ -447,5 +481,90 @@ describe("rotateSecret", () => {
     expect(await rotateSecret(IDLE_ACTION, form({ id: ID }))).toEqual({
       kind: "upgrade",
     });
+  });
+});
+
+describe("sendTest", () => {
+  const RESULT = {
+    id: "5b1c7d2e-0000-4000-8000-000000000001",
+    type: "agenda_changed",
+    sentAt: "2026-11-20T18:14:00Z",
+    succeeded: true,
+    statusCode: 200,
+    durationMs: 182,
+    error: null,
+  };
+
+  it("sends the chosen event type and hands back the result", async () => {
+    mocks.result = { status: "ok", data: RESULT };
+
+    expect(
+      await sendTest(IDLE_TEST, form({ id: ID, type: "agenda_changed" })),
+    ).toEqual({ kind: "sent", result: RESULT });
+    expect(mocks.calls).toEqual([
+      {
+        method: "POST",
+        path: "/webhook-subscriptions/{id}/test",
+        init: {
+          params: { path: { id: ID } },
+          body: { type: "agenda_changed" },
+        },
+      },
+    ]);
+  });
+
+  it("sends the default event type for an unknown one", async () => {
+    mocks.result = { status: "ok", data: RESULT };
+
+    await sendTest(IDLE_TEST, form({ id: ID, type: "meeting_moved" }));
+
+    expect(mocks.calls).toEqual([
+      expect.objectContaining({
+        init: expect.objectContaining({
+          body: { type: "agenda_published" },
+        }) as unknown,
+      }),
+    ]);
+  });
+
+  it("reads Retry-After when the test limit is reached", async () => {
+    mocks.result = { status: "rejected", httpStatus: 429, error: null };
+    mocks.headers = { "Retry-After": "42" };
+    mocks.deleteStatus = 429;
+
+    expect(await sendTest(IDLE_TEST, form({ id: ID }))).toEqual({
+      kind: "limited",
+      retryAfter: 42,
+    });
+  });
+
+  it("is gone for a bad id or when subscriptions are off", async () => {
+    expect(await sendTest(IDLE_TEST, form({ id: "x" }))).toEqual({
+      kind: "gone",
+    });
+    mocks.enabled = false;
+    expect(await sendTest(IDLE_TEST, form({ id: ID }))).toEqual({
+      kind: "gone",
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it.each<[UserApiResult<unknown>, string]>([
+    [{ status: "not-found" }, "gone"],
+    [{ status: "payment-required" }, "upgrade"],
+    [{ status: "rejected", httpStatus: 400, error: null }, "unavailable"],
+    [{ status: "unavailable" }, "unavailable"],
+  ])("maps %j to %s", async (result, kind) => {
+    mocks.result = result;
+
+    expect(await sendTest(IDLE_TEST, form({ id: ID }))).toEqual({ kind });
+  });
+
+  it("sends a signed-out user to sign in", async () => {
+    mocks.result = { status: "signed-out" };
+
+    await expect(sendTest(IDLE_TEST, form({ id: ID }))).rejects.toThrow(
+      "NEXT_REDIRECT /auth/sign-in",
+    );
   });
 });

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +11,9 @@ function renderPanel() {
     <SecretPanel
       title="Subscription added"
       secret={SECRET}
-      footer={<a href="/dashboard/subscriptions">Back to subscriptions</a>}
+      footer={
+        <Link href="/dashboard/subscriptions">Back to subscriptions</Link>
+      }
     >
       LA Metro will send to you.
     </SecretPanel>,

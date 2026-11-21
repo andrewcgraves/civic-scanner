@@ -40,7 +40,7 @@ beforeAll(() => {
   };
 });
 
-function renderActions(paused = false) {
+function renderActions(paused = false, statusButton?: boolean) {
   return render(
     <SubscriptionActions
       id={ID}
@@ -48,6 +48,7 @@ function renderActions(paused = false) {
       agencyName="LA Metro"
       url="https://hooks.example.org/civic"
       paused={paused}
+      statusButton={statusButton}
     />,
   );
 }
@@ -72,6 +73,25 @@ describe("SubscriptionActions", () => {
       "href",
       `/dashboard/subscriptions/${ID}/edit`,
     );
+  });
+
+  it("links to the subscription's deliveries and tests", () => {
+    renderActions();
+
+    expect(
+      screen.getByRole("link", { name: "Deliveries and tests for LA Metro" }),
+    ).toHaveAttribute("href", `/dashboard/subscriptions/${ID}`);
+  });
+
+  it("leaves out the status button when asked", () => {
+    renderActions(true, false);
+
+    expect(
+      screen.queryByRole("button", { name: "Resume LA Metro" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Delete LA Metro" }),
+    ).toBeVisible();
   });
 
   it("pauses an active subscription at once", async () => {

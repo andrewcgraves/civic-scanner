@@ -7,10 +7,27 @@ vi.mock("./subscription-actions", () => ({
   SubscriptionActions: ({
     agencyName,
     paused,
+    statusButton = true,
   }: {
     agencyName: string;
     paused: boolean;
-  }) => <p>{`actions for ${agencyName}${paused ? ", paused" : ""}`}</p>,
+    statusButton?: boolean;
+  }) => (
+    <p>{`actions for ${agencyName}${paused ? ", paused" : ""}${statusButton ? "" : ", no status button"}`}</p>
+  ),
+}));
+vi.mock("./paused-notice", () => ({
+  PausedNotice: ({
+    agencyName,
+    reason,
+    compact,
+  }: {
+    agencyName: string;
+    reason: string;
+    compact?: boolean;
+  }) => (
+    <p>{`paused notice for ${agencyName}, ${reason}${compact === true ? ", compact" : ""}`}</p>
+  ),
 }));
 
 const { AddButton, SubscriptionList } = await import("./subscription-list");
@@ -73,6 +90,52 @@ describe("SubscriptionList", () => {
     expect(second).toHaveTextContent(/Discord · added/);
     expect(second).toHaveTextContent("actions for metrolink, paused");
     expect(screen.getByText("You are using 2 of 25.")).toBeVisible();
+  });
+
+  it("shows why each subscription is paused or failing", () => {
+    render(
+      <SubscriptionList
+        subscriptions={[
+          subscription(1, { consecutiveFailedEvents: 2 }),
+          subscription(2, {
+            status: "paused",
+            pausedReason: "failed_deliveries",
+            pausedAt: "2026-11-18T17:40:00Z",
+            consecutiveFailedEvents: 5,
+          }),
+          subscription(3, {
+            status: "paused",
+            pausedReason: "owner",
+            pausedAt: "2026-11-16T22:30:00Z",
+          }),
+          subscription(4, { status: "paused", pausedReason: "owner" }),
+        ]}
+        names={NAMES}
+      />,
+    );
+
+    const [failing, auto, owner, unknown] = screen.getAllByRole("listitem") as [
+      HTMLElement,
+      HTMLElement,
+      HTMLElement,
+      HTMLElement,
+    ];
+    expect(failing).toHaveTextContent(
+      "The last 2 events failed to deliver. After 5 in a row, this subscription is paused.",
+    );
+    expect(failing).toHaveTextContent(/actions for LA Metro$/);
+    expect(auto).toHaveTextContent("Paused: deliveries failing");
+    expect(auto).toHaveTextContent(
+      "paused notice for LA Metro, failed_deliveries, compact",
+    );
+    expect(auto).toHaveTextContent(
+      "actions for LA Metro, paused, no status button",
+    );
+    expect(auto).not.toHaveTextContent("events failed to deliver");
+    expect(owner).toHaveTextContent(/You paused it on Mon, Nov 16, 2026\./);
+    expect(owner).not.toHaveTextContent("paused notice");
+    expect(owner).toHaveTextContent(/actions for LA Metro, paused$/);
+    expect(unknown).not.toHaveTextContent("You paused it");
   });
 
   it("says when the limit is reached", () => {
