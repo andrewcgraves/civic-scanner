@@ -63,7 +63,7 @@ func (h *Handler) requestBodyError(w http.ResponseWriter, r *http.Request, err e
 	case stripeWebhookPath:
 		h.stripeEventBodyError(w, r, err)
 		return
-	case webhookSubscriptionsPattern, webhookSubscriptionPattern, webhookTestPattern:
+	case webhookSubscriptionsPattern, webhookSubscriptionPattern, webhookTestPattern, webhookTemplatesPreviewPattern:
 		h.webhookBodyError(w, r, err)
 		return
 	case agencySubmissionsPattern:

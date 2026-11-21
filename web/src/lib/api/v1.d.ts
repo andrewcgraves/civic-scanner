@@ -391,9 +391,29 @@ export interface paths {
     put?: never;
     /**
      * Send a test webhook
-     * @description Sends one sample event to one of the signed-in user's subscriptions now and answers with the result. The request is signed and sent exactly as a real delivery, with the subscription's URL, format, payload version and current secret. A `standard` body has `test: true`; a Discord or Slack message's label starts with `Test: `. The event, meeting, agenda and transcript ids in it are new random ids that exist nowhere else, so each test has its own `webhook-id`. A paused subscription can be tested too. The URL's addresses are checked first, as when saving it; a refused URL is answered 200 with `succeeded: false` and nothing is sent. The receiver's answer, whatever it is, is also a 200 with the result. There are no retries, and test sends are not stored in the delivery log. A user may send at most 10 tests a minute (429). The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     * @description Sends one sample event to one of the signed-in user's subscriptions now and answers with the result. The request is signed and sent exactly as a real delivery, with the subscription's URL, format, payload version and current secret. A `standard` body has `test: true`; a Discord or Slack message's label starts with `Test: `; a `custom` body is the subscription's template rendered as `previewWebhookTemplate` renders it. The event, meeting, agenda and transcript ids in it are new random ids that exist nowhere else, so each test has its own `webhook-id`. A paused subscription can be tested too. The URL's addresses are checked first, as when saving it; a refused URL is answered 200 with `succeeded: false` and nothing is sent. The receiver's answer, whatever it is, is also a 200 with the result. There are no retries, and test sends are not stored in the delivery log. A user may send at most 10 tests a minute (429). The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
      */
     post: operations["sendWebhookTest"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/webhook-templates/preview": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Render a custom webhook template against a sample event
+     * @description Checks a `custom` template as saving it would and, when it is valid, renders it against a sample event of the given type, exactly as a test send of a `custom` subscription would render it: the meeting is `Sample meeting for a test webhook`, the ids are new random UUIDs, `{{event.test}}` is `true`, `{{event.label}}` starts with `Test: ` and `{{meeting.link}}` is empty. The agency is the live agency `agency` names, or `Sample agency` (`sample-agency`) without one. Nothing is stored or sent. An invalid template is a 400 whose `code` and `message` name the problem. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     */
+    post: operations["previewWebhookTemplate"];
     delete?: never;
     options?: never;
     head?: never;
@@ -596,6 +616,8 @@ export interface components {
       url: string;
       payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
       format?: components["schemas"]["WebhookFormat"];
+      /** @description The `custom` format's template; see `WebhookTemplate`. Required when `format` is `custom`, and stored with any format, so switching to a preset and back keeps it. */
+      template?: string;
       prompt?: components["schemas"]["WebhookPrompt"];
     };
     WebhookSubscriptionUpdate: {
@@ -603,6 +625,8 @@ export interface components {
       url?: string;
       payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
       format?: components["schemas"]["WebhookFormat"];
+      /** @description A new template, checked as when creating. It replaces the stored one; there is no way to remove it. Setting `format` to `custom` needs a template, given here or stored already. */
+      template?: string;
       status?: components["schemas"]["WebhookSubscriptionStatus"];
       /** @description A new directed prompt, with the same rules as when creating. An empty string, or one of only white space, removes the prompt, and the subscription is sent standard deliveries again. */
       prompt?: string;
@@ -616,11 +640,24 @@ export interface components {
      */
     WebhookPayloadVersion: "v1";
     /**
-     * @description The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+     * @description The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. `custom`: the subscription's `template` with its placeholders filled in (see `WebhookTemplate`). The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
      * @default standard
      * @enum {string}
      */
-    WebhookFormat: "standard" | "discord" | "slack";
+    WebhookFormat: "standard" | "discord" | "slack" | "custom";
+    /** @description A JSON object of at most 8,192 bytes (UTF-8) to send as a `custom` subscription's body. Placeholders go inside string values, written `{{name}}` (spaces inside the braces are allowed), and are replaced with text; a string may hold several, alongside other text. The names are a fixed set: `agency.name`, `agency.slug`, `meeting.id`, `meeting.title`, `meeting.startsAt`, `meeting.sourceUrl` (empty when unknown), `meeting.link` (the meeting's page, empty when there is none), `event.id`, `event.type`, `event.label` (such as `Agenda changed`), `event.summary` (one sentence, such as `The agenda changed (now version 2).`), `event.occurredAt`, `event.test` (`true` or `false`), `agenda.version` (empty for `transcript_ready`) and `agenda.changeNote` (empty when there is none). Times are RFC 3339 in UTC. There are no expressions, conditions or loops, and a `{{` must start one of these placeholders. Each value is JSON-escaped where it lands, so the body is always valid JSON whatever the agency's text holds. Numbers, booleans and null in the template are sent as written. The body is sent compact, with the keys in the template's order, and is signed like every other format. */
+    WebhookTemplate: string;
+    WebhookTemplatePreviewInput: {
+      template: components["schemas"]["WebhookTemplate"];
+      type?: components["schemas"]["WebhookEventType"];
+      /** @description The slug of a live agency to use as the sample's agency. Without it, the sample agency is `Sample agency` (`sample-agency`). */
+      agency?: string;
+    };
+    WebhookTemplatePreview: {
+      type: components["schemas"]["WebhookEventType"];
+      /** @description The rendered body, exactly the bytes a test send would sign and send. */
+      body: string;
+    };
     /**
      * @description Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
      * @enum {string}
@@ -643,6 +680,8 @@ export interface components {
       url: string;
       payloadVersion: components["schemas"]["WebhookPayloadVersion"];
       format: components["schemas"]["WebhookFormat"];
+      /** @description The stored template, as given; null when there is none. */
+      template: string | null;
       status: components["schemas"]["WebhookSubscriptionStatus"];
       prompt?: components["schemas"]["WebhookPrompt"];
       /** @description Why the subscription is paused; null while it is active. */
@@ -1079,7 +1118,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_status`, `nothing_to_update` for an update with no members, `invalid_event_type` for a test of a type that is not a `WebhookEventType`, for the prompt `prompt_too_long`, `invalid_prompt` (control characters other than line breaks and tabs) or `prompts_unavailable` (directed prompts are not turned on for the user), or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials`, `fragment`, `not_public` when the host is, or resolves to, an address that is not on the public internet (private, loopback, link-local, cloud metadata or reserved), or `unresolvable_host` when the host name has no address or cannot be looked up. */
+    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_format`, `invalid_status`, `nothing_to_update` for an update with no members, `invalid_event_type` for a test or preview of a type that is not a `WebhookEventType`, for a template `template_required` (format `custom` without a template), `template_too_large` (more than 8,192 bytes), `invalid_template_json` (not JSON, with the byte offset), `invalid_template` (not an object, nested deeper than 32 levels, a repeated key, a placeholder in a key or one not closed with `}}`) or `unknown_placeholder` (naming it and listing the placeholders), for the prompt `prompt_too_long`, `invalid_prompt` (control characters other than line breaks and tabs) or `prompts_unavailable` (directed prompts are not turned on for the user), or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials`, `fragment`, `not_public` when the host is, or resolves to, an address that is not on the public internet (private, loopback, link-local, cloud metadata or reserved), or `unresolvable_host` when the host name has no address or cannot be looked up. */
     InvalidWebhookSubscription: {
       headers: {
         "Cache-Control": components["headers"]["NoStore"];
@@ -2028,6 +2067,46 @@ export interface operations {
       405: components["responses"]["MethodNotAllowed"];
       429: components["responses"]["WebhookTestLimit"];
       503: components["responses"]["WebhooksUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  previewWebhookTemplate: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["WebhookTemplatePreviewInput"];
+      };
+    };
+    responses: {
+      /** @description The rendered body. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WebhookTemplatePreview"];
+        };
+      };
+      400: components["responses"]["InvalidWebhookSubscription"];
+      401: components["responses"]["Unauthorized"];
+      402: components["responses"]["PaymentRequired"];
+      404: components["responses"]["WebhookSubscriptionNotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["AuthUnavailable"];
       /** @description Unexpected error. */
       default: {
         headers: {

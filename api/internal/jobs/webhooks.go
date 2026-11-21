@@ -318,7 +318,11 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 	if d.DirectedOutcome != nil && *d.DirectedOutcome == store.DirectedRelevant && d.DirectedMessage != nil {
 		message = *d.DirectedMessage
 	}
-	body, err := webhooks.Body(d.Format, d.PayloadVersion, webhooks.Event{
+	template := ""
+	if d.Template != nil {
+		template = *d.Template
+	}
+	body, err := webhooks.Body(d.Format, d.PayloadVersion, template, webhooks.Event{
 		ID:         d.Event.ID,
 		Type:       d.Event.Type,
 		Payload:    d.Event.Payload,

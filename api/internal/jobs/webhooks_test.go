@@ -191,7 +191,7 @@ func TestDeliverWebhookSendsThePresetBodies(t *testing.T) {
 			t.Fatalf("%s: Work = %v, requests %d", tc.format, err, len(sender.requests))
 		}
 		req := sender.requests[0]
-		want, err := webhooks.Body(tc.format, "v1", webhooks.Event{
+		want, err := webhooks.Body(tc.format, "v1", "", webhooks.Event{
 			ID: st.delivery.Event.ID, Type: st.delivery.Event.Type, Payload: st.delivery.Event.Payload, OccurredAt: st.delivery.Event.OccurredAt,
 			AgencySlug: st.delivery.AgencySlug, AgencyName: st.delivery.AgencyName, Meeting: st.delivery.Meeting,
 			PageURL: webhooks.MeetingPage(tc.web, st.delivery.Meeting),
@@ -428,5 +428,39 @@ func TestWebhookSweepAsksForABatch(t *testing.T) {
 	st.err, st.ids = nil, []uuid.UUID{uuid.New()}
 	if err := w.Work(t.Context(), job); err == nil {
 		t.Error("outside a River client the insert fails")
+	}
+}
+
+func TestDeliverWebhookRendersACustomTemplate(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+	template := `{"title": "{{meeting.title}}", "id": "{{event.id}}", "link": "{{meeting.link}}"}`
+	st.delivery.Format = store.WebhookFormatCustom
+	st.delivery.Template = &template
+	sender := &fakeSender{result: webhooks.Result{StatusCode: http.StatusOK}}
+	w := deliverWorker(t, st, sender, sealer)
+	w.webhooks.PublicWebURL = "https://civic.example"
+	if err := w.Work(t.Context(), deliverJob()); err != nil || len(sender.requests) != 1 {
+		t.Fatalf("Work = %v, requests %d", err, len(sender.requests))
+	}
+	req := sender.requests[0]
+	want := `{"title":"` + st.delivery.Meeting.Title + `","id":"` + st.delivery.Event.ID.String() + `","link":"https://civic.example/meetings/` + st.delivery.Meeting.ID.String() + `"}`
+	if string(req.Body) != want || req.ID != st.delivery.Event.ID.String() || req.Secret.Reveal() != "whsec_c2VjcmV0" {
+		t.Errorf("request = %s, id %s", req.Body, req.ID)
+	}
+}
+
+func TestDeliverWebhookCancelsABrokenTemplate(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	for name, template := range map[string]*string{"none": nil, "invalid": new(`{"a":`)} {
+		st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+		st.delivery.Format = store.WebhookFormatCustom
+		st.delivery.Template = template
+		sender := &fakeSender{}
+		err := deliverWorker(t, st, sender, sealer).Work(t.Context(), deliverJob())
+		var cancel *river.JobCancelError
+		if !errors.As(err, &cancel) || len(sender.requests) != 0 || len(st.attempts) != 0 {
+			t.Errorf("%s: Work = %v, requests %d, attempts %d", name, err, len(sender.requests), len(st.attempts))
+		}
 	}
 }

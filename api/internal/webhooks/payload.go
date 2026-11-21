@@ -31,7 +31,7 @@ type Event struct {
 	Test       bool
 }
 
-func Body(format store.WebhookFormat, version string, e Event) ([]byte, error) {
+func Body(format store.WebhookFormat, version, template string, e Event) ([]byte, error) {
 	switch format {
 	case store.WebhookFormatStandard, "":
 		return Payload(version, e)
@@ -39,6 +39,8 @@ func Body(format store.WebhookFormat, version string, e Event) ([]byte, error) {
 		return discordBody(e)
 	case store.WebhookFormatSlack:
 		return slackBody(e)
+	case store.WebhookFormatCustom:
+		return customBody(template, e)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedFormat, format)
 	}

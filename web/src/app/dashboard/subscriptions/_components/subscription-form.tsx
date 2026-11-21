@@ -8,10 +8,10 @@ import { Notice } from "@/components/ui/notice";
 import { createSubscription, updateSubscription } from "../actions";
 import {
   FIELD_LABELS,
-  FORMATS,
   FORMAT_LABELS,
   SUBSCRIPTIONS_PATH,
   URL_MAX_LENGTH,
+  formatChoices,
   initialForm,
   type FieldErrors,
   type FormState,
@@ -271,7 +271,7 @@ export function SubscriptionForm({ mode }: { mode: FormMode }) {
             )}
             className={INPUT}
           >
-            {FORMATS.map((format) => (
+            {formatChoices(values.format).map((format) => (
               <option key={format} value={format}>
                 {FORMAT_LABELS[format]}
               </option>

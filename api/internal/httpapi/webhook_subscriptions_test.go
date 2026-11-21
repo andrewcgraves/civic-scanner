@@ -75,7 +75,7 @@ func (f fakeStore) CreateWebhookSubscription(_ context.Context, in store.Webhook
 	now := time.Date(2026, 11, 20, 1, 2, 3, 0, time.FixedZone("PST", -8*3600))
 	sub := store.WebhookSubscription{
 		ID: in.ID, UserID: in.UserID, AgencyID: uuid.New(), AgencySlug: in.AgencySlug, AgencyName: "Agency",
-		URL: in.URL, PayloadVersion: in.PayloadVersion, Format: in.Format, Status: store.WebhookActive, Prompt: in.Prompt,
+		URL: in.URL, PayloadVersion: in.PayloadVersion, Format: in.Format, Template: in.Template, Status: store.WebhookActive, Prompt: in.Prompt,
 		SecretRotatedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	f.webhooks.subs = append(f.webhooks.subs, sub)
@@ -114,6 +114,9 @@ func (f fakeStore) UpdateWebhookSubscription(_ context.Context, userID, id uuid.
 	}
 	if update.Format != nil {
 		sub.Format = *update.Format
+	}
+	if update.Template != nil {
+		sub.Template = update.Template
 	}
 	if update.Status != nil {
 		sub.Status = *update.Status
@@ -269,6 +272,7 @@ func webhookRoutes(id uuid.UUID) []webhookRoute {
 		{"deliveries", http.MethodGet, one + "/deliveries", ""},
 		{"test", http.MethodPost, one + "/test", ""},
 		{"test with a type", http.MethodPost, one + "/test", `{"type":"transcript_ready"}`},
+		{"preview", http.MethodPost, "/v1/webhook-templates/preview", `{"template":"{\"a\":\"{{agency.name}}\"}"}`},
 	}
 }
 
@@ -331,6 +335,8 @@ func TestWebhookMalformedBodiesAreGatedFirst(t *testing.T) {
 			{"create with a number", http.MethodPost, "/v1/webhook-subscriptions", `{"agency":1,"url":"https://x.example"}`},
 			{"test", http.MethodPost, "/v1/webhook-subscriptions/" + uuid.NewString() + "/test", `{"type":`},
 			{"test with a number", http.MethodPost, "/v1/webhook-subscriptions/" + uuid.NewString() + "/test", `{"type":1}`},
+			{"preview", http.MethodPost, "/v1/webhook-templates/preview", `{"template":`},
+			{"preview with an object", http.MethodPost, "/v1/webhook-templates/preview", `{"template":{"a":"b"}}`},
 		} {
 			rec := env.do(t, route.method, route.path, tc.authorization, route.body)
 			if rec.Code != tc.status || decodeError(t, rec).Code != tc.code || rec.Header().Get("Cache-Control") != "no-store" {
@@ -385,7 +391,7 @@ func TestCreateWebhookSubscription(t *testing.T) {
 		t.Errorf("the stored secret does not open to the returned one: %v", err)
 	}
 	keys := []string{
-		"id", "agency", "url", "payloadVersion", "format", "status", "pausedReason", "pausedAt", "consecutiveFailedEvents",
+		"id", "agency", "url", "payloadVersion", "format", "template", "status", "pausedReason", "pausedAt", "consecutiveFailedEvents",
 		"createdAt", "updatedAt", "secretRotatedAt", "secret",
 	}
 	for _, key := range keys {
@@ -393,10 +399,10 @@ func TestCreateWebhookSubscription(t *testing.T) {
 			t.Errorf("response has no %q", key)
 		}
 	}
-	if raw["pausedReason"] != nil || raw["pausedAt"] != nil || raw["consecutiveFailedEvents"] != float64(0) {
+	if raw["pausedReason"] != nil || raw["pausedAt"] != nil || raw["consecutiveFailedEvents"] != float64(0) || raw["template"] != nil {
 		t.Errorf("a new subscription is not paused: %v", raw)
 	}
-	if len(raw) != 13 {
+	if len(raw) != 14 {
 		t.Errorf("response has extra members: %v", raw)
 	}
 	if strings.Contains(env.logs.String(), got.Secret) || strings.Contains(env.logs.String(), "Token=AbC") {
@@ -810,7 +816,7 @@ func TestWebhookHandlersFailClosedWithoutThePaidGate(t *testing.T) {
 }
 
 func TestEveryWebhookOperationIsPaidAndFlagged(t *testing.T) {
-	for _, op := range []string{"ListWebhookSubscriptions", "CreateWebhookSubscription", "GetWebhookSubscription", "UpdateWebhookSubscription", "DeleteWebhookSubscription", "RotateWebhookSubscriptionSecret"} {
+	for _, op := range []string{"ListWebhookSubscriptions", "CreateWebhookSubscription", "GetWebhookSubscription", "UpdateWebhookSubscription", "DeleteWebhookSubscription", "RotateWebhookSubscriptionSecret", "ListWebhookDeliveries", "SendWebhookTest", "PreviewWebhookTemplate"} {
 		if flag, ok := paidOperations[op]; !ok || flag != FlagWebhookSubscriptions {
 			t.Errorf("%s: paidOperations flag = %q, %v", op, flag, ok)
 		}

@@ -46,6 +46,7 @@ export const FORMATS: readonly SubscriptionFormat[] = [
   "standard",
   "discord",
   "slack",
+  "custom",
 ];
 
 export const DEFAULT_FORMAT: SubscriptionFormat = "standard";
@@ -54,10 +55,15 @@ export const FORMAT_LABELS: Record<SubscriptionFormat, string> = {
   standard: "Standard JSON",
   discord: "Discord",
   slack: "Slack",
+  custom: "Custom JSON",
 };
 
 export function isFormat(value: unknown): value is SubscriptionFormat {
   return FORMATS.includes(value as SubscriptionFormat);
+}
+
+export function formatChoices(current: string): SubscriptionFormat[] {
+  return FORMATS.filter((format) => format !== "custom" || current === format);
 }
 
 export function formatLabel(value: string): string {

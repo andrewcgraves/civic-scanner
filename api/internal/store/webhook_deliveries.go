@@ -96,6 +96,7 @@ type WebhookDelivery struct {
 	URL              string
 	PayloadVersion   string
 	Format           WebhookFormat
+	Template         *string
 	Status           WebhookStatus
 	SecretCiphertext []byte
 	Prompt           *string
@@ -113,7 +114,7 @@ func (s *Store) WebhookDelivery(ctx context.Context, subscriptionID, eventID uui
 		payload []byte
 	)
 	err := s.pool.QueryRow(ctx, `
-SELECT w.id, u.id, u.workos_user_id, u.plan = 'paid', w.url, w.payload_version, w.format, w.status, w.secret_ciphertext,
+SELECT w.id, u.id, u.workos_user_id, u.plan = 'paid', w.url, w.payload_version, w.format, w.template, w.status, w.secret_ciphertext,
        w.prompt, r.outcome, r.message,
        e.id, e.sequence, e.type, e.meeting_id, e.payload, e.occurred_at,
        a.slug, a.name, m.id, m.agency_id, m.title, m.starts_at, m.status, m.source_url
@@ -124,7 +125,7 @@ JOIN meetings m ON m.id = e.meeting_id AND m.agency_id = w.agency_id
 JOIN agencies a ON a.id = m.agency_id
 LEFT JOIN webhook_directed_prompt_runs r ON r.subscription_id = w.id AND r.event_id = e.id
 WHERE w.id = $1`, subscriptionID, eventID).Scan(
-		&d.SubscriptionID, &d.UserID, &d.WorkOSUserID, &d.Paid, &d.URL, &d.PayloadVersion, &d.Format, &d.Status, &d.SecretCiphertext,
+		&d.SubscriptionID, &d.UserID, &d.WorkOSUserID, &d.Paid, &d.URL, &d.PayloadVersion, &d.Format, &d.Template, &d.Status, &d.SecretCiphertext,
 		&d.Prompt, &d.DirectedOutcome, &d.DirectedMessage,
 		&d.Event.ID, &d.Event.Sequence, &d.Event.Type, &d.Event.MeetingID, &payload, &d.Event.OccurredAt,
 		&d.AgencySlug, &d.AgencyName, &d.Meeting.ID, &d.Meeting.AgencyID, &d.Meeting.Title, &d.Meeting.StartsAt, &d.Meeting.Status, &d.Meeting.SourceURL)

@@ -10,6 +10,7 @@ import {
   checkUrl,
   checkValues,
   editPath,
+  formatChoices,
   formatLabel,
   initialForm,
   isSlug,
@@ -158,8 +159,20 @@ describe("checkUrl and checkValues", () => {
       "Standard JSON",
       "Discord",
       "Slack",
+      "Custom JSON",
     ]);
     expect(formatLabel("teams")).toBe("teams");
+  });
+
+  it("offers custom only to a subscription that is already custom", () => {
+    expect(formatChoices("standard")).toEqual(["standard", "discord", "slack"]);
+    expect(formatChoices("")).toEqual(["standard", "discord", "slack"]);
+    expect(formatChoices("custom")).toEqual([
+      "standard",
+      "discord",
+      "slack",
+      "custom",
+    ]);
   });
 });
 

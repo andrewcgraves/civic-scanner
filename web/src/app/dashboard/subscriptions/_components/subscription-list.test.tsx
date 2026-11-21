@@ -42,6 +42,7 @@ function subscription(
     url: `https://hooks.example.org/${String(index)}`,
     payloadVersion: "v1",
     format: "standard",
+    template: null,
     status: "active",
     pausedReason: null,
     pausedAt: null,

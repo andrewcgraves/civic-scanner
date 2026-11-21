@@ -293,6 +293,28 @@ describe("SubscriptionForm", () => {
       ]);
     });
 
+    it("keeps a custom subscription custom", async () => {
+      mocks.next = { kind: "unavailable", values: VALUES };
+      render(<SubscriptionForm mode={{ ...EDIT, format: "custom" }} />);
+
+      expect(screen.getByLabelText("Message format")).toHaveValue("custom");
+      expect(options("Message format")).toEqual([
+        "Standard JSON",
+        "Discord",
+        "Slack",
+        "Custom JSON",
+      ]);
+
+      await submit("Save changes");
+
+      expect(mocks.calls).toEqual([
+        {
+          action: "update",
+          data: { id: ID, agency: "la-metro", url: EDIT.url, format: "custom" },
+        },
+      ]);
+    });
+
     it("says when the subscription no longer exists", async () => {
       mocks.next = { kind: "gone", values: VALUES };
       render(<SubscriptionForm mode={EDIT} />);
