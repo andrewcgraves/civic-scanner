@@ -30,9 +30,9 @@ func TestSetRecordingAudioRejectsInvalidAudioBeforeTouchingTheDatabase(t *testin
 	}
 }
 
-func TestListRecordingsWithExpiredAudioRejectsNonPositiveLimitBeforeTouchingTheDatabase(t *testing.T) {
+func TestListTranscribedRecordingsWithExpiredAudioRejectsNonPositiveLimitBeforeTouchingTheDatabase(t *testing.T) {
 	for _, limit := range []int{0, -1} {
-		if _, err := New(nil).ListRecordingsWithExpiredAudio(t.Context(), time.Now(), limit); !errors.Is(err, ErrInvalidLimit) {
+		if _, err := New(nil).ListTranscribedRecordingsWithExpiredAudio(t.Context(), time.Now(), limit); !errors.Is(err, ErrInvalidLimit) {
 			t.Errorf("limit %d: err = %v, want ErrInvalidLimit", limit, err)
 		}
 	}

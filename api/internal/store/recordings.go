@@ -156,14 +156,15 @@ func (s *Store) ListRecordings(ctx context.Context, meetingID uuid.UUID) ([]Reco
 		`SELECT `+recordingColumns+` FROM recordings WHERE meeting_id = $1 ORDER BY seq`, meetingID)
 }
 
-func (s *Store) ListRecordingsWithExpiredAudio(ctx context.Context, now time.Time, limit int) ([]Recording, error) {
+func (s *Store) ListTranscribedRecordingsWithExpiredAudio(ctx context.Context, now time.Time, limit int) ([]Recording, error) {
 	if limit <= 0 {
-		return nil, fmt.Errorf("list recordings with expired audio: limit %d: %w", limit, ErrInvalidLimit)
+		return nil, fmt.Errorf("list transcribed recordings with expired audio: limit %d: %w", limit, ErrInvalidLimit)
 	}
-	return queryRecordings(ctx, s.pool, "list recordings with expired audio", `
-SELECT `+recordingColumns+` FROM recordings
-WHERE audio_key IS NOT NULL AND audio_expires_at <= $1
-ORDER BY audio_expires_at, id
+	return queryRecordings(ctx, s.pool, "list transcribed recordings with expired audio", `
+SELECT `+recordingColumns+` FROM recordings r
+WHERE r.audio_key IS NOT NULL AND r.audio_expires_at <= $1
+  AND EXISTS (SELECT 1 FROM transcripts t WHERE t.recording_id = r.id)
+ORDER BY r.audio_expires_at, r.id
 LIMIT $2`, now, limit)
 }
 

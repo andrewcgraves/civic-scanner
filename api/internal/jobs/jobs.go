@@ -203,6 +203,13 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		enabled: cfg.Enabled,
 		queue:   cfg.Queue,
 	})
+	river.AddWorker(workers, &DeleteExpiredAudioWorker{
+		logger:  logger,
+		store:   st,
+		storage: cfg.Storage,
+		clock:   cfg.Clock,
+		enabled: cfg.Enabled,
+	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,
 		store:   st,
@@ -234,6 +241,12 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 			river.PeriodicInterval(transcriptSummarySweepInterval),
 			periodicTranscriptSummarySweep(cfg.Clock, cfg.Queue),
 			&river.PeriodicJobOpts{ID: EnqueueTranscriptSummariesArgs{}.Kind(), RunOnStart: true},
+		))
+		retention := dailySchedule{hourUTC: audioRetentionHourUTC}
+		periodic = append(periodic, river.NewPeriodicJob(
+			retention,
+			periodicAudioRetention(retention, cfg.Clock, cfg.Queue),
+			&river.PeriodicJobOpts{ID: DeleteExpiredAudioArgs{}.Kind(), RunOnStart: true},
 		))
 	}
 
