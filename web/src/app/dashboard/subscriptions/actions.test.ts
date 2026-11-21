@@ -1,0 +1,408 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { UserApiClient, UserApiResult } from "@/lib/auth/api";
+
+const mocks = vi.hoisted(() => {
+  const failed = (): UserApiResult<unknown> => ({ status: "failed" });
+  return {
+    enabled: true,
+    result: failed(),
+    deleteStatus: 204,
+    calls: [] as unknown[],
+    answers: [] as unknown[],
+    redirect: vi.fn((path: string) => {
+      throw new Error(`NEXT_REDIRECT ${path}`);
+    }),
+  };
+});
+
+vi.mock("next/navigation", () => ({ redirect: mocks.redirect }));
+vi.mock("./server", () => ({
+  isSubscriptionsEnabled: () => Promise.resolve(mocks.enabled),
+}));
+vi.mock("@/lib/auth/api", () => ({
+  callApiAsUser: async (
+    call: (client: UserApiClient) => Promise<unknown>,
+  ): Promise<UserApiResult<unknown>> => {
+    const record =
+      (method: string) =>
+      (path: string, init: unknown): Promise<unknown> => {
+        mocks.calls.push({ method, path, init });
+        return Promise.resolve({
+          response: new Response(null, { status: mocks.deleteStatus }),
+        });
+      };
+    const client = {
+      POST: record("POST"),
+      PATCH: record("PATCH"),
+      DELETE: record("DELETE"),
+    } as unknown as UserApiClient;
+    mocks.answers.push(await call(client));
+    return mocks.result;
+  },
+}));
+
+const {
+  createSubscription,
+  deleteSubscription,
+  pauseSubscription,
+  resumeSubscription,
+  rotateSecret,
+  updateSubscription,
+} = await import("./actions");
+const { FORM_ERROR, IDLE_ACTION, initialForm } = await import("./state");
+
+const ID = "8b0e6c43-3f3b-4f39-9a31-2a1f7c1a9e10";
+const IDLE_FORM = initialForm({});
+const URL = "https://hooks.example.org/civic";
+const SUBSCRIPTION = {
+  id: ID,
+  agency: "la-metro",
+  url: URL,
+  payloadVersion: "v1",
+  status: "active",
+  createdAt: "2026-11-03T18:00:00Z",
+  updatedAt: "2026-11-03T18:00:00Z",
+  secretRotatedAt: "2026-11-03T18:00:00Z",
+};
+const SECRET = "whsec_c2VjcmV0";
+
+function form(values: Record<string, string>): FormData {
+  const data = new FormData();
+  for (const [key, value] of Object.entries(values)) {
+    data.append(key, value);
+  }
+  return data;
+}
+
+beforeEach(() => {
+  mocks.enabled = true;
+  mocks.result = { status: "failed" };
+  mocks.deleteStatus = 204;
+  mocks.calls = [];
+  mocks.answers = [];
+  mocks.redirect.mockClear();
+});
+
+describe("createSubscription", () => {
+  const VALUES = { agency: "la-metro", url: ` ${URL} ` };
+
+  it("creates the subscription and hands back its secret once", async () => {
+    mocks.result = { status: "ok", data: { ...SUBSCRIPTION, secret: SECRET } };
+
+    expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
+      kind: "created",
+      agency: "la-metro",
+      url: URL,
+      secret: SECRET,
+    });
+    expect(mocks.calls).toEqual([
+      {
+        method: "POST",
+        path: "/webhook-subscriptions",
+        init: { body: { agency: "la-metro", url: URL } },
+      },
+    ]);
+  });
+
+  it.each([null, { ...SUBSCRIPTION }, { ...SUBSCRIPTION, secret: "" }])(
+    "is unavailable when the answer has no secret (%j)",
+    async (data) => {
+      mocks.result = { status: "ok", data };
+
+      expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
+        kind: "unavailable",
+        values: VALUES,
+      });
+    },
+  );
+
+  it("checks the fields before calling the API", async () => {
+    expect(
+      await createSubscription(IDLE_FORM, form({ agency: "", url: "" })),
+    ).toEqual({
+      kind: "invalid",
+      values: { agency: "", url: "" },
+      errors: {
+        agency: "Choose an agency.",
+        url: "Enter the URL to send webhooks to.",
+      },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("calls nothing when subscriptions are off", async () => {
+    mocks.enabled = false;
+
+    expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
+      kind: "gone",
+      values: VALUES,
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("shows the API's URL problem next to the URL", async () => {
+    mocks.result = {
+      status: "rejected",
+      httpStatus: 400,
+      error: { code: "not_public", message: "the host is private" },
+    };
+
+    expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
+      kind: "invalid",
+      values: VALUES,
+      errors: { url: "The host is private." },
+    });
+  });
+
+  it("gives a form-level message for a body problem", async () => {
+    mocks.result = {
+      status: "rejected",
+      httpStatus: 400,
+      error: { code: "invalid_body", message: "x" },
+    };
+
+    expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
+      kind: "invalid",
+      values: VALUES,
+      errors: {},
+      message: FORM_ERROR,
+    });
+  });
+
+  it.each<[UserApiResult<unknown>, string]>([
+    [{ status: "rejected", httpStatus: 429, error: null }, "limit"],
+    [{ status: "conflict", error: null }, "duplicate"],
+    [{ status: "payment-required" }, "upgrade"],
+    [{ status: "not-found" }, "gone"],
+    [{ status: "unavailable" }, "unavailable"],
+    [{ status: "forbidden" }, "unavailable"],
+    [{ status: "failed" }, "unavailable"],
+  ])("maps %j to %s and keeps the values", async (result, kind) => {
+    mocks.result = result;
+
+    expect(await createSubscription(IDLE_FORM, form(VALUES))).toEqual({
+      kind,
+      values: VALUES,
+    });
+  });
+
+  it("sends a signed-out user to sign in", async () => {
+    mocks.result = { status: "signed-out" };
+
+    await expect(createSubscription(IDLE_FORM, form(VALUES))).rejects.toThrow(
+      "NEXT_REDIRECT /auth/sign-in?returnTo=%2Fdashboard%2Fsubscriptions",
+    );
+  });
+});
+
+describe("updateSubscription", () => {
+  const VALUES = { id: ID, agency: "la-metro", url: URL };
+
+  it("saves the new URL and returns to the list", async () => {
+    mocks.result = { status: "ok", data: SUBSCRIPTION };
+
+    await expect(updateSubscription(IDLE_FORM, form(VALUES))).rejects.toThrow(
+      "NEXT_REDIRECT /dashboard/subscriptions?updated=la-metro",
+    );
+    expect(mocks.calls).toEqual([
+      {
+        method: "PATCH",
+        path: "/webhook-subscriptions/{id}",
+        init: { params: { path: { id: ID } }, body: { url: URL } },
+      },
+    ]);
+  });
+
+  it("returns to the plain list when the answer has an odd agency", async () => {
+    mocks.result = { status: "ok", data: { ...SUBSCRIPTION, agency: "Odd" } };
+
+    await expect(updateSubscription(IDLE_FORM, form(VALUES))).rejects.toThrow(
+      "NEXT_REDIRECT /dashboard/subscriptions",
+    );
+    expect(mocks.redirect).toHaveBeenCalledWith("/dashboard/subscriptions");
+  });
+
+  it("checks the URL before calling the API", async () => {
+    expect(
+      await updateSubscription(IDLE_FORM, form({ ...VALUES, url: " " })),
+    ).toEqual({
+      kind: "invalid",
+      values: { agency: "la-metro", url: " " },
+      errors: { url: "Enter the URL to send webhooks to." },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it.each([
+    ["subscriptions are off", false, ID],
+    ["the id is not a UUID", true, "nope"],
+  ])("is gone when %s", async (_name, enabled, id) => {
+    mocks.enabled = enabled;
+
+    expect(
+      await updateSubscription(IDLE_FORM, form({ ...VALUES, id })),
+    ).toEqual({ kind: "gone", values: { agency: "la-metro", url: URL } });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("explains a failure and keeps the values", async () => {
+    mocks.result = { status: "conflict", error: null };
+
+    expect(await updateSubscription(IDLE_FORM, form(VALUES))).toEqual({
+      kind: "duplicate",
+      values: { agency: "la-metro", url: URL },
+    });
+  });
+});
+
+describe("pauseSubscription and resumeSubscription", () => {
+  it("pauses and returns to the list", async () => {
+    mocks.result = {
+      status: "ok",
+      data: { ...SUBSCRIPTION, status: "paused" },
+    };
+
+    await expect(
+      pauseSubscription(IDLE_ACTION, form({ id: ID })),
+    ).rejects.toThrow("NEXT_REDIRECT /dashboard/subscriptions?paused=la-metro");
+    expect(mocks.calls).toEqual([
+      {
+        method: "PATCH",
+        path: "/webhook-subscriptions/{id}",
+        init: { params: { path: { id: ID } }, body: { status: "paused" } },
+      },
+    ]);
+  });
+
+  it("resumes and returns to the list", async () => {
+    mocks.result = { status: "ok", data: SUBSCRIPTION };
+
+    await expect(
+      resumeSubscription(IDLE_ACTION, form({ id: ID })),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT /dashboard/subscriptions?resumed=la-metro",
+    );
+    expect(mocks.calls).toEqual([
+      {
+        method: "PATCH",
+        path: "/webhook-subscriptions/{id}",
+        init: { params: { path: { id: ID } }, body: { status: "active" } },
+      },
+    ]);
+  });
+
+  it("is gone for a bad id, without calling the API", async () => {
+    expect(await pauseSubscription(IDLE_ACTION, form({ id: "x" }))).toEqual({
+      kind: "gone",
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it.each<[UserApiResult<unknown>, string]>([
+    [{ status: "not-found" }, "gone"],
+    [{ status: "payment-required" }, "upgrade"],
+    [{ status: "failed" }, "unavailable"],
+    [{ status: "conflict", error: null }, "unavailable"],
+  ])("maps %j to %s", async (result, kind) => {
+    mocks.result = result;
+
+    expect(await resumeSubscription(IDLE_ACTION, form({ id: ID }))).toEqual({
+      kind,
+    });
+  });
+
+  it("sends a signed-out user to sign in", async () => {
+    mocks.result = { status: "signed-out" };
+
+    await expect(
+      pauseSubscription(IDLE_ACTION, form({ id: ID })),
+    ).rejects.toThrow("NEXT_REDIRECT /auth/sign-in");
+  });
+});
+
+describe("deleteSubscription", () => {
+  it("deletes and returns to the list naming the agency", async () => {
+    mocks.result = { status: "ok", data: true };
+
+    await expect(
+      deleteSubscription(IDLE_ACTION, form({ id: ID, agency: "la-metro" })),
+    ).rejects.toThrow(
+      "NEXT_REDIRECT /dashboard/subscriptions?deleted=la-metro",
+    );
+    expect(mocks.calls).toEqual([
+      {
+        method: "DELETE",
+        path: "/webhook-subscriptions/{id}",
+        init: { params: { path: { id: ID } } },
+      },
+    ]);
+  });
+
+  it("turns an empty 204 into data and an error into none", async () => {
+    mocks.result = { status: "failed" };
+
+    await deleteSubscription(IDLE_ACTION, form({ id: ID, agency: "x" }));
+    mocks.deleteStatus = 500;
+    await deleteSubscription(IDLE_ACTION, form({ id: ID, agency: "x" }));
+
+    expect(mocks.answers).toMatchObject([{ data: true }, { data: undefined }]);
+  });
+
+  it("is gone when subscriptions are off", async () => {
+    mocks.enabled = false;
+
+    expect(
+      await deleteSubscription(IDLE_ACTION, form({ id: ID, agency: "x" })),
+    ).toEqual({ kind: "gone" });
+  });
+
+  it("explains a failure", async () => {
+    mocks.result = { status: "not-found" };
+
+    expect(
+      await deleteSubscription(IDLE_ACTION, form({ id: ID, agency: "x" })),
+    ).toEqual({ kind: "gone" });
+  });
+});
+
+describe("rotateSecret", () => {
+  it("rotates and hands back the new secret", async () => {
+    mocks.result = { status: "ok", data: { ...SUBSCRIPTION, secret: SECRET } };
+
+    expect(await rotateSecret(IDLE_ACTION, form({ id: ID }))).toEqual({
+      kind: "rotated",
+      secret: SECRET,
+    });
+    expect(mocks.calls).toEqual([
+      {
+        method: "POST",
+        path: "/webhook-subscriptions/{id}/secret",
+        init: { params: { path: { id: ID } } },
+      },
+    ]);
+  });
+
+  it("is unavailable when the answer has no secret", async () => {
+    mocks.result = { status: "ok", data: SUBSCRIPTION };
+
+    expect(await rotateSecret(IDLE_ACTION, form({ id: ID }))).toEqual({
+      kind: "unavailable",
+    });
+  });
+
+  it("is gone for a bad id", async () => {
+    expect(await rotateSecret(IDLE_ACTION, form({}))).toEqual({
+      kind: "gone",
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("explains a failure", async () => {
+    mocks.result = { status: "payment-required" };
+
+    expect(await rotateSecret(IDLE_ACTION, form({ id: ID }))).toEqual({
+      kind: "upgrade",
+    });
+  });
+});

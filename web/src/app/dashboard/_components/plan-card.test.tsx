@@ -46,6 +46,22 @@ describe("PlanCard", () => {
     ).toBeNull();
   });
 
+  it.each([
+    ["free" as const, /coming soon\.$/, /adds webhook subscriptions\.$/],
+    ["paid" as const, /when they arrive\.$/, /included in your plan\.$/],
+  ])(
+    "says subscriptions are live for the %s plan once they are on",
+    (plan, soon, live) => {
+      const { unmount } = render(<PlanCard plan={plan} billing />);
+      expect(screen.getByText(soon)).toBeVisible();
+      unmount();
+
+      render(<PlanCard plan={plan} billing subscriptions />);
+      expect(screen.getByText(live)).toBeVisible();
+      expect(screen.queryByText(soon)).toBeNull();
+    },
+  );
+
   it.each([["free" as const], ["paid" as const]])(
     "shows the %s plan without a button when billing is off",
     (plan) => {

@@ -80,6 +80,7 @@ export const config = {
     "/auth/session",
     "/billing",
     "/dashboard",
+    "/dashboard/subscriptions/:path*",
     "/submit-agency",
     "/admin/agency-submissions",
   ],

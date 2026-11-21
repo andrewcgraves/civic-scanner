@@ -21,6 +21,27 @@ describe("DashboardNav", () => {
     expect(screen.queryByRole("link", { name: /Subscriptions/ })).toBeNull();
   });
 
+  it("links to subscriptions when they are on", () => {
+    render(<DashboardNav billing subscriptions />);
+
+    const link = screen.getByRole("link", { name: "Subscriptions" });
+    expect(link).toHaveAttribute("href", "/dashboard/subscriptions");
+    expect(link).not.toHaveAttribute("aria-current");
+    expect(screen.queryByText("Soon")).toBeNull();
+  });
+
+  it("marks subscriptions as the current page", () => {
+    render(<DashboardNav billing subscriptions current="subscriptions" />);
+
+    expect(screen.getByRole("link", { name: "Subscriptions" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("link", { name: "Overview" })).not.toHaveAttribute(
+      "aria-current",
+    );
+  });
+
   it("links to billing when billing is on", () => {
     render(<DashboardNav billing />);
 
