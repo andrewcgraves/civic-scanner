@@ -225,6 +225,24 @@ func (e WebhookPayloadVersion) Valid() bool {
 	}
 }
 
+// Defines values for WebhookSubscriptionPausedReason.
+const (
+	WebhookPausedByOwner          WebhookSubscriptionPausedReason = "owner"
+	WebhookPausedFailedDeliveries WebhookSubscriptionPausedReason = "failed_deliveries"
+)
+
+// Valid indicates whether the value is a known member of the WebhookSubscriptionPausedReason enum.
+func (e WebhookSubscriptionPausedReason) Valid() bool {
+	switch e {
+	case WebhookPausedByOwner:
+		return true
+	case WebhookPausedFailedDeliveries:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for WebhookSubscriptionStatus.
 const (
 	WebhookSubscriptionActive WebhookSubscriptionStatus = "active"
@@ -581,9 +599,18 @@ type WebhookPayloadVersion string
 // WebhookSubscription defines model for WebhookSubscription.
 type WebhookSubscription struct {
 	// Agency The slug of the agency.
-	Agency    string             `json:"agency"`
-	CreatedAt time.Time          `json:"createdAt"`
-	Id        openapi_types.UUID `json:"id"`
+	Agency string `json:"agency"`
+
+	// ConsecutiveFailedEvents How many events in a row failed to be delivered after every retry. A delivered event and resuming the subscription reset it to 0.
+	ConsecutiveFailedEvents int64              `json:"consecutiveFailedEvents"`
+	CreatedAt               time.Time          `json:"createdAt"`
+	Id                      openapi_types.UUID `json:"id"`
+
+	// PausedAt When the subscription was paused; null while it is active.
+	PausedAt *time.Time `json:"pausedAt"`
+
+	// PausedReason Why the subscription is paused; null while it is active.
+	PausedReason *WebhookSubscriptionPausedReason `json:"pausedReason"`
 
 	// PayloadVersion The version of the payload to send. `v1` is the only one.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
@@ -618,6 +645,9 @@ type WebhookSubscriptionList struct {
 	Subscriptions []WebhookSubscription `json:"subscriptions"`
 }
 
+// WebhookSubscriptionPausedReason Why a subscription is paused: `owner` when its owner paused it, `failed_deliveries` when deliveries of five events in a row failed after every retry. A delivery is retried for about a day before it counts as failed. Setting `status: active` resumes the subscription either way.
+type WebhookSubscriptionPausedReason string
+
 // WebhookSubscriptionStatus Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
 type WebhookSubscriptionStatus string
 
@@ -636,9 +666,18 @@ type WebhookSubscriptionUpdate struct {
 // WebhookSubscriptionWithSecret defines model for WebhookSubscriptionWithSecret.
 type WebhookSubscriptionWithSecret struct {
 	// Agency The slug of the agency.
-	Agency    string             `json:"agency"`
-	CreatedAt time.Time          `json:"createdAt"`
-	Id        openapi_types.UUID `json:"id"`
+	Agency string `json:"agency"`
+
+	// ConsecutiveFailedEvents How many events in a row failed to be delivered after every retry. A delivered event and resuming the subscription reset it to 0.
+	ConsecutiveFailedEvents int64              `json:"consecutiveFailedEvents"`
+	CreatedAt               time.Time          `json:"createdAt"`
+	Id                      openapi_types.UUID `json:"id"`
+
+	// PausedAt When the subscription was paused; null while it is active.
+	PausedAt *time.Time `json:"pausedAt"`
+
+	// PausedReason Why the subscription is paused; null while it is active.
+	PausedReason *WebhookSubscriptionPausedReason `json:"pausedReason"`
 
 	// PayloadVersion The version of the payload to send. `v1` is the only one.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`

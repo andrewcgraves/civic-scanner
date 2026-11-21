@@ -598,11 +598,11 @@ A user on the paid plan can subscribe to a live agency by webhook: an `https` UR
 | `GET /v1/webhook-subscriptions` | `{"subscriptions": [...]}`, every subscription of the signed-in user, oldest first (`created_at`, then `id`). |
 | `POST /v1/webhook-subscriptions` | Creates a subscription from `{"agency": "<slug>", "url": "https://...", "payloadVersion": "v1"}` (`payloadVersion` optional, default `v1`), status `active`, and answers 201 with the subscription and its `secret`. |
 | `GET /v1/webhook-subscriptions/{id}` | One subscription. |
-| `PATCH /v1/webhook-subscriptions/{id}` | Changes any of `url`, `payloadVersion` and `status` (`active` or `paused`); members left out, or `null`, are unchanged, and at least one is needed. Pausing is `{"status": "paused"}`, resuming `{"status": "active"}`. The agency cannot be changed: delete and create instead. |
+| `PATCH /v1/webhook-subscriptions/{id}` | Changes any of `url`, `payloadVersion` and `status` (`active` or `paused`); members left out, or `null`, are unchanged, and at least one is needed. Pausing is `{"status": "paused"}`, resuming `{"status": "active"}`; resuming also resumes a subscription paused for failed deliveries and resets its count (see [Pausing a failing subscription](#pausing-a-failing-subscription)). Changing the URL does not resume. The agency cannot be changed: delete and create instead. |
 | `DELETE /v1/webhook-subscriptions/{id}` | 204, and the subscription and its secret are gone. |
 | `POST /v1/webhook-subscriptions/{id}/secret` | Replaces the signing secret with a new one and answers 200 with the subscription and the new `secret`. |
 
-A subscription is `id`, `agency` (the slug), `url` (as stored), `payloadVersion`, `status`, `createdAt`, `updatedAt` and `secretRotatedAt` (when the current secret was made). The secret appears in exactly two responses, the 201 of the create and the 200 of a rotation; no route reads it back. A lost secret is rotated, not recovered. A rotation takes effect at once: there is no period in which the old secret is still used.
+A subscription is `id`, `agency` (the slug), `url` (as stored), `payloadVersion`, `status`, `pausedReason` (`owner` or `failed_deliveries`; null while active), `pausedAt` (null while active), `consecutiveFailedEvents`, `createdAt`, `updatedAt` and `secretRotatedAt` (when the current secret was made). The secret appears in exactly two responses, the 201 of the create and the 200 of a rotation; no route reads it back. A lost secret is rotated, not recovered. A rotation takes effect at once: there is no period in which the old secret is still used.
 
 Checks, in order, the same on every route (`paidGate`, with the operations in `paidOperations` mapped to `webhook-subscriptions`):
 
@@ -648,6 +648,8 @@ Not done: rotating `WEBHOOK_SECRET_KEY` itself. The version byte leaves room for
 ### Storage
 
 Migration `00016` adds `webhook_subscriptions` and changes nothing else: `id`, `user_id` (cascades with the user), `agency_id` (cascades with the agency), `url`, `payload_version` (only `v1`), `status` (`active` or `paused`, default `active`), `secret_ciphertext` (not empty), `secret_rotated_at`, `created_at` and `updated_at`, with `UNIQUE (user_id, agency_id, url)` (`webhook_subscriptions_user_agency_url_unique`). `webhook_subscriptions_user_created_idx` on `(user_id, created_at, id)` serves the list, and the partial index `webhook_subscriptions_active_agency_idx` on `agency_id WHERE status = 'active'` is for the delivery job's fan-out from an agency's events to its active subscriptions.
+
+Migration `00020` adds `consecutive_failed_events` (`bigint NOT NULL DEFAULT 0`, not negative), `paused_reason` (`owner` or `failed_deliveries`, nullable) and `paused_at` (nullable), and marks rows already paused as paused by their owner at their `updated_at`. A paused row without a reason, which code from before `00020` can still write during a deploy, reads as paused by its owner at `updated_at`; an active row always reads with no reason and no time.
 
 `store.CreateWebhookSubscription` runs in one transaction: it locks the user's row (`SELECT ... FOR UPDATE`), counts the user's subscriptions, and inserts the row only if a live agency has the slug, so the limit holds under concurrent creates (tested with 35 at once: 25 succeed). The unique constraint decides duplicates. Updates, rotations and deletes are single statements filtered by the user's id.
 
@@ -715,14 +717,22 @@ Every attempt that reaches the signing step is a row in `webhook_delivery_attemp
 | Outcome | Job |
 | --- | --- |
 | 2xx | Completed. |
-| Any other status, a network error or a timeout | Returns the error; River retries with its default backoff (about 1 s, 16 s, 81 s and 256 s), at most 5 attempts in all (`webhookDeliverAttempts`), then discards the job. |
-| A non-public address | Cancelled: retrying cannot help until the URL changes. |
-| A secret that `WEBHOOK_SECRET_KEY` cannot open | Cancelled, with the error `the signing secret cannot be read; rotate the secret`. |
+| Any other status, a network error or a timeout | Returns the error; River retries it on the worker's backoff (below), at most 8 attempts in all (`webhookDeliverAttempts`), then discards the job. A failed last attempt is a failed event. |
+| A non-public address | Cancelled: retrying cannot help until the URL changes. A failed event. |
+| A secret that `WEBHOOK_SECRET_KEY` cannot open | Cancelled, with the error `the signing secret cannot be read; rotate the secret`. A failed event. |
 | `WEBHOOK_SECRET_KEY` missing on the worker | Snoozed for 10 minutes, no attempt stored. |
 
-So a receiver that is down for more than about six minutes misses the event. Retrying over a day and pausing a subscription that keeps failing are CIV-52. An attempt that could not be stored is logged at `error` and does not fail a delivery that succeeded, so a receiver is not sent the same event again for that reason; delivery is at least once in every other case, which is what `webhook-id` is for.
+**Backoff.** `DeliverWebhookWorker.NextRetry` overrides River's default policy: the wait after the n-th failure is 1 minute times 4^(n-1), capped at 9 hours (`webhookRetryBase`, `webhookRetryGrowth`, `webhookRetryCap`), with up to 10% jitter either way so a receiver that comes back is not hit by every event at once. The 7 waits are about 1 m, 4 m, 16 m, 64 m, 4 h 16 m, 9 h and 9 h, so the last attempt is about 23 h 40 m after the first. The count is the job's recorded errors, not its attempt number, so a snooze does not move the schedule. A receiver that is down for less than about a day gets every event once it is back.
 
-**Logs.** Each delivery logs `webhook delivered`, `webhook delivery failed` or `webhook delivery cancelled` with the subscription, event, attempt, status and duration, and `webhook not delivered` with a `reason` (`subscription_gone`, `paused`, `free_plan`, `flag_off`) when it sends nothing. No URL or secret is logged.
+An attempt that could not be stored is logged at `error` and does not fail a delivery that succeeded, so a receiver is not sent the same event again for that reason; delivery is at least once in every other case, which is what `webhook-id` is for.
+
+#### Pausing a failing subscription
+
+Each subscription counts its failed events in a row (`consecutive_failed_events`). A failed event adds one (`store.RecordWebhookEventFailed`, which locks the row so concurrent failures are each counted once); a delivered event resets it to 0 (`store.RecordWebhookEventDelivered`). An event still being retried is not counted. The 5th failed event in a row (`webhookPauseAfterFailures`) pauses the subscription in the same statement, with `paused_reason = 'failed_deliveries'` and `paused_at`, and the worker logs `webhook subscription paused` at `warn`. A paused subscription gets no new deliveries: fan-out skips it, and its queued retries complete without sending. Events from while it was paused are not sent later.
+
+The owner resumes it with `PATCH {"status": "active"}`, which clears the reason and time and resets the count. Pausing an already paused subscription keeps its reason and time. An owner's pause sets `paused_reason = 'owner'`. A counting failure is logged at `error` and does not change the job's outcome.
+
+**Logs.** Each delivery logs `webhook delivered`, `webhook delivery failed` or `webhook delivery cancelled` with the subscription, event, attempt, status and duration, and `webhook not delivered` with a `reason` (`subscription_gone`, `paused`, `free_plan`, `flag_off`) when it sends nothing. A failed event logs `failed webhook event counted` with the count, or `webhook subscription paused`. No URL or secret is logged.
 
 ### Turning it on
 

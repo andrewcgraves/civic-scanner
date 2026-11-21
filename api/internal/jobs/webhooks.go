@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,7 +28,12 @@ const (
 	webhookSweepLimit         = 100
 	webhookSweepLookback      = 1000
 	webhookFanOutAttempts     = 5
-	webhookDeliverAttempts    = 5
+	webhookDeliverAttempts    = 8
+	webhookRetryBase          = time.Minute
+	webhookRetryGrowth        = 4
+	webhookRetryCap           = 9 * time.Hour
+	webhookRetryJitter        = 0.1
+	webhookPauseAfterFailures = 5
 	webhookDeliverTimeout     = webhooks.DefaultRequestTimeout + 15*time.Second
 	webhookUnconfiguredSnooze = 10 * time.Minute
 )
@@ -220,6 +226,18 @@ func (DeliverWebhookArgs) InsertOpts() river.InsertOpts {
 type webhookDeliveryStore interface {
 	WebhookDelivery(ctx context.Context, subscriptionID, eventID uuid.UUID) (store.WebhookDelivery, error)
 	RecordWebhookAttempt(ctx context.Context, in store.WebhookAttemptInput) error
+	RecordWebhookEventFailed(ctx context.Context, subscriptionID uuid.UUID, pauseAfter int) (store.WebhookEventFailure, error)
+	RecordWebhookEventDelivered(ctx context.Context, subscriptionID uuid.UUID) error
+}
+
+func webhookRetryDelay(failures int, jitter float64) time.Duration {
+	delay := webhookRetryBase
+	for i := 1; i < failures && delay < webhookRetryCap; i++ {
+		delay *= webhookRetryGrowth
+	}
+	delay = min(delay, webhookRetryCap)
+	spread := (jitter*2 - 1) * webhookRetryJitter
+	return delay + time.Duration(float64(delay)*spread)
 }
 
 type DeliverWebhookWorker struct {
@@ -234,6 +252,25 @@ type DeliverWebhookWorker struct {
 
 func (w *DeliverWebhookWorker) Timeout(*river.Job[DeliverWebhookArgs]) time.Duration {
 	return webhookDeliverTimeout
+}
+
+func (w *DeliverWebhookWorker) NextRetry(job *river.Job[DeliverWebhookArgs]) time.Time {
+	return w.clock.Now().Add(webhookRetryDelay(len(job.Errors)+1, rand.Float64())) //nolint:gosec
+}
+
+func (w *DeliverWebhookWorker) eventFailed(ctx context.Context, logger *slog.Logger, subscriptionID uuid.UUID) {
+	f, err := w.store.RecordWebhookEventFailed(context.WithoutCancel(ctx), subscriptionID, webhookPauseAfterFailures)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+	case err != nil:
+		logger.ErrorContext(ctx, "failed webhook event not counted", "error", err)
+	case f.Paused:
+		logger.WarnContext(ctx, "webhook subscription paused", "reason", string(store.WebhookPausedFailedDeliveries),
+			"consecutive_failed_events", f.ConsecutiveFailedEvents)
+	default:
+		logger.InfoContext(ctx, "failed webhook event counted", "consecutive_failed_events", f.ConsecutiveFailedEvents,
+			"pause_after", webhookPauseAfterFailures)
+	}
 }
 
 func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverWebhookArgs]) error {
@@ -303,12 +340,19 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 	switch {
 	case result.Succeeded():
 		logger.InfoContext(ctx, "webhook delivered")
+		if err := w.store.RecordWebhookEventDelivered(context.WithoutCancel(ctx), d.SubscriptionID); err != nil {
+			logger.ErrorContext(ctx, "failed webhook events not reset", "error", err)
+		}
 		return nil
 	case err != nil, result.Refused():
 		logger.WarnContext(ctx, "webhook delivery cancelled", "problem", result.Problem())
+		w.eventFailed(ctx, logger, d.SubscriptionID)
 		return river.JobCancel(errors.New(result.Problem()))
 	default:
 		logger.WarnContext(ctx, "webhook delivery failed", "problem", result.Problem(), "max_attempts", job.MaxAttempts)
+		if job.Attempt >= job.MaxAttempts {
+			w.eventFailed(ctx, logger, d.SubscriptionID)
+		}
 		return errors.New(result.Problem())
 	}
 }

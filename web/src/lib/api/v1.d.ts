@@ -335,7 +335,7 @@ export interface paths {
     head?: never;
     /**
      * Change, pause or resume a webhook subscription
-     * @description Changes the URL, the payload version or the status of one of the signed-in user's subscriptions. Members left out are unchanged; at least one is required. `status: paused` pauses the subscription and `status: active` resumes it. The agency and the secret cannot be changed here. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     * @description Changes the URL, the payload version or the status of one of the signed-in user's subscriptions. Members left out are unchanged; at least one is required. `status: paused` pauses the subscription and `status: active` resumes it, including one paused for failed deliveries, and resets `consecutiveFailedEvents` to 0. Events that happen while a subscription is paused are not delivered later. The agency and the secret cannot be changed here. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
      */
     patch: operations["updateWebhookSubscription"];
     trace?: never;
@@ -573,6 +573,11 @@ export interface components {
      * @enum {string}
      */
     WebhookSubscriptionStatus: "active" | "paused";
+    /**
+     * @description Why a subscription is paused: `owner` when its owner paused it, `failed_deliveries` when deliveries of five events in a row failed after every retry. A delivery is retried for about a day before it counts as failed. Setting `status: active` resumes the subscription either way.
+     * @enum {string}
+     */
+    WebhookSubscriptionPausedReason: "owner" | "failed_deliveries";
     WebhookSubscription: {
       /** Format: uuid */
       id: string;
@@ -585,6 +590,20 @@ export interface components {
       url: string;
       payloadVersion: components["schemas"]["WebhookPayloadVersion"];
       status: components["schemas"]["WebhookSubscriptionStatus"];
+      /** @description Why the subscription is paused; null while it is active. */
+      pausedReason:
+        | (string & components["schemas"]["WebhookSubscriptionPausedReason"])
+        | null;
+      /**
+       * Format: date-time
+       * @description When the subscription was paused; null while it is active.
+       */
+      pausedAt: string | null;
+      /**
+       * Format: int64
+       * @description How many events in a row failed to be delivered after every retry. A delivered event and resuming the subscription reset it to 0.
+       */
+      consecutiveFailedEvents: number;
       /** Format: date-time */
       createdAt: string;
       /**

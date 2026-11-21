@@ -211,3 +211,51 @@ func truncateUTF8(s string, limit int) string {
 	}
 	return s[:cut]
 }
+
+type WebhookEventFailure struct {
+	ConsecutiveFailedEvents int
+	Paused                  bool
+}
+
+func (s *Store) RecordWebhookEventFailed(ctx context.Context, subscriptionID uuid.UUID, pauseAfter int) (WebhookEventFailure, error) {
+	var f WebhookEventFailure
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		var status WebhookStatus
+		err := tx.QueryRow(ctx, `SELECT status FROM webhook_subscriptions WHERE id = $1 FOR UPDATE`, subscriptionID).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock webhook subscription: %w", err)
+		}
+		var after WebhookStatus
+		err = tx.QueryRow(ctx, `
+UPDATE webhook_subscriptions SET
+    consecutive_failed_events = consecutive_failed_events + 1,
+    status = CASE WHEN status = 'active' AND consecutive_failed_events + 1 >= $2 THEN 'paused' ELSE status END,
+    paused_reason = CASE WHEN status = 'active' AND consecutive_failed_events + 1 >= $2 THEN 'failed_deliveries' ELSE paused_reason END,
+    paused_at = CASE WHEN status = 'active' AND consecutive_failed_events + 1 >= $2 THEN now() ELSE paused_at END
+WHERE id = $1
+RETURNING consecutive_failed_events, status`, subscriptionID, pauseAfter).Scan(&f.ConsecutiveFailedEvents, &after)
+		if err != nil {
+			return fmt.Errorf("count failed webhook event: %w", err)
+		}
+		f.Paused = status == WebhookActive && after == WebhookPaused
+		return nil
+	})
+	if errors.Is(err, ErrNotFound) {
+		return WebhookEventFailure{}, err
+	}
+	if err != nil {
+		return WebhookEventFailure{}, fmt.Errorf("record failed webhook event: %w", err)
+	}
+	return f, nil
+}
+
+func (s *Store) RecordWebhookEventDelivered(ctx context.Context, subscriptionID uuid.UUID) error {
+	if _, err := s.pool.Exec(ctx, `UPDATE webhook_subscriptions SET consecutive_failed_events = 0 WHERE id = $1 AND consecutive_failed_events <> 0`,
+		subscriptionID); err != nil {
+		return fmt.Errorf("reset failed webhook events: %w", err)
+	}
+	return nil
+}
