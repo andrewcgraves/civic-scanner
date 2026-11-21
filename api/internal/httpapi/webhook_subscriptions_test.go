@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -23,12 +24,13 @@ import (
 )
 
 type webhookCalls struct {
-	subs    []store.WebhookSubscription
-	created []store.WebhookSubscriptionInput
-	updates []store.WebhookSubscriptionUpdate
-	rotated [][]byte
-	deleted []uuid.UUID
-	err     error
+	subs      []store.WebhookSubscription
+	created   []store.WebhookSubscriptionInput
+	updates   []store.WebhookSubscriptionUpdate
+	rotated   [][]byte
+	deleted   []uuid.UUID
+	err       error
+	updateErr error
 }
 
 func (c *webhookCalls) find(userID, id uuid.UUID) (int, error) {
@@ -90,6 +92,9 @@ func (f fakeStore) UpdateWebhookSubscription(_ context.Context, userID, id uuid.
 		return store.WebhookSubscription{}, errors.New("unexpected UpdateWebhookSubscription")
 	}
 	f.webhooks.updates = append(f.webhooks.updates, update)
+	if f.webhooks.updateErr != nil {
+		return store.WebhookSubscription{}, f.webhooks.updateErr
+	}
 	i, err := f.webhooks.find(userID, id)
 	if err != nil {
 		return store.WebhookSubscription{}, err
@@ -136,6 +141,38 @@ func webhookFlags(flags ...string) func(context.Context, string) bool {
 	return func(_ context.Context, flag string) bool { return slices.Contains(flags, flag) }
 }
 
+type webhookResolver struct {
+	answers map[string][]string
+	asked   *[]string
+}
+
+func (r webhookResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	if r.asked != nil {
+		*r.asked = append(*r.asked, host)
+	}
+	answer, ok := r.answers[host]
+	if !ok {
+		if strings.HasPrefix(host, "missing.") {
+			return nil, errors.New("no such host")
+		}
+		answer = []string{"93.184.216.34"}
+	}
+	out := make([]netip.Addr, 0, len(answer))
+	for _, a := range answer {
+		out = append(out, netip.MustParseAddr(a))
+	}
+	return out, nil
+}
+
+var privateAnswers = map[string][]string{
+	"internal.example.com": {"10.0.0.5"},
+	"metadata.example.com": {"93.184.216.34", "169.254.169.254"},
+}
+
+func withResolver(r webhookResolver) HandlerOption {
+	return WithWebhookAddressCheck(webhooks.AddressCheck{Resolver: r})
+}
+
 func testWebhookSealer(t *testing.T) *webhooks.Sealer {
 	t.Helper()
 	s, err := webhooks.NewSealer(config.NewSecret(strings.Repeat("k", config.WebhookSecretKeyBytes)))
@@ -162,7 +199,7 @@ func newWebhookEnv(t *testing.T, plan store.Plan, flags func(context.Context, st
 	sealer := testWebhookSealer(t)
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	all := append([]HandlerOption{WithAuthenticator(goodAuth()), WithFlags(flags), WithWebhookSealer(sealer)}, opts...)
+	all := append([]HandlerOption{WithAuthenticator(goodAuth()), WithFlags(flags), WithWebhookSealer(sealer), withResolver(webhookResolver{answers: privateAnswers})}, opts...)
 	h := NewHandler(fakeStore{users: users, webhooks: calls}, logger, "test", all...)
 	return webhookEnv{h: h, user: user, users: users, calls: calls, sealer: sealer, logs: logs}
 }
@@ -381,6 +418,80 @@ func TestCreateWebhookSubscriptionRefuses(t *testing.T) {
 	}
 }
 
+func TestCreateWebhookSubscriptionRefusesNonPublicEndpoints(t *testing.T) {
+	for url, code := range map[string]string{
+		"https://127.0.0.1/hook":            "not_public",
+		"https://10.0.0.1:8443/hook":        "not_public",
+		"https://169.254.169.254/latest":    "not_public",
+		"https://[::1]/hook":                "not_public",
+		"https://[fd12::1]/hook":            "not_public",
+		"https://localhost/hook":            "not_public",
+		"https://2130706433/hook":           "not_public",
+		"https://internal.example.com/hook": "not_public",
+		"https://metadata.example.com/hook": "not_public",
+		"https://missing.example.com/hook":  "unresolvable_host",
+	} {
+		env := newWebhookEnv(t, store.PlanPaid, webhookFlags(FlagAccounts, FlagWebhookSubscriptions))
+		rec := env.do(t, http.MethodPost, "/v1/webhook-subscriptions", "Bearer good", `{"agency":"la-metro","url":"`+url+`?token=SeCrEt"}`)
+		problem := decodeError(t, rec)
+		if rec.Code != http.StatusBadRequest || problem.Code != code || problem.Message == "" || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("%s: status %d, body %s; want 400 %s", url, rec.Code, rec.Body, code)
+		}
+		if len(env.calls.created) != 0 {
+			t.Errorf("%s: stored", url)
+		}
+		if !strings.Contains(env.logs.String(), "webhook endpoint refused") || strings.Contains(env.logs.String(), "SeCrEt") {
+			t.Errorf("%s: logs = %s", url, env.logs)
+		}
+	}
+}
+
+func TestCreateWebhookSubscriptionChecksTheAddressAfterTheBody(t *testing.T) {
+	var asked []string
+	env := newWebhookEnv(t, store.PlanPaid, webhookFlags(FlagAccounts, FlagWebhookSubscriptions), withResolver(webhookResolver{asked: &asked}))
+	for _, body := range []string{
+		`{"agency":"","url":"https://hooks.example.com"}`,
+		`{"agency":"la-metro","url":"http://hooks.example.com"}`,
+		`{"agency":"la-metro","url":"https://hooks.example.com","payloadVersion":"v9"}`,
+	} {
+		if rec := env.do(t, http.MethodPost, "/v1/webhook-subscriptions", "Bearer good", body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d", body, rec.Code)
+		}
+	}
+	if len(asked) != 0 {
+		t.Errorf("resolved %v for bodies that were refused anyway", asked)
+	}
+	if rec := env.do(t, http.MethodPost, "/v1/webhook-subscriptions", "Bearer good", `{"agency":"la-metro","url":"https://Hooks.Example.com/x"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create: status %d, body %s", rec.Code, rec.Body)
+	}
+	if !slices.Equal(asked, []string{"hooks.example.com"}) {
+		t.Errorf("asked = %v", asked)
+	}
+}
+
+func TestUpdateWebhookSubscriptionChecksOnlyANewURL(t *testing.T) {
+	var asked []string
+	env := newWebhookEnv(t, store.PlanPaid, webhookFlags(FlagAccounts, FlagWebhookSubscriptions), withResolver(webhookResolver{asked: &asked, answers: map[string][]string{"hooks.example.com": {"10.0.0.9"}}}))
+	mine := env.add(t, env.user.ID)
+	path := "/v1/webhook-subscriptions/" + mine.ID.String()
+
+	for _, body := range []string{`{"status":"paused"}`, `{"status":"paused","url":"` + mine.URL + `"}`, `{"url":" ` + strings.Replace(mine.URL, "hooks.example.com", "HOOKS.example.com", 1) + `"}`} {
+		if rec := env.do(t, http.MethodPatch, path, "Bearer good", body); rec.Code != http.StatusOK {
+			t.Errorf("%s: status %d, body %s", body, rec.Code, rec.Body)
+		}
+	}
+	if len(asked) != 0 {
+		t.Errorf("checked an unchanged URL: %v", asked)
+	}
+	rec := env.do(t, http.MethodPatch, path, "Bearer good", `{"status":"active","url":"https://hooks.example.com/other"}`)
+	if rec.Code != http.StatusBadRequest || decodeError(t, rec).Code != "not_public" {
+		t.Errorf("move to a private host: status %d, body %s", rec.Code, rec.Body)
+	}
+	if len(env.calls.updates) != 3 || env.calls.subs[0].URL != mine.URL || env.calls.subs[0].Status != store.WebhookPaused {
+		t.Errorf("a refused update changed the subscription: %+v", env.calls.subs[0])
+	}
+}
+
 func TestWebhookSecretsNeedAKey(t *testing.T) {
 	env := newWebhookEnv(t, store.PlanPaid, webhookFlags(FlagAccounts, FlagWebhookSubscriptions), WithWebhookSealer(nil))
 	sub := env.add(t, env.user.ID)
@@ -482,31 +593,40 @@ func TestUpdateWebhookSubscription(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name     string
-		path     string
-		body     string
-		storeErr error
-		status   int
-		code     string
+		name      string
+		path      string
+		body      string
+		storeErr  error
+		updateErr error
+		status    int
+		code      string
 	}{
-		{"empty", path, `{}`, nil, http.StatusBadRequest, "nothing_to_update"},
-		{"nulls", path, `{"status":null,"url":null}`, nil, http.StatusBadRequest, "nothing_to_update"},
-		{"bad status", path, `{"status":"disabled"}`, nil, http.StatusBadRequest, "invalid_status"},
-		{"bad version", path, `{"payloadVersion":"v0"}`, nil, http.StatusBadRequest, "invalid_payload_version"},
-		{"bad url", path, `{"url":"http://x.example"}`, nil, http.StatusBadRequest, "unsupported_scheme"},
-		{"empty url", path, `{"url":""}`, nil, http.StatusBadRequest, "required"},
-		{"another user's", "/v1/webhook-subscriptions/" + env.add(t, uuid.New()).ID.String(), `{"status":"paused"}`, nil, http.StatusNotFound, "not_found"},
-		{"duplicate", path, `{"url":"https://dup.example"}`, store.ErrWebhookSubscriptionExists, http.StatusConflict, "already_subscribed"},
-		{"database", path, `{"status":"paused"}`, errors.New("database down"), http.StatusInternalServerError, "internal_error"},
+		{"empty", path, `{}`, nil, nil, http.StatusBadRequest, "nothing_to_update"},
+		{"nulls", path, `{"status":null,"url":null}`, nil, nil, http.StatusBadRequest, "nothing_to_update"},
+		{"bad status", path, `{"status":"disabled"}`, nil, nil, http.StatusBadRequest, "invalid_status"},
+		{"bad version", path, `{"payloadVersion":"v0"}`, nil, nil, http.StatusBadRequest, "invalid_payload_version"},
+		{"bad url", path, `{"url":"http://x.example"}`, nil, nil, http.StatusBadRequest, "unsupported_scheme"},
+		{"empty url", path, `{"url":""}`, nil, nil, http.StatusBadRequest, "required"},
+		{"private ip", path, `{"url":"https://10.0.0.1/h"}`, nil, nil, http.StatusBadRequest, "not_public"},
+		{"private name", path, `{"url":"https://internal.example.com/h"}`, nil, nil, http.StatusBadRequest, "not_public"},
+		{"unresolvable", path, `{"url":"https://missing.example.com/h"}`, nil, nil, http.StatusBadRequest, "unresolvable_host"},
+		{"another user's", "/v1/webhook-subscriptions/" + env.add(t, uuid.New()).ID.String(), `{"status":"paused"}`, nil, nil, http.StatusNotFound, "not_found"},
+		{"another user's url", "/v1/webhook-subscriptions/" + env.add(t, uuid.New()).ID.String(), `{"url":"https://new.example.com/x"}`, nil, nil, http.StatusNotFound, "not_found"},
+		{"duplicate", path, `{"url":"https://dup.example"}`, nil, store.ErrWebhookSubscriptionExists, http.StatusConflict, "already_subscribed"},
+		{"database", path, `{"status":"paused"}`, errors.New("database down"), nil, http.StatusInternalServerError, "internal_error"},
+		{"database reading the url", path, `{"url":"https://new.example.com/x"}`, errors.New("database down"), nil, http.StatusInternalServerError, "internal_error"},
 	} {
 		before := len(env.calls.updates)
 		env.calls.err = tc.storeErr
+		env.calls.updateErr = tc.updateErr
 		rec := env.do(t, http.MethodPatch, tc.path, "Bearer good", tc.body)
 		env.calls.err = nil
+		env.calls.updateErr = nil
 		if rec.Code != tc.status || decodeError(t, rec).Code != tc.code {
 			t.Errorf("%s: status %d, body %s; want %d %s", tc.name, rec.Code, rec.Body, tc.status, tc.code)
 		}
-		if called := len(env.calls.updates) > before; called != (tc.status != http.StatusBadRequest) {
+		wantCalled := tc.status != http.StatusBadRequest && tc.name != "another user's url" && tc.name != "database reading the url"
+		if called := len(env.calls.updates) > before; called != wantCalled {
 			t.Errorf("%s: store called %v", tc.name, called)
 		}
 	}

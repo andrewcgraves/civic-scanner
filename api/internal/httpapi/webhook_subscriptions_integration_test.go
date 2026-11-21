@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/netip"
 	"slices"
 	"strings"
 	"testing"
@@ -49,6 +51,23 @@ func callJSON(t *testing.T, method, url, token, body string) (int, http.Header, 
 	return resp.StatusCode, resp.Header, raw
 }
 
+type integrationResolver map[string]string
+
+func (r integrationResolver) LookupNetIP(_ context.Context, _, host string) ([]netip.Addr, error) {
+	addr, ok := r[host]
+	if !ok {
+		return nil, errors.New("no such host")
+	}
+	return []netip.Addr{netip.MustParseAddr(addr)}, nil
+}
+
+var webhookAddresses = httpapi.WithWebhookAddressCheck(webhooks.AddressCheck{Resolver: integrationResolver{
+	"hooks.example.com":    "93.184.216.34",
+	"other.example.com":    "93.184.216.35",
+	"internal.example.com": "10.0.0.5",
+	"metadata.example.com": "169.254.169.254",
+}})
+
 func TestWebhookSubscriptionsAgainstPostgres(t *testing.T) {
 	ctx := t.Context()
 	pool := testdb.Pool(t)
@@ -59,7 +78,7 @@ func TestWebhookSubscriptionsAgainstPostgres(t *testing.T) {
 	flags := func(_ context.Context, flag string) bool {
 		return slices.Contains([]string{httpapi.FlagAccounts, httpapi.FlagWebhookSubscriptions}, flag)
 	}
-	s := newAuthServer(t, flags, httpapi.WithWebhookSealer(sealer))
+	s := newAuthServer(t, flags, httpapi.WithWebhookSealer(sealer), webhookAddresses)
 	strangerID := "user_integration_" + uuid.NewString()
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.WithoutCancel(ctx), `DELETE FROM users WHERE workos_user_id = $1`, strangerID)
@@ -173,5 +192,83 @@ func TestWebhookSubscriptionsAgainstPostgres(t *testing.T) {
 	}
 	if status, _, _ := callJSON(t, http.MethodGet, base, owner, ""); status != http.StatusPaymentRequired {
 		t.Errorf("after downgrading: %d, want 402", status)
+	}
+}
+
+func TestWebhookEndpointsMustBePublicAgainstPostgres(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	sealer, err := webhooks.NewSealer(config.NewSecret(string(bytes.Repeat([]byte{9}, config.WebhookSecretKeyBytes))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	flags := func(_ context.Context, flag string) bool {
+		return slices.Contains([]string{httpapi.FlagAccounts, httpapi.FlagWebhookSubscriptions}, flag)
+	}
+	s := newAuthServer(t, flags, httpapi.WithWebhookSealer(sealer), webhookAddresses)
+	owner := signedToken(t, s.key, "k1", s.claims(s.users, 5*time.Minute))
+	slug := "civ57-" + uuid.NewString()
+	if _, err := pool.Exec(ctx, `INSERT INTO agencies (slug, name, status, website) VALUES ($1, 'Webhook Agency', 'live', 'https://example.com')`, slug); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.WithoutCancel(ctx), `DELETE FROM agencies WHERE slug = $1`, slug)
+	})
+	base := s.url + "/v1/webhook-subscriptions"
+	if status, _, raw := callJSON(t, http.MethodGet, base, owner, ""); status != http.StatusPaymentRequired {
+		t.Fatalf("first sight: %d %s", status, raw)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE users SET plan = 'paid' WHERE workos_user_id = $1`, s.users); err != nil {
+		t.Fatal(err)
+	}
+
+	for url, code := range map[string]string{
+		"https://127.0.0.1/in":              "not_public",
+		"https://192.168.1.1:8443/in":       "not_public",
+		"https://[::ffff:169.254.169.254]/": "not_public",
+		"https://localhost/in":              "not_public",
+		"https://internal.example.com/in":   "not_public",
+		"https://metadata.example.com/in":   "not_public",
+		"https://missing.example.com/in":    "unresolvable_host",
+	} {
+		status, header, raw := callJSON(t, http.MethodPost, base, owner, `{"agency":"`+slug+`","url":"`+url+`"}`)
+		var problem v1.Error
+		if err := json.Unmarshal(raw, &problem); status != http.StatusBadRequest || err != nil || problem.Code != code || problem.Message == "" || header.Get("Cache-Control") != "no-store" {
+			t.Errorf("create %s: %d %s, want 400 %s", url, status, raw, code)
+		}
+	}
+	var count int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM webhook_subscriptions w JOIN agencies a ON a.id = w.agency_id WHERE a.slug = $1`, slug).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("refused creates stored %d rows (%v)", count, err)
+	}
+
+	status, _, raw := callJSON(t, http.MethodPost, base, owner, `{"agency":"`+slug+`","url":"https://93.184.216.34/in"}`)
+	var created v1.WebhookSubscriptionWithSecret
+	if err := json.Unmarshal(raw, &created); status != http.StatusCreated || err != nil {
+		t.Fatalf("create with a public IP: %d %s", status, raw)
+	}
+	one := base + "/" + created.Id.String()
+	if status, _, raw := callJSON(t, http.MethodPatch, one, owner, `{"url":"https://other.example.com/in"}`); status != http.StatusOK {
+		t.Fatalf("move to a public host: %d %s", status, raw)
+	}
+	for url, code := range map[string]string{
+		"https://internal.example.com/in": "not_public",
+		"https://10.0.0.1/in":             "not_public",
+		"https://missing.example.com/in":  "unresolvable_host",
+	} {
+		status, _, raw := callJSON(t, http.MethodPatch, one, owner, `{"status":"paused","url":"`+url+`"}`)
+		if status != http.StatusBadRequest || !strings.Contains(string(raw), `"`+code+`"`) {
+			t.Errorf("move to %s: %d %s, want 400 %s", url, status, raw, code)
+		}
+	}
+	var stored, storedStatus string
+	if err := pool.QueryRow(ctx, `SELECT url, status FROM webhook_subscriptions WHERE id = $1`, created.Id).Scan(&stored, &storedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "https://other.example.com/in" || storedStatus != "active" {
+		t.Errorf("a refused update changed the row: %s %s", stored, storedStatus)
+	}
+	if status, _, raw := callJSON(t, http.MethodPatch, base+"/"+uuid.NewString(), owner, `{"url":"https://other.example.com/in"}`); status != http.StatusNotFound {
+		t.Errorf("unknown id with a url: %d %s", status, raw)
 	}
 }
