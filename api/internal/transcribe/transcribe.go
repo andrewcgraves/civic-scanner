@@ -2,7 +2,6 @@ package transcribe
 
 import (
 	"context"
-	"net/http"
 	"strings"
 	"time"
 
@@ -35,15 +34,8 @@ type Client interface {
 }
 
 func New(cfg config.Transcription, opts ...Option) Client {
-	var up uploader
-	switch cfg.Provider {
-	case config.TranscriptionGroq:
-		up = &groq{cfg: cfg, http: &http.Client{Timeout: cfg.Timeout}}
-	default:
-		up = newGateway(cfg)
-	}
 	c := &chunker{
-		upload:        up,
+		upload:        newGateway(cfg),
 		apiKey:        cfg.APIKey,
 		splitter:      FFmpeg{},
 		chunkLength:   defaultChunkLength,

@@ -50,7 +50,8 @@ type Handler struct {
 
 	webhookSealer *webhooks.Sealer
 
-	stripeEvents StripeEventReceiver
+	stripeEvents       StripeEventReceiver
+	submissionFollowUp store.SubmissionFollowUp
 }
 
 var _ v1.StrictServerInterface = (*Handler)(nil)
@@ -61,6 +62,10 @@ func WithAuthenticator(a Authenticator) HandlerOption { return func(h *Handler) 
 
 func WithFlags(enabled func(ctx context.Context, flag string) bool) HandlerOption {
 	return func(h *Handler) { h.enabled = enabled }
+}
+
+func WithSubmissionFollowUp(f store.SubmissionFollowUp) HandlerOption {
+	return func(h *Handler) { h.submissionFollowUp = f }
 }
 
 func NewHandler(s Store, logger *slog.Logger, version string, opts ...HandlerOption) *Handler {

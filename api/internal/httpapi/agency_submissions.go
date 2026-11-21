@@ -110,6 +110,7 @@ func (h *Handler) CreateAgencySubmission(ctx context.Context, _ v1.CreateAgencyS
 	}
 	created, err := h.store.CreateAgencySubmission(ctx, store.AgencySubmissionInput{
 		UserID: user.ID, Name: clean.Name, Website: clean.Website, WebsiteKey: clean.WebsiteKey,
+		FollowUp: h.submissionFollowUp,
 	})
 	switch {
 	case errors.Is(err, store.ErrWebsiteOnFile):

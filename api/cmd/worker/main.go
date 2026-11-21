@@ -93,6 +93,7 @@ func run(ctx context.Context) error {
 		Registry:     registry,
 		Fetcher:      fetcher,
 		Fallback:     firecrawl,
+		Screener:     firecrawl,
 		Extractor:    &extract.Extractor{PDF: pdfExtractor},
 		CheckHourUTC: cfg.Ingest.CheckHourUTC,
 		AgendaGrace:  cfg.Ingest.AgendaRefreshGrace,

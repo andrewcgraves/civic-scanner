@@ -15,6 +15,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/featureflags"
 	"github.com/andrewcgraves/civic-scanner/api/internal/fetch"
 	"github.com/andrewcgraves/civic-scanner/api/internal/llm"
+	"github.com/andrewcgraves/civic-scanner/api/internal/screen"
 	"github.com/andrewcgraves/civic-scanner/api/internal/sources"
 	"github.com/andrewcgraves/civic-scanner/api/internal/storage"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
@@ -26,6 +27,7 @@ type Config struct {
 	Registry       *sources.Registry
 	Fetcher        fetch.Fetcher
 	Fallback       fetch.Fetcher
+	Screener       fetch.Fetcher
 	Extractor      TextExtractor
 	Clock          sources.Clock
 	CheckHourUTC   int
@@ -209,6 +211,13 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		storage: cfg.Storage,
 		clock:   cfg.Clock,
 		enabled: cfg.Enabled,
+	})
+	river.AddWorker(workers, &ScreenAgencyWorker{
+		logger:   logger,
+		store:    st,
+		screener: screen.Screener{Fetcher: cfg.Screener},
+		clock:    cfg.Clock,
+		enabled:  cfg.Enabled,
 	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,

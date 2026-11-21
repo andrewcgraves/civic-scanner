@@ -9,10 +9,7 @@ import (
 	"time"
 )
 
-const (
-	TranscriptionGateway = "gateway"
-	TranscriptionGroq    = "groq"
-)
+const TranscriptionGateway = "gateway"
 
 type Transcription struct {
 	Provider          string
@@ -34,16 +31,11 @@ func loadTranscription() (Transcription, error) {
 		return Transcription{}, fmt.Errorf("TRANSCRIPTION_TIMEOUT: must be positive, got %s", timeout)
 	}
 	provider := envOr("TRANSCRIPTION_PROVIDER", TranscriptionGateway)
-	cfg := Transcription{Provider: provider, Timeout: timeout}
-	switch provider {
-	case TranscriptionGateway:
-		err = loadGatewayTranscription(&cfg)
-	case TranscriptionGroq:
-		err = loadGroqTranscription(&cfg)
-	default:
-		err = fmt.Errorf("TRANSCRIPTION_PROVIDER: must be %q or %q, got %q", TranscriptionGateway, TranscriptionGroq, provider)
+	if provider != TranscriptionGateway {
+		return Transcription{}, fmt.Errorf("TRANSCRIPTION_PROVIDER: must be %q, got %q", TranscriptionGateway, provider)
 	}
-	if err != nil {
+	cfg := Transcription{Provider: provider, Timeout: timeout}
+	if err := loadGatewayTranscription(&cfg); err != nil {
 		return Transcription{}, err
 	}
 	return cfg, nil
@@ -79,23 +71,6 @@ func loadGatewayTranscription(cfg *Transcription) error {
 	cfg.DirectUploadBytes = direct
 	cfg.MaxChunkBytes = chunk
 	cfg.ProviderOptions = options
-	return nil
-}
-
-func loadGroqTranscription(cfg *Transcription) error {
-	baseURL := envOr("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-	if err := checkHTTPURL(baseURL); err != nil {
-		return fmt.Errorf("GROQ_BASE_URL: %w", err)
-	}
-	upload, err := positiveMB("TRANSCRIPTION_MAX_UPLOAD_MB", "25")
-	if err != nil {
-		return err
-	}
-	cfg.APIKey = os.Getenv("GROQ_API_KEY")
-	cfg.BaseURL = baseURL
-	cfg.Model = envOr("TRANSCRIPTION_MODEL", "whisper-large-v3-turbo")
-	cfg.DirectUploadBytes = upload
-	cfg.MaxChunkBytes = upload
 	return nil
 }
 
