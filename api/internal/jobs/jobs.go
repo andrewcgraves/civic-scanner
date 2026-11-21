@@ -44,6 +44,8 @@ type Config struct {
 	SummaryTier    llm.Tier
 	TranscriptTier llm.Tier
 	LLMTimeout     time.Duration
+	Webhooks       Webhooks
+	WebhookQueue   string
 	Queue          string
 	NoPeriodicJobs bool
 }
@@ -60,6 +62,9 @@ func (c Config) withDefaults(logger *slog.Logger, st *store.Store) Config {
 	}
 	if c.AudioQueue == "" {
 		c.AudioQueue = AudioQueue
+	}
+	if c.WebhookQueue == "" {
+		c.WebhookQueue = WebhookQueue
 	}
 	if c.FollowUp == nil {
 		c.FollowUp = FollowUps{
@@ -210,6 +215,26 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		clock:   cfg.Clock,
 		enabled: cfg.Enabled,
 	})
+	river.AddWorker(workers, &EnqueueWebhookFanOutsWorker{
+		logger:   logger,
+		store:    st,
+		webhooks: cfg.Webhooks,
+		queue:    cfg.Queue,
+	})
+	river.AddWorker(workers, &FanOutWebhooksWorker{
+		logger:       logger,
+		pool:         pool,
+		store:        st,
+		enabled:      cfg.Enabled,
+		deliverQueue: cfg.WebhookQueue,
+	})
+	river.AddWorker(workers, &DeliverWebhookWorker{
+		logger:   logger,
+		store:    st,
+		webhooks: cfg.Webhooks,
+		clock:    cfg.Clock,
+		enabled:  cfg.Enabled,
+	})
 	river.AddWorker(workers, &EnqueueAgencyChecksWorker{
 		logger:  logger,
 		store:   st,
@@ -242,6 +267,11 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 			periodicTranscriptSummarySweep(cfg.Clock, cfg.Queue),
 			&river.PeriodicJobOpts{ID: EnqueueTranscriptSummariesArgs{}.Kind(), RunOnStart: true},
 		))
+		periodic = append(periodic, river.NewPeriodicJob(
+			river.PeriodicInterval(webhookSweepInterval),
+			periodicWebhookSweep(cfg.Clock, cfg.Queue),
+			&river.PeriodicJobOpts{ID: EnqueueWebhookFanOutsArgs{}.Kind(), RunOnStart: true},
+		))
 		retention := dailySchedule{hourUTC: audioRetentionHourUTC}
 		periodic = append(periodic, river.NewPeriodicJob(
 			retention,
@@ -255,8 +285,9 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		CancelledJobRetentionPeriod: summaryFailureBackoff,
 		DiscardedJobRetentionPeriod: summaryFailureBackoff,
 		Queues: map[string]river.QueueConfig{
-			cfg.Queue:      {MaxWorkers: 10},
-			cfg.AudioQueue: {MaxWorkers: audioQueueWorkers},
+			cfg.Queue:        {MaxWorkers: 10},
+			cfg.AudioQueue:   {MaxWorkers: audioQueueWorkers},
+			cfg.WebhookQueue: {MaxWorkers: webhookQueueWorkers},
 		},
 		Workers:      workers,
 		PeriodicJobs: periodic,

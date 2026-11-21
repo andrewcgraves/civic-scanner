@@ -82,6 +82,7 @@ export default defineRailway(() => {
       ANTHROPIC_API_KEY: preserve(),
       AI_GATEWAY_API_KEY: preserve(),
       FIRECRAWL_API_KEY: preserve(),
+      WEBHOOK_SECRET_KEY: "${{civic-scanner.WEBHOOK_SECRET_KEY}}",
       STORAGE_ENDPOINT: "${{audio.ENDPOINT}}",
       STORAGE_REGION: "${{audio.REGION}}",
       STORAGE_BUCKET: "${{audio.BUCKET}}",

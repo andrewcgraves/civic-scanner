@@ -545,6 +545,71 @@ export interface components {
     WebhookSubscriptionList: {
       subscriptions: components["schemas"]["WebhookSubscription"][];
     };
+    /**
+     * @description What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
+     * @enum {string}
+     */
+    WebhookEventType:
+      "agenda_published" | "agenda_changed" | "transcript_ready";
+    /** @description The body of a webhook delivery with payload version `v1`, sent as `POST` with `Content-Type: application/json` to the subscription's URL. Not a route of this API: Civic Scanner sends it to subscribers. Each request carries the Standard Webhooks headers: `webhook-id` (the event's `id`, the same on every retry and at every subscriber, so a receiver can drop duplicates), `webhook-timestamp` (when this attempt was signed, in Unix seconds) and `webhook-signature` (`v1,` followed by the standard base64 HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}`, keyed with the bytes the subscription's `whsec_` secret encodes). Any 2xx answer is a delivery; anything else, a redirect included, is retried. New optional members may be added; receivers must ignore members they do not know. */
+    WebhookEventV1: {
+      /**
+       * Format: uuid
+       * @description The event's id, repeated in the `webhook-id` header.
+       */
+      id: string;
+      type: components["schemas"]["WebhookEventType"];
+      payloadVersion: components["schemas"]["WebhookPayloadVersion"];
+      /**
+       * Format: date-time
+       * @description When what the event describes happened. For `agenda_changed`, when the change was found, which can be earlier than the delivery of an event sent before it.
+       */
+      occurredAt: string;
+      agency: components["schemas"]["WebhookAgency"];
+      meeting: components["schemas"]["WebhookMeeting"];
+      agenda?: components["schemas"]["WebhookAgenda"];
+      transcript?: components["schemas"]["WebhookTranscript"];
+    };
+    WebhookAgency: {
+      slug: string;
+      name: string;
+    };
+    WebhookMeeting: {
+      /** Format: uuid */
+      id: string;
+      title: string;
+      /** Format: date-time */
+      startsAt: string;
+      /**
+       * Format: uri
+       * @description The agency's own page for the meeting. Absent when the source gave none.
+       */
+      sourceUrl?: string;
+    };
+    /** @description Present for `agenda_published` and `agenda_changed`. */
+    WebhookAgenda: {
+      /**
+       * Format: uuid
+       * @description The agenda version the event is about.
+       */
+      versionId: string;
+      /** @description 1 for the first agenda of the meeting, then counting up. */
+      version: number;
+      /** @description For `agenda_changed`, what changed, in plain text. Absent when the change was recorded without a note. Agency and model text: show it as text, never as HTML or Markdown. */
+      changeNote?: string;
+      /**
+       * @description Who wrote `changeNote`: `model` when a language model described the change, `diff` when it was built from the word differences.
+       * @enum {string}
+       */
+      changeNoteSource?: "model" | "diff";
+    };
+    /** @description Present for `transcript_ready`. */
+    WebhookTranscript: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      recordingId: string;
+    };
     ValidationError: {
       /** @description Stable machine-readable error code. */
       code: string;

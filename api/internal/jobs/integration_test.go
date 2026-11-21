@@ -58,11 +58,12 @@ func seedAgency(t *testing.T, pool *pgxpool.Pool, slug, status string) uuid.UUID
 }
 
 type harness struct {
-	t          *testing.T
-	pool       *pgxpool.Pool
-	client     *river.Client[pgx.Tx]
-	queue      string
-	audioQueue string
+	t            *testing.T
+	pool         *pgxpool.Pool
+	client       *river.Client[pgx.Tx]
+	queue        string
+	audioQueue   string
+	webhookQueue string
 }
 
 func start(t *testing.T, pool *pgxpool.Pool, cfg jobs.Config) *harness {
@@ -75,6 +76,7 @@ func startLogged(t *testing.T, pool *pgxpool.Pool, cfg jobs.Config, logger *slog
 	ctx := context.WithoutCancel(t.Context())
 	cfg.Queue = "jobs_test_" + randomSuffix(t)
 	cfg.AudioQueue = cfg.Queue + "_audio"
+	cfg.WebhookQueue = cfg.Queue + "_webhooks"
 	cfg.NoPeriodicJobs = true
 	if cfg.Enabled == nil {
 		cfg.Enabled = func(context.Context, string) bool { return true }
@@ -96,7 +98,7 @@ func startLogged(t *testing.T, pool *pgxpool.Pool, cfg jobs.Config, logger *slog
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Stop(ctx) })
-	return &harness{t: t, pool: pool, client: client, queue: cfg.Queue, audioQueue: cfg.AudioQueue}
+	return &harness{t: t, pool: pool, client: client, queue: cfg.Queue, audioQueue: cfg.AudioQueue, webhookQueue: cfg.WebhookQueue}
 }
 
 func (h *harness) check(slug string, day time.Time) int64 {
