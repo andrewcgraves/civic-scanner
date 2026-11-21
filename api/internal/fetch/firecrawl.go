@@ -18,6 +18,7 @@ import (
 
 const (
 	firecrawlContentType = "text/markdown; charset=utf-8"
+	firecrawlHTMLType    = "text/html; charset=utf-8"
 	envelopeSlackBytes   = 1 << 20
 )
 
@@ -32,9 +33,18 @@ func NewFirecrawl(cfg config.Fetch, opts ...Option) Fetcher {
 }
 
 type scrapeRequest struct {
-	URL     string   `json:"url"`
-	Formats []string `json:"formats"`
-	MaxAge  int      `json:"maxAge"`
+	URL             string   `json:"url"`
+	Formats         []string `json:"formats"`
+	MaxAge          int      `json:"maxAge"`
+	OnlyMainContent *bool    `json:"onlyMainContent,omitempty"`
+}
+
+func newScrapeRequest(target string, rawHTML bool) scrapeRequest {
+	if !rawHTML {
+		return scrapeRequest{URL: target, Formats: []string{"markdown"}}
+	}
+	wholePage := false
+	return scrapeRequest{URL: target, Formats: []string{"rawHtml"}, OnlyMainContent: &wholePage}
 }
 
 type scrapeResponse struct {
@@ -42,6 +52,7 @@ type scrapeResponse struct {
 	Error   string `json:"error"`
 	Data    *struct {
 		Markdown string `json:"markdown"`
+		RawHTML  string `json:"rawHtml"`
 		Metadata struct {
 			StatusCode int    `json:"statusCode"`
 			URL        string `json:"url"`
@@ -60,7 +71,7 @@ func (f *firecrawl) Fetch(ctx context.Context, req Request) (Response, error) {
 	if refused := f.opts.refused(ctx, "firecrawl", req.URL, f.opts.guard().CheckHost(target.Hostname())); refused != nil {
 		return Response{}, refused
 	}
-	payload, err := json.Marshal(scrapeRequest{URL: target.String(), Formats: []string{"markdown"}})
+	payload, err := json.Marshal(newScrapeRequest(target.String(), req.RawHTML))
 	if err != nil {
 		return Response{}, &Error{Err: err}
 	}
@@ -113,17 +124,28 @@ func (f *firecrawl) Fetch(ctx context.Context, req Request) (Response, error) {
 			Err:        fmt.Errorf("%s returned %d %s via firecrawl", target.Host, status, http.StatusText(status)),
 		}
 	}
-	if int64(len(parsed.Data.Markdown)) > limit {
+	body, contentType := parsed.Data.Markdown, firecrawlContentType
+	if req.RawHTML {
+		body, contentType = parsed.Data.RawHTML, firecrawlHTMLType
+	}
+	if int64(len(body)) > limit {
 		return Response{}, &Error{StatusCode: status, Err: fmt.Errorf("%w: limit %d bytes", ErrTooLarge, limit)}
 	}
 	finalURL := parsed.Data.Metadata.URL
 	if finalURL == "" {
 		finalURL = target.String()
 	}
+	final, err := url.Parse(finalURL)
+	if err != nil || !httpScheme(final) {
+		return Response{}, &Error{StatusCode: status, Err: fmt.Errorf("%w: firecrawl final url %q", ErrInvalidURL, finalURL)}
+	}
+	if refused := f.opts.refused(ctx, "firecrawl", finalURL, f.opts.guard().CheckHost(final.Hostname())); refused != nil {
+		return Response{}, refused
+	}
 	return Response{
 		Status:      status,
-		ContentType: firecrawlContentType,
-		Body:        []byte(parsed.Data.Markdown),
+		ContentType: contentType,
+		Body:        []byte(body),
 		FinalURL:    finalURL,
 	}, nil
 }

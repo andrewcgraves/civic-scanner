@@ -2,6 +2,7 @@ package transcribe_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,15 +21,31 @@ import (
 )
 
 type reply struct {
-	Duration float64        `json:"duration"`
+	Duration float64        `json:"durationInSeconds"`
 	Text     string         `json:"text"`
 	Segments []replySegment `json:"segments"`
 }
 
 type replySegment struct {
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
+	Start float64 `json:"startSecond"`
+	End   float64 `json:"endSecond"`
 	Text  string  `json:"text"`
+}
+
+func uploadedAudio(t *testing.T, r *http.Request) string {
+	t.Helper()
+	var body struct {
+		Audio string `json:"audio"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Errorf("request body: %v", err)
+		return ""
+	}
+	raw, err := base64.StdEncoding.DecodeString(body.Audio)
+	if err != nil {
+		t.Errorf("audio is not base64: %v", err)
+	}
+	return string(raw)
 }
 
 func chunkServer(t *testing.T, byChunk map[string][]replySegment, hook func(chunk string, n int) (status int)) *httptest.Server {
@@ -36,17 +53,7 @@ func chunkServer(t *testing.T, byChunk map[string][]replySegment, hook func(chun
 	var mu sync.Mutex
 	n := 0
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseMultipartForm(1 << 20); err != nil { //nolint:gosec
-			t.Errorf("ParseMultipartForm: %v", err)
-			return
-		}
-		f, _, err := r.FormFile("file")
-		if err != nil {
-			t.Errorf("FormFile: %v", err)
-			return
-		}
-		b, _ := io.ReadAll(f)
-		chunk := string(b)
+		chunk := uploadedAudio(t, r)
 		mu.Lock()
 		n++
 		call := n
@@ -62,7 +69,7 @@ func chunkServer(t *testing.T, byChunk map[string][]replySegment, hook func(chun
 }
 
 func chunkConfig(url string) config.Transcription {
-	cfg := testConfig(url)
+	cfg := gatewayConfig(url)
 	cfg.DirectUploadBytes, cfg.MaxChunkBytes = 64, 64
 	return cfg
 }
@@ -149,7 +156,7 @@ func TestChunkedTranscriptShiftsTimestampsAndDropsOverlap(t *testing.T) {
 
 func TestSmallFileIsSentWholeWithoutSplitting(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, verboseReply)
+		_, _ = io.WriteString(w, plainReply)
 	}))
 	defer srv.Close()
 	splitter := &transcribetest.FakeSplitter{Total: time.Hour}
@@ -159,7 +166,7 @@ func TestSmallFileIsSentWholeWithoutSplitting(t *testing.T) {
 		t.Fatalf("Transcribe: %v", err)
 	}
 
-	if got.Duration != 12500*time.Millisecond || len(splitter.Extracts()) != 0 {
+	if got.Duration != 4200*time.Millisecond || len(splitter.Extracts()) != 0 {
 		t.Errorf("duration = %v, extracts = %d", got.Duration, len(splitter.Extracts()))
 	}
 }

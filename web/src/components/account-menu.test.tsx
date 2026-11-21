@@ -212,6 +212,54 @@ describe("AccountMenu", () => {
     expect(screen.queryByRole("link", { name: "Billing" })).toBeNull();
   });
 
+  it("links admins to the review page", async () => {
+    stubSession(() =>
+      Promise.resolve(
+        Response.json({ signedIn: true, email: null, role: "admin" }),
+      ),
+    );
+    render(
+      <FlagsProvider on={["billing"]}>
+        <AccountMenu />
+      </FlagsProvider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Account" }));
+
+    const review = screen.getByRole("link", { name: "Review agencies" });
+    expect(review).toHaveAttribute("href", "/admin/agency-submissions");
+    expect(screen.getByRole("link", { name: "Dashboard" })).toHaveFocus();
+    expect(
+      screen
+        .getByRole("link", { name: "Billing" })
+        .compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      review.compareDocumentPosition(
+        screen.getByRole("button", { name: "Sign out" }),
+      ) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it.each([["user"], [null], ["superuser"]])(
+    "has no review link for role %s",
+    async (role) => {
+      stubSession(() =>
+        Promise.resolve(Response.json({ signedIn: true, email: null, role })),
+      );
+      await renderMenu();
+
+      fireEvent.click(screen.getByRole("button", { name: "Account" }));
+
+      expect(
+        screen.queryByRole("link", { name: "Review agencies" }),
+      ).toBeNull();
+    },
+  );
+
   it("shows a neutral label without an email", async () => {
     stubSession(() =>
       Promise.resolve(Response.json({ signedIn: true, email: null })),

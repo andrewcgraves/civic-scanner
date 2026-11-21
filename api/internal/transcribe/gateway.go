@@ -7,15 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 )
 
 const (
+	maxResponseBytes = 32 << 20
 	gatewayPath      = "/v4/ai/transcription-model"
 	gatewayMediaType = "audio/mpeg"
 	gatewayBodyHead  = `{"audio":"`
@@ -113,6 +116,14 @@ func (g *gateway) requestSuffix() (string, error) {
 
 func gatewayRetryableStatus(code int) bool {
 	return code == http.StatusPaymentRequired || retryableStatus(code)
+}
+
+func retryableStatus(code int) bool {
+	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
+}
+
+func seconds(v float64) time.Duration {
+	return time.Duration(math.Round(v * float64(time.Second)))
 }
 
 func gatewaySegments(r gatewayReply) []Segment {

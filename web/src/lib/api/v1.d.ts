@@ -168,6 +168,66 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/admin/agency-submissions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List agencies awaiting review
+     * @description Lists the submitted agencies that are still pending, oldest submission first, at most 100. Approving or rejecting one takes it off the list, so the next ones appear. Admins only. Every response carries `Cache-Control: no-store`.
+     */
+    get: operations["listPendingAgencySubmissions"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/admin/agency-submissions/{id}/approve": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Approve a submitted agency
+     * @description Makes a pending submitted agency live under the slug the admin chooses, so it appears in the public routes. Only a pending agency can be approved. Admins only. Every response carries `Cache-Control: no-store`.
+     */
+    post: operations["approveAgencySubmission"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/admin/agency-submissions/{id}/reject": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Reject a submitted agency
+     * @description Rejects a pending submitted agency. It stays hidden from every public route, and its site stays on file, so it cannot be submitted again. Only a pending agency can be rejected. Admins only. Every response carries `Cache-Control: no-store`.
+     */
+    post: operations["rejectAgencySubmission"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/billing/checkout-session": {
     parameters: {
       query?: never;
@@ -545,6 +605,43 @@ export interface components {
     WebhookSubscriptionList: {
       subscriptions: components["schemas"]["WebhookSubscription"][];
     };
+    PendingAgencySubmissionList: {
+      submissions: components["schemas"]["PendingAgencySubmission"][];
+    };
+    PendingAgencySubmission: {
+      /** Format: uuid */
+      id: string;
+      /** @description The name as submitted, after trimming. Plain text. */
+      name: string;
+      /** @description The website as stored. It has not been fetched or checked beyond the submission rules; show it as text, not as a link. */
+      website: string;
+      /** Format: date-time */
+      submittedAt: string;
+      submittedBy: components["schemas"]["Submitter"];
+    };
+    Submitter: {
+      /**
+       * Format: uuid
+       * @description The submitter's id in this service.
+       */
+      id: string;
+      /** @description The submitter's latest email, or null when none is known. */
+      email: string | null;
+    };
+    AgencyApprovalInput: {
+      /** @description The live agency's slug, used in its public URL and to register its source adapter: 2 to 60 lower-case letters, digits and single hyphens, starting and ending with a letter or digit, not starting with `submitted-`, and not used by another agency. */
+      slug: string;
+    };
+    ReviewedAgencySubmission: {
+      /** Format: uuid */
+      id: string;
+      /** @description The chosen slug for a live agency; the private `submitted-` slug for a rejected one. */
+      slug: string;
+      name: string;
+      website: string;
+      /** @enum {string} */
+      status: "live" | "rejected";
+    };
     /**
      * @description What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
      * @enum {string}
@@ -772,7 +869,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description No live agency has this slug, no meeting of a live agency has this id, or the route is turned off for the signed-in user. */
+    /** @description No live agency has this slug, no meeting of a live agency has this id, no submitted agency has this id, or the route is turned off for the signed-in user. */
     NotFound: {
       headers: {
         [name: string]: unknown;
@@ -881,6 +978,26 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
+    /** @description The approval is not valid. `code` is `invalid_body` when the body cannot be decoded and `invalid_slug` when the slug does not follow the rules on `AgencyApprovalInput`; `invalid_parameter` when the id is not a UUID. */
+    InvalidApproval: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The agency cannot be reviewed as asked. `code` is `not_pending` when it has already been approved or rejected, and `slug_taken` when another agency already has the slug. */
+    ReviewConflict: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
     /** @description The path does not support the requested method. */
     MethodNotAllowed: {
       headers: {
@@ -898,6 +1015,8 @@ export interface components {
     WebhookSubscriptionId: string;
     /** @description The agency's slug, e.g. `la-metro`. */
     AgencySlug: string;
+    /** @description The submitted agency's id. */
+    AgencySubmissionId: string;
     /** @description ETags from earlier responses. When one matches the current feed, the response is 304 with no body. */
     IfNoneMatch: string;
   };
@@ -1208,6 +1327,125 @@ export interface operations {
       413: components["responses"]["PayloadTooLarge"];
       415: components["responses"]["UnsupportedMediaType"];
       429: components["responses"]["SubmissionLimit"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  listPendingAgencySubmissions: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The pending submissions. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PendingAgencySubmissionList"];
+        };
+      };
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  approveAgencySubmission: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The submitted agency's id. */
+        id: components["parameters"]["AgencySubmissionId"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AgencyApprovalInput"];
+      };
+    };
+    responses: {
+      /** @description The agency is live. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReviewedAgencySubmission"];
+        };
+      };
+      400: components["responses"]["InvalidApproval"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      409: components["responses"]["ReviewConflict"];
+      503: components["responses"]["AuthUnavailable"];
+      /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  rejectAgencySubmission: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description The submitted agency's id. */
+        id: components["parameters"]["AgencySubmissionId"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description The agency is rejected. */
+      200: {
+        headers: {
+          "Cache-Control": components["headers"]["NoStore"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReviewedAgencySubmission"];
+        };
+      };
+      400: components["responses"]["BadRequest"];
+      401: components["responses"]["Unauthorized"];
+      403: components["responses"]["Forbidden"];
+      404: components["responses"]["NotFound"];
+      405: components["responses"]["MethodNotAllowed"];
+      409: components["responses"]["ReviewConflict"];
       503: components["responses"]["AuthUnavailable"];
       /** @description Unexpected error. */
       default: {

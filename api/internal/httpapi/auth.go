@@ -33,7 +33,15 @@ var (
 	authUnavailable   = v1.AuthUnavailableJSONResponse{Body: v1.Error{Code: "auth_unavailable", Message: "sign-in cannot be checked right now, try again shortly"}}
 )
 
-var privateOperations = map[string]bool{"GetMe": true, "CreateCheckoutSession": true, "CreateBillingPortalSession": true, "CreateAgencySubmission": true}
+var privateOperations = map[string]bool{
+	"GetMe":                        true,
+	"CreateCheckoutSession":        true,
+	"CreateBillingPortalSession":   true,
+	"CreateAgencySubmission":       true,
+	"ListPendingAgencySubmissions": true,
+	"ApproveAgencySubmission":      true,
+	"RejectAgencySubmission":       true,
+}
 
 func noStore(f v1.StrictHandlerFunc, operationID string) v1.StrictHandlerFunc {
 	if !privateOperations[operationID] {
