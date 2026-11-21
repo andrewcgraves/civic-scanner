@@ -19,6 +19,8 @@ var paidOperations = map[string]string{
 	"UpdateWebhookSubscription":       FlagWebhookSubscriptions,
 	"DeleteWebhookSubscription":       FlagWebhookSubscriptions,
 	"RotateWebhookSubscriptionSecret": FlagWebhookSubscriptions,
+	"ListWebhookDeliveries":           FlagWebhookSubscriptions,
+	"SendWebhookTest":                 FlagWebhookSubscriptions,
 }
 
 var (

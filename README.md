@@ -62,6 +62,8 @@ Every route is under `/v1`. All are public except `GET /v1/me`, the checkout and
 | `GET`, `POST /v1/webhook-subscriptions` | lists the signed-in user's webhook subscriptions, or creates one and returns its signing secret once; paid plan only, behind the `accounts` and `webhook-subscriptions` flags (see [Webhook subscriptions](#webhook-subscriptions)) |
 | `GET`, `PATCH`, `DELETE /v1/webhook-subscriptions/{id}` | reads, changes (URL, payload version, pause or resume) or deletes one of the user's subscriptions |
 | `POST /v1/webhook-subscriptions/{id}/secret` | rotates the subscription's signing secret and returns the new one once |
+| `GET /v1/webhook-subscriptions/{id}/deliveries` | the subscription's delivery log: each event sent, with its attempts, newest first, paged |
+| `POST /v1/webhook-subscriptions/{id}/test` | sends a signed sample event marked as a test and answers with the result |
 
 - **Not live is not found:** an unknown slug and a pending or rejected agency get the same 404 (`not_found`), so a caller cannot tell whether an unpublished agency exists. A live agency with no meetings returns an empty list.
 - **Meeting items** carry `id`, `title`, `startsAt` (UTC), `status` (`scheduled`, `held`, `cancelled`) and `sourceUrl`, the agency's page for the meeting, left out when the source gave none. New optional fields, such as agenda or summary links, can be added later without breaking clients, which must ignore fields they do not know.
@@ -601,6 +603,8 @@ A user on the paid plan can subscribe to a live agency by webhook: an `https` UR
 | `PATCH /v1/webhook-subscriptions/{id}` | Changes any of `url`, `payloadVersion` and `status` (`active` or `paused`); members left out, or `null`, are unchanged, and at least one is needed. Pausing is `{"status": "paused"}`, resuming `{"status": "active"}`. The agency cannot be changed: delete and create instead. |
 | `DELETE /v1/webhook-subscriptions/{id}` | 204, and the subscription and its secret are gone. |
 | `POST /v1/webhook-subscriptions/{id}/secret` | Replaces the signing secret with a new one and answers 200 with the subscription and the new `secret`. |
+| `GET /v1/webhook-subscriptions/{id}/deliveries` | `{"deliveries": [...], "nextCursor": ...}`, the delivery log (see [Delivery log](#delivery-log)). |
+| `POST /v1/webhook-subscriptions/{id}/test` | Sends a test event now and answers 200 with how it went (see [Test sends](#test-sends)). |
 
 A subscription is `id`, `agency` (the slug), `url` (as stored), `payloadVersion`, `status`, `createdAt`, `updatedAt` and `secretRotatedAt` (when the current secret was made). The secret appears in exactly two responses, the 201 of the create and the 200 of a rotation; no route reads it back. A lost secret is rotated, not recovered. A rotation takes effect at once: there is no period in which the old secret is still used.
 
@@ -609,7 +613,7 @@ Checks, in order, the same on every route (`paidGate`, with the operations in `p
 1. **Token.** 401 `unauthorized`, or 503 `auth_not_configured` / `auth_unavailable`, as for `GET /v1/me`.
 2. **Flags,** for that user: `accounts` and `webhook-subscriptions` must both be on, or it is a 404 `not_found` and no user row is created.
 3. **Plan.** The user is created on first sight; a user on the free plan gets 402 `payment_required`. A user who drops to the free plan keeps their subscriptions in the database but cannot list, change or delete them until they are paid again.
-4. **Body,** for create and update: a body that does not decode as a JSON object of the documented members is 400 `invalid_body`, but only after the checks above, because the decode-error handler runs them first (`webhookBodyError`). Unknown members are ignored. Then 400 with `code` naming the problem: `unknown_agency` (empty, unknown, or an agency that is not live), `invalid_payload_version`, `invalid_status`, `nothing_to_update`, or one of the URL codes below. An `{id}` that is not a UUID is 400 `invalid_parameter`, from the router, before these checks.
+4. **Body,** for create, update and test: a body that does not decode as a JSON object of the documented members is 400 `invalid_body`, but only after the checks above, because the decode-error handler runs them first (`webhookBodyError`). Unknown members are ignored. Then 400 with `code` naming the problem: `unknown_agency` (empty, unknown, or an agency that is not live), `invalid_payload_version`, `invalid_status`, `nothing_to_update`, `invalid_event_type` (a test of a type that does not exist), or one of the URL codes below. An `{id}` that is not a UUID is 400 `invalid_parameter`, from the router, before these checks.
 5. **Ownership.** Another user's subscription is a 404 `not_found` on every route, the same as an id that does not exist: a user can neither read nor learn of another's subscriptions. Every query has `user_id = $user` in its `WHERE`.
 6. **Store.** 409 `already_subscribed` for a second subscription by the same user to the same agency and URL (also when an update moves a subscription onto one), 429 `subscription_limit_reached` at 25 subscriptions per user (`store.MaxWebhookSubscriptionsPerUser`; deleting one frees a place), 500 for a database error.
 
@@ -641,7 +645,7 @@ Webhook URLs are user input that the worker will POST to, so a subscription must
 | --- | --- |
 | `WEBHOOK_SECRET_KEY` | 32 random bytes in standard base64, from `openssl rand -base64 32`. A secret: set it in Railway, where it is declared on the API service with `preserve()`, and keep a copy outside Railway, since losing it makes every stored secret unreadable. Held in `config.Secret`. |
 
-Like billing, a missing or bad key does not stop any binary. Without one, creating a subscription and rotating a secret answer 503 `webhooks_not_configured` (nothing is stored); listing, reading, changing and deleting still work, since they never touch a secret. A value that is not standard base64 of exactly 32 bytes is logged once at startup at `error`, `webhook subscriptions are not configured: the secret key is invalid`, naming the variable, never its value; a good one logs `webhook secrets configured`. The worker reads the same key to open secrets for signing; `.railway/railway.ts` gives the worker service a reference to the API service's value (`${{civic-scanner.WEBHOOK_SECRET_KEY}}`), so it is set once. Without a key the worker logs `webhooks_configured: false` at startup and delivers nothing (see [Delivery](#delivery)); a bad one is logged at `error` as `webhook delivery is not configured: the secret key is invalid`.
+Like billing, a missing or bad key does not stop any binary. Without one, creating a subscription, rotating a secret and sending a test answer 503 `webhooks_not_configured` (nothing is stored or sent); listing, reading, changing, deleting and the delivery log still work, since they never touch a secret. A value that is not standard base64 of exactly 32 bytes is logged once at startup at `error`, `webhook subscriptions are not configured: the secret key is invalid`, naming the variable, never its value; a good one logs `webhook secrets configured`. The worker reads the same key to open secrets for signing; `.railway/railway.ts` gives the worker service a reference to the API service's value (`${{civic-scanner.WEBHOOK_SECRET_KEY}}`), so it is set once. Without a key the worker logs `webhooks_configured: false` at startup and delivers nothing (see [Delivery](#delivery)); a bad one is logged at `error` as `webhook delivery is not configured: the secret key is invalid`.
 
 Not done: rotating `WEBHOOK_SECRET_KEY` itself. The version byte leaves room for a second key, but today changing the key makes every stored secret unreadable, so the delivery job cancels those subscriptions' deliveries until their owners rotate. Do not change it once subscriptions exist.
 
@@ -710,7 +714,7 @@ The signed content covers the timestamp and the body, as the issue asks, and the
 
 #### Attempts and retries
 
-Every attempt that reaches the signing step is a row in `webhook_delivery_attempts` (migration `00019`): subscription, event, River attempt number, when it started, how long the request took (`duration_ms`), the HTTP status (null when there was no answer), a short error (at most 500 bytes; null for an HTTP answer, which the status describes) and `succeeded`. The text never includes the URL, whose query may hold the receiver's token, or the response body. Rows go with their subscription. Nothing reads them through the API yet; the delivery log is CIV-53. They are not pruned yet.
+Every attempt that reaches the signing step is a row in `webhook_delivery_attempts` (migration `00019`): subscription, event, River attempt number, when it started, how long the request took (`duration_ms`), the HTTP status (null when there was no answer), a short error (at most 500 bytes; null for an HTTP answer, which the status describes) and `succeeded`. The text never includes the URL, whose query may hold the receiver's token, or the response body. Rows go with their subscription. The [delivery log](#delivery-log) reads them. They are not pruned yet.
 
 | Outcome | Job |
 | --- | --- |
@@ -723,6 +727,31 @@ Every attempt that reaches the signing step is a row in `webhook_delivery_attemp
 So a receiver that is down for more than about six minutes misses the event. Retrying over a day and pausing a subscription that keeps failing are CIV-52. An attempt that could not be stored is logged at `error` and does not fail a delivery that succeeded, so a receiver is not sent the same event again for that reason; delivery is at least once in every other case, which is what `webhook-id` is for.
 
 **Logs.** Each delivery logs `webhook delivered`, `webhook delivery failed` or `webhook delivery cancelled` with the subscription, event, attempt, status and duration, and `webhook not delivered` with a `reason` (`subscription_gone`, `paused`, `free_plan`, `flag_off`) when it sends nothing. No URL or secret is logged.
+
+### Delivery log
+
+`GET /v1/webhook-subscriptions/{id}/deliveries` lists what was sent to one of the user's subscriptions (`store.ListWebhookDeliveries`, in `internal/store/webhook_delivery_log.go`). A delivery is one event of the subscription, with every stored attempt at sending it:
+
+- **Delivery:** `eventId` (the `webhook-id` sent), `type`, `meeting` (`id`, `title`, `startsAt`, `sourceUrl` when there is one, as in the payload), `succeeded` (any attempt answered 2xx), `firstAttemptAt`, `lastAttemptAt` and `attempts`.
+- **Attempt:** `attempt` (River's number), `startedAt`, `durationMs`, `statusCode` (null when there was no answer), `error` (null for an HTTP answer) and `succeeded`, oldest first. Nothing about the response body or the URL is stored, so none is shown.
+- **Order and paging.** Newest first by the first attempt, ties broken by event id, keyset-paginated like the meetings list: `limit` from 1 to 100, default 20 (`store.MaxWebhookDeliveriesLimit`, `store.DefaultWebhookDeliveriesLimit`), and `nextCursor` to pass back as `cursor`, null on the last page. The cursor is base64 of the subscription id, the first attempt's time and the event id, with a SHA-256 checksum, so an altered cursor or one from another subscription is 400 `invalid_cursor`. Because a delivery is placed by its first attempt, a retry adds an attempt without moving it, and a delivery first tried while someone pages appears on the first page, never as a skip or a repeat further down.
+- **Which deliveries.** Only those with at least one stored attempt: a delivery whose first attempt has not run yet, and one the job skipped (paused, free plan, flag off), are not listed. Test sends are not listed (see below).
+- **How far back.** As far as attempts are kept, which is for now forever (see [Attempts and retries](#attempts-and-retries)).
+- **Ownership.** The store checks `user_id` before reading attempts; another user's subscription is 404 `not_found`, the same as one that does not exist. The query groups the subscription's attempts by event on `webhook_delivery_attempts_subscription_idx` and joins the page's events and meetings, one round trip per page; no migration is needed.
+
+### Test sends
+
+`POST /v1/webhook-subscriptions/{id}/test` sends one sample event to the subscription right away, from the API process, and answers 200 with `{"id", "type", "sentAt", "succeeded", "statusCode", "durationMs", "error"}`. The body is optional; `{"type": "agenda_changed"}` picks the event type (`agenda_published` by default).
+
+- **Signed like a real one.** `webhooks.SampleEvent` builds the event and `webhooks.Payload` the body, with the subscription's payload version; the secret is opened with `WEBHOOK_SECRET_KEY` and the same `webhooks.Sender` signs and sends it, with the same headers, limits, address guard and no redirects (see [The request](#the-request)). The API binary builds its sender from `FETCH_USER_AGENT`, as the worker does.
+- **Marked as a test.** The payload has `"test": true`; real deliveries have no `test` member, so they are byte for byte what they were. The agency is the subscription's own; the meeting is `Sample meeting for a test webhook`, a week ahead; the event, meeting, agenda version, transcript and recording ids are new random UUIDs that exist nowhere, so each test has its own `webhook-id` and a receiver's duplicate check does not drop the second test. `agenda_changed` has version 2 and a fixed `changeNote` saying nothing changed.
+- **The endpoint check.** `webhooks.AddressCheck` runs on the stored URL first, as when it was saved (CIV-57); a host that is or resolves to a non-public address, or does not resolve, is answered 200 with `succeeded: false`, the refusal's message in `error`, `durationMs: 0`, and nothing is sent. The dial-time guard still applies when it passes.
+- **Results.** Whatever the receiver answers, and timeouts and connection errors, are a 200 with the result; only a 2xx is `succeeded`. A secret the key cannot open is a 200 with `error` saying to rotate it. There are no retries.
+- **Paused subscriptions** can be tested, so a receiver can be checked before resuming.
+- **Not in the log.** Test sends are not stored: the log is a record of real events, and a test has no meeting event to point to (`webhook_delivery_attempts.event_id` references `meeting_events`).
+- **Limit.** 10 tests per user per minute, a sliding window kept in the API process (`webhookTestLimiter`; the API runs one replica). The eleventh is 429 `test_limit_reached` with `Retry-After` in seconds. The limit is checked after the subscription is found, so 404s do not use it up.
+- **Order of checks.** The shared ones (token, flags, plan, body), then `invalid_event_type`, then 503 `webhooks_not_configured` without a key, then 404, then the limit.
+- **Logs.** `webhook test sent` at `info` with the subscription, user, type, status, duration and `succeeded`; `webhook test refused` with `reason: rate_limited`; `webhook endpoint refused` with the `code`. No URL or secret.
 
 ### Turning it on
 

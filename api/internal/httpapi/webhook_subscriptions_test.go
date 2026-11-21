@@ -31,6 +31,12 @@ type webhookCalls struct {
 	deleted   []uuid.UUID
 	err       error
 	updateErr error
+
+	secrets        map[uuid.UUID][]byte
+	secretErr      error
+	deliveries     store.WebhookDeliveryPage
+	deliveriesErr  error
+	deliveryParams []store.ListWebhookDeliveriesParams
 }
 
 func (c *webhookCalls) find(userID, id uuid.UUID) (int, error) {
@@ -250,6 +256,9 @@ func webhookRoutes(id uuid.UUID) []webhookRoute {
 		{"update", http.MethodPatch, one, `{"status":"paused"}`},
 		{"delete", http.MethodDelete, one, ""},
 		{"rotate", http.MethodPost, one + "/secret", ""},
+		{"deliveries", http.MethodGet, one + "/deliveries", ""},
+		{"test", http.MethodPost, one + "/test", ""},
+		{"test with a type", http.MethodPost, one + "/test", `{"type":"transcript_ready"}`},
 	}
 }
 
@@ -310,6 +319,8 @@ func TestWebhookMalformedBodiesAreGatedFirst(t *testing.T) {
 			{"create", http.MethodPost, "/v1/webhook-subscriptions", `{"agency":`},
 			{"update", http.MethodPatch, "/v1/webhook-subscriptions/" + uuid.NewString(), `["status"]`},
 			{"create with a number", http.MethodPost, "/v1/webhook-subscriptions", `{"agency":1,"url":"https://x.example"}`},
+			{"test", http.MethodPost, "/v1/webhook-subscriptions/" + uuid.NewString() + "/test", `{"type":`},
+			{"test with a number", http.MethodPost, "/v1/webhook-subscriptions/" + uuid.NewString() + "/test", `{"type":1}`},
 		} {
 			rec := env.do(t, route.method, route.path, tc.authorization, route.body)
 			if rec.Code != tc.status || decodeError(t, rec).Code != tc.code || rec.Header().Get("Cache-Control") != "no-store" {

@@ -36,6 +36,8 @@ type Store interface {
 	UpdateWebhookSubscription(ctx context.Context, userID, id uuid.UUID, update store.WebhookSubscriptionUpdate) (store.WebhookSubscription, error)
 	RotateWebhookSubscriptionSecret(ctx context.Context, userID, id uuid.UUID, ciphertext []byte) (store.WebhookSubscription, error)
 	DeleteWebhookSubscription(ctx context.Context, userID, id uuid.UUID) error
+	WebhookSubscriptionSecret(ctx context.Context, id uuid.UUID) ([]byte, error)
+	ListWebhookDeliveries(ctx context.Context, userID, subscriptionID uuid.UUID, params store.ListWebhookDeliveriesParams) (store.WebhookDeliveryPage, error)
 }
 
 type Handler struct {
@@ -50,6 +52,9 @@ type Handler struct {
 
 	webhookSealer    *webhooks.Sealer
 	webhookAddresses webhooks.AddressCheck
+	webhookSender    WebhookSender
+	webhookTests     *webhookTestLimiter
+	now              func() time.Time
 
 	stripeEvents       StripeEventReceiver
 	submissionFollowUp store.SubmissionFollowUp
@@ -70,7 +75,10 @@ func WithSubmissionFollowUp(f store.SubmissionFollowUp) HandlerOption {
 }
 
 func NewHandler(s Store, logger *slog.Logger, version string, opts ...HandlerOption) *Handler {
-	h := &Handler{store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled, feeds: newFeedCache(), billing: &billing.Service{}, stripeEvents: &billing.Webhook{}}
+	h := &Handler{
+		store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled, feeds: newFeedCache(), billing: &billing.Service{}, stripeEvents: &billing.Webhook{},
+		webhookTests: newWebhookTestLimiter(), now: time.Now,
+	}
 	for _, opt := range opts {
 		opt(h)
 	}

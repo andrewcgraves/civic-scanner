@@ -25,6 +25,7 @@ type Event struct {
 	AgencySlug string
 	AgencyName string
 	Meeting    store.Meeting
+	Test       bool
 }
 
 func Payload(version string, e Event) ([]byte, error) {
@@ -45,6 +46,10 @@ func Payload(version string, e Event) ([]byte, error) {
 	}
 	if e.Meeting.SourceURL != "" {
 		body.Meeting.SourceUrl = &e.Meeting.SourceURL
+	}
+	if e.Test {
+		test := true
+		body.Test = &test
 	}
 	switch e.Type {
 	case store.EventAgendaPublished, store.EventAgendaChanged:
