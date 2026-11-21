@@ -8,6 +8,8 @@ import { Notice } from "@/components/ui/notice";
 import { createSubscription, updateSubscription } from "../actions";
 import {
   FIELD_LABELS,
+  FORMATS,
+  FORMAT_LABELS,
   SUBSCRIPTIONS_PATH,
   URL_MAX_LENGTH,
   initialForm,
@@ -32,9 +34,12 @@ export type FormMode =
       agency: string;
       agencyName: string;
       url: string;
+      format: string;
     };
 
 const URL_HINT = "An https address on a public host, up to 2,048 characters.";
+const FORMAT_HINT =
+  "Standard sends signed JSON for your own code. Discord and Slack send a ready-made message to a channel's incoming webhook URL.";
 
 function Problem({ state, mode }: { state: FormState; mode: FormMode }) {
   switch (state.kind) {
@@ -154,7 +159,7 @@ export function SubscriptionForm({ mode }: { mode: FormMode }) {
     initialForm(
       mode.kind === "create"
         ? { agency: mode.agencies[0]?.slug ?? "" }
-        : { agency: mode.agency, url: mode.url },
+        : { agency: mode.agency, url: mode.url, format: mode.format },
     ),
   );
 
@@ -245,6 +250,34 @@ export function SubscriptionForm({ mode }: { mode: FormMode }) {
             className={`${INPUT} font-mono`}
           />
           <FieldError field="url" errors={errors} />
+        </div>
+        <div>
+          <label htmlFor="format" className="font-medium">
+            {FIELD_LABELS.format}
+          </label>
+          <p id="format-hint" className="text-sm text-ink-muted">
+            {FORMAT_HINT}
+          </p>
+          <select
+            id="format"
+            name="format"
+            required
+            defaultValue={values.format}
+            aria-invalid={errors.format === undefined ? undefined : true}
+            aria-describedby={describedBy(
+              "format-hint",
+              errors.format,
+              "format",
+            )}
+            className={INPUT}
+          >
+            {FORMATS.map((format) => (
+              <option key={format} value={format}>
+                {FORMAT_LABELS[format]}
+              </option>
+            ))}
+          </select>
+          <FieldError field="format" errors={errors} />
         </div>
         <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:gap-4">
           <button

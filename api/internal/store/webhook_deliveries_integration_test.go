@@ -178,7 +178,7 @@ func TestWebhookDeliveryReadsTheSubscriptionAndTheEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d.SubscriptionID != sub.ID || d.UserID != user.ID || d.WorkOSUserID != user.WorkOSUserID || !d.Paid ||
-		d.URL != "https://hooks.example/read?token=x" || d.PayloadVersion != "v1" || d.Status != store.WebhookActive ||
+		d.URL != "https://hooks.example/read?token=x" || d.PayloadVersion != "v1" || d.Format != store.WebhookFormatStandard || d.Status != store.WebhookActive ||
 		!strings.HasPrefix(string(d.SecretCiphertext), "sealed-") {
 		t.Errorf("subscription side = %+v", d)
 	}

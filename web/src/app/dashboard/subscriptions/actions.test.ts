@@ -60,6 +60,7 @@ const SUBSCRIPTION = {
   agency: "la-metro",
   url: URL,
   payloadVersion: "v1",
+  format: "standard",
   status: "active",
   createdAt: "2026-11-03T18:00:00Z",
   updatedAt: "2026-11-03T18:00:00Z",
@@ -85,7 +86,7 @@ beforeEach(() => {
 });
 
 describe("createSubscription", () => {
-  const VALUES = { agency: "la-metro", url: ` ${URL} ` };
+  const VALUES = { agency: "la-metro", url: ` ${URL} `, format: "discord" };
 
   it("creates the subscription and hands back its secret once", async () => {
     mocks.result = { status: "ok", data: { ...SUBSCRIPTION, secret: SECRET } };
@@ -100,7 +101,7 @@ describe("createSubscription", () => {
       {
         method: "POST",
         path: "/webhook-subscriptions",
-        init: { body: { agency: "la-metro", url: URL } },
+        init: { body: { agency: "la-metro", url: URL, format: "discord" } },
       },
     ]);
   });
@@ -122,13 +123,37 @@ describe("createSubscription", () => {
       await createSubscription(IDLE_FORM, form({ agency: "", url: "" })),
     ).toEqual({
       kind: "invalid",
-      values: { agency: "", url: "" },
+      values: { agency: "", url: "", format: "standard" },
       errors: {
         agency: "Choose an agency.",
         url: "Enter the URL to send webhooks to.",
       },
     });
     expect(mocks.calls).toEqual([]);
+  });
+
+  it("refuses a format it does not offer", async () => {
+    expect(
+      await createSubscription(IDLE_FORM, form({ ...VALUES, format: "teams" })),
+    ).toEqual({
+      kind: "invalid",
+      values: { ...VALUES, format: "teams" },
+      errors: { format: "Choose a message format." },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("sends the standard format when none is chosen", async () => {
+    mocks.result = { status: "ok", data: { ...SUBSCRIPTION, secret: SECRET } };
+
+    await createSubscription(IDLE_FORM, form({ agency: "la-metro", url: URL }));
+    expect(mocks.calls).toEqual([
+      {
+        method: "POST",
+        path: "/webhook-subscriptions",
+        init: { body: { agency: "la-metro", url: URL, format: "standard" } },
+      },
+    ]);
   });
 
   it("calls nothing when subscriptions are off", async () => {
@@ -197,7 +222,8 @@ describe("createSubscription", () => {
 });
 
 describe("updateSubscription", () => {
-  const VALUES = { id: ID, agency: "la-metro", url: URL };
+  const VALUES = { id: ID, agency: "la-metro", url: URL, format: "slack" };
+  const KEPT = { agency: "la-metro", url: URL, format: "slack" };
 
   it("saves the new URL and returns to the list", async () => {
     mocks.result = { status: "ok", data: SUBSCRIPTION };
@@ -209,7 +235,10 @@ describe("updateSubscription", () => {
       {
         method: "PATCH",
         path: "/webhook-subscriptions/{id}",
-        init: { params: { path: { id: ID } }, body: { url: URL } },
+        init: {
+          params: { path: { id: ID } },
+          body: { url: URL, format: "slack" },
+        },
       },
     ]);
   });
@@ -228,8 +257,19 @@ describe("updateSubscription", () => {
       await updateSubscription(IDLE_FORM, form({ ...VALUES, url: " " })),
     ).toEqual({
       kind: "invalid",
-      values: { agency: "la-metro", url: " " },
+      values: { ...KEPT, url: " " },
       errors: { url: "Enter the URL to send webhooks to." },
+    });
+    expect(mocks.calls).toEqual([]);
+  });
+
+  it("checks the format before calling the API", async () => {
+    expect(
+      await updateSubscription(IDLE_FORM, form({ ...VALUES, format: "x" })),
+    ).toEqual({
+      kind: "invalid",
+      values: { ...KEPT, format: "x" },
+      errors: { format: "Choose a message format." },
     });
     expect(mocks.calls).toEqual([]);
   });
@@ -242,7 +282,7 @@ describe("updateSubscription", () => {
 
     expect(
       await updateSubscription(IDLE_FORM, form({ ...VALUES, id })),
-    ).toEqual({ kind: "gone", values: { agency: "la-metro", url: URL } });
+    ).toEqual({ kind: "gone", values: KEPT });
     expect(mocks.calls).toEqual([]);
   });
 
@@ -251,7 +291,7 @@ describe("updateSubscription", () => {
 
     expect(await updateSubscription(IDLE_FORM, form(VALUES))).toEqual({
       kind: "duplicate",
-      values: { agency: "la-metro", url: URL },
+      values: KEPT,
     });
   });
 });
