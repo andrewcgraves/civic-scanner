@@ -5,6 +5,7 @@ package jobs_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -439,6 +440,16 @@ func TestTranscribeCleansModelOutputBeforeStoringIt(t *testing.T) {
 	}
 }
 
+func uploadedAudio(r *http.Request) ([]byte, error) {
+	var body struct {
+		Audio string `json:"audio"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return nil, err
+	}
+	return base64.StdEncoding.DecodeString(body.Audio)
+}
+
 func chunkGateway(t *testing.T, fail func(chunk string, n int) int) (*httptest.Server, func() []string) {
 	t.Helper()
 	var (
@@ -446,16 +457,11 @@ func chunkGateway(t *testing.T, fail func(chunk string, n int) int) (*httptest.S
 		calls []string
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseMultipartForm(1 << 20); err != nil { //nolint:gosec
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		f, _, err := r.FormFile("file")
+		b, err := uploadedAudio(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		b, _ := io.ReadAll(f)
 		chunk := strings.TrimSpace(string(b))
 		mu.Lock()
 		calls = append(calls, chunk)
@@ -467,7 +473,7 @@ func chunkGateway(t *testing.T, fail func(chunk string, n int) int) (*httptest.S
 				return
 			}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"duration": chunkSeconds, "segments": scriptedSentences(chunk)})
+		_ = json.NewEncoder(w).Encode(map[string]any{"durationInSeconds": chunkSeconds, "segments": scriptedSentences(chunk)})
 	}))
 	t.Cleanup(srv.Close)
 	return srv, func() []string {
@@ -500,17 +506,17 @@ func scriptedSentences(chunk string) []map[string]any {
 		if a < from || b > to {
 			text += "-part"
 		}
-		out = append(out, map[string]any{"start": max(a, from) - from, "end": min(b, to) - from, "text": text})
+		out = append(out, map[string]any{"startSecond": max(a, from) - from, "endSecond": min(b, to) - from, "text": text})
 	}
 	return out
 }
 
 func chunkingClient(url string, splitter transcribe.Splitter) transcribe.Client {
 	return transcribe.New(config.Transcription{
-		Provider:          config.TranscriptionGroq,
-		APIKey:            "gsk-test",
+		Provider:          config.TranscriptionGateway,
+		APIKey:            "vck-test",
 		BaseURL:           url,
-		Model:             "whisper-large-v3-turbo",
+		Model:             "elevenlabs/scribe-v2",
 		Timeout:           5 * time.Second,
 		DirectUploadBytes: 64,
 		MaxChunkBytes:     1 << 20,
@@ -532,7 +538,7 @@ func TestARetryAfterPartialProgressTranscribesOnlyTheChunksLeft(t *testing.T) {
 	splitter := &transcribetest.FakeSplitter{Total: 20 * time.Second}
 	followUp := &recordingTranscriptFollowUp{}
 	h := start(t, pool, jobs.Config{Storage: bucket, Transcription: jobs.Transcription{
-		Client: chunkingClient(srv.URL, splitter), Model: "groq/whisper", Concurrency: 2, FollowUp: followUp,
+		Client: chunkingClient(srv.URL, splitter), Model: "gateway/elevenlabs/scribe-v2", Concurrency: 2, FollowUp: followUp,
 	}})
 
 	id := h.transcribe(rec.ID)
@@ -740,19 +746,17 @@ func TestTextOnlyChunksAreStitchedAndAnEmptyResultIsNeverStored(t *testing.T) {
 	pool := testdb.Pool(t)
 	bucket := storagetest.New()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseMultipartForm(1 << 20) //nolint:gosec
-		f, _, err := r.FormFile("file")
+		b, err := uploadedAudio(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		b, _ := io.ReadAll(f)
 		text := map[string]string{
 			"chunk@0s":  "The board will now vote on item five.",
 			"chunk@8s":  "vote on item five. All in favour?",
 			"chunk@16s": "All in favour? Motion carries.",
 		}[strings.TrimSpace(string(b))]
-		_ = json.NewEncoder(w).Encode(map[string]any{"duration": 10, "text": text, "segments": []any{}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"durationInSeconds": 10, "text": text, "segments": []any{}})
 	}))
 	defer srv.Close()
 	rec := recordingWithAudio(t, pool, bucket, "text-only")
@@ -807,23 +811,21 @@ func TestTranscribeRealAudioFromTheBucketWithFFmpegChunks(t *testing.T) {
 		sizes []int
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = r.ParseMultipartForm(1 << 20) //nolint:gosec
-		f, _, err := r.FormFile("file")
+		b, err := uploadedAudio(r)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		b, _ := io.ReadAll(f)
 		mu.Lock()
 		sizes = append(sizes, len(b))
 		n := len(sizes)
 		mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"duration": 10, "segments": []map[string]any{{"start": 1, "end": 2, "text": fmt.Sprintf(" part %d", n)}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"durationInSeconds": 10, "segments": []map[string]any{{"startSecond": 1, "endSecond": 2, "text": fmt.Sprintf(" part %d", n)}}})
 	}))
 	defer srv.Close()
 	splitter := media.NewSplitter(media.Tool{Limit: testbin.BuildPackage(t, "../../cmd/limit"), Timeout: time.Minute, Env: testbin.CoverEnv()})
 	h := start(t, pool, jobs.Config{Storage: bucket, Transcription: jobs.Transcription{
-		Client: chunkingClient(srv.URL, splitter), Model: "groq/whisper",
+		Client: chunkingClient(srv.URL, splitter), Model: "gateway/elevenlabs/scribe-v2",
 	}})
 
 	testdb.WaitForJobState(t, pool, h.transcribe(rec.ID), "completed")

@@ -1,9 +1,9 @@
 package media
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -70,17 +70,19 @@ func sounds(t *testing.T, path string) []sound {
 func silenceSegmentingModel(t *testing.T, edgeSegments *atomic.Int32) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseMultipartForm(64 << 20); err != nil { //nolint:gosec
+		var upload struct {
+			Audio string `json:"audio"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&upload); err != nil {
 			t.Errorf("parse upload: %v", err)
 			return
 		}
-		f, header, err := r.FormFile("file")
+		body, err := base64.StdEncoding.DecodeString(upload.Audio)
 		if err != nil {
 			t.Errorf("upload: %v", err)
 			return
 		}
-		body, _ := io.ReadAll(f)
-		path := filepath.Join(t.TempDir(), filepath.Base(header.Filename))
+		path := filepath.Join(t.TempDir(), "chunk.mp3")
 		if err := os.WriteFile(path, body, 0o600); err != nil {
 			t.Error(err)
 			return
@@ -92,9 +94,9 @@ func silenceSegmentingModel(t *testing.T, edgeSegments *atomic.Int32) *httptest.
 				edgeSegments.Add(1)
 			}
 			n := int(math.Floor((s.end-s.start+wordPeriod-wordLength)/wordPeriod + 0.25))
-			segments = append(segments, map[string]any{"start": s.start, "end": s.end, "text": strings.TrimSpace(strings.Repeat("w ", n))})
+			segments = append(segments, map[string]any{"startSecond": s.start, "endSecond": s.end, "text": strings.TrimSpace(strings.Repeat("w ", n))})
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"duration": 600, "text": "", "segments": segments})
+		_ = json.NewEncoder(w).Encode(map[string]any{"durationInSeconds": 600, "text": "", "segments": segments})
 	}))
 }
 
@@ -109,7 +111,7 @@ func TestChunkStitchingKeepsEveryWordOnceAcrossBoundaries(t *testing.T) {
 	srv := silenceSegmentingModel(t, &edgeSegments)
 	defer srv.Close()
 	cfg := config.Transcription{
-		Provider: config.TranscriptionGroq, APIKey: "k", BaseURL: srv.URL, Model: "m",
+		Provider: config.TranscriptionGateway, APIKey: "k", BaseURL: srv.URL, Model: "m",
 		Timeout: time.Minute, DirectUploadBytes: 1024, MaxChunkBytes: 32 << 20,
 	}
 	client, ok := transcribe.New(cfg, transcribe.WithSplitter(NewSplitter(realTool(t)))).(transcribe.Resumable)
