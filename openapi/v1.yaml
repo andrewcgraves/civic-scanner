@@ -1177,8 +1177,11 @@ components:
         `unknown_agency` when no live agency has the slug,
         `invalid_payload_version`, `invalid_status`, `nothing_to_update` for
         an update with no members, or, for the URL, `required`, `too_long`,
-        `invalid_url`, `unsupported_scheme` (not `https`), `credentials` or
-        `fragment`.
+        `invalid_url`, `unsupported_scheme` (not `https`), `credentials`,
+        `fragment`, `not_public` when the host is, or resolves to, an address
+        that is not on the public internet (private, loopback, link-local,
+        cloud metadata or reserved), or `unresolvable_host` when the host
+        name has no address or cannot be looked up.
       headers:
         Cache-Control:
           $ref: "#/components/headers/NoStore"
@@ -1575,8 +1578,10 @@ components:
           type: string
           description: >-
             Where to send the webhooks: an absolute `https` URL of at most
-            2,048 bytes, without a user name, password or fragment. The scheme
-            and host are stored in lower case; the path and query as given.
+            2,048 bytes, without a user name, password or fragment, whose host
+            is a public IP address or a name that resolves only to public
+            addresses. The scheme and host are stored in lower case; the path
+            and query as given.
         payloadVersion:
           $ref: "#/components/schemas/WebhookPayloadVersion"
     WebhookSubscriptionUpdate:
@@ -1584,7 +1589,10 @@ components:
       properties:
         url:
           type: string
-          description: A new URL, with the same rules as when creating.
+          description: >-
+            A new URL, with the same rules as when creating. The host's
+            addresses are checked only when the URL differs from the stored
+            one.
         payloadVersion:
           $ref: "#/components/schemas/WebhookPayloadVersion"
         status:
