@@ -8,12 +8,16 @@ import (
 )
 
 type Stripe struct {
-	SecretKey Secret
-	PriceID   string
-	Problem   string
+	SecretKey      Secret
+	PriceID        string
+	Problem        string
+	WebhookSecret  Secret
+	WebhookProblem string
 }
 
 func (s Stripe) Configured() bool { return s.SecretKey.IsSet() && s.Problem == "" }
+
+func (s Stripe) WebhookConfigured() bool { return s.WebhookSecret.IsSet() && s.WebhookProblem == "" }
 
 func (s Stripe) LiveMode() bool { return strings.Contains(s.SecretKey.Reveal(), "_live_") }
 
@@ -27,10 +31,25 @@ func (s Stripe) Mode() string {
 func loadStripe(publicWebURL string) Stripe {
 	key := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
 	price := strings.TrimSpace(os.Getenv("STRIPE_PRICE_ID"))
+	s := Stripe{SecretKey: NewSecret(key), PriceID: price}
 	if problem := stripeProblem(key, price, publicWebURL); problem != "" {
-		return Stripe{Problem: problem}
+		s = Stripe{Problem: problem}
 	}
-	return Stripe{SecretKey: NewSecret(key), PriceID: price}
+	webhook := strings.TrimSpace(os.Getenv("STRIPE_WEBHOOK_SECRET"))
+	if s.WebhookProblem = webhookProblem(webhook); s.WebhookProblem == "" {
+		s.WebhookSecret = NewSecret(webhook)
+	}
+	return s
+}
+
+func webhookProblem(secret string) string {
+	switch {
+	case secret == "":
+		return ""
+	case !strings.HasPrefix(secret, "whsec_") || len(secret) <= len("whsec_") || hasSpace(secret):
+		return "STRIPE_WEBHOOK_SECRET must be a webhook signing secret (whsec_...) without whitespace"
+	}
+	return ""
 }
 
 func stripeProblem(key, price, publicWebURL string) string {

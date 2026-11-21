@@ -90,6 +90,51 @@ func (e MeetingStatus) Valid() bool {
 	}
 }
 
+// Defines values for StripeEventReceiptOutcome.
+const (
+	Applied         StripeEventReceiptOutcome = "applied"
+	Duplicate       StripeEventReceiptOutcome = "duplicate"
+	Ignored         StripeEventReceiptOutcome = "ignored"
+	Stale           StripeEventReceiptOutcome = "stale"
+	UnknownCustomer StripeEventReceiptOutcome = "unknown_customer"
+)
+
+// Valid indicates whether the value is a known member of the StripeEventReceiptOutcome enum.
+func (e StripeEventReceiptOutcome) Valid() bool {
+	switch e {
+	case Applied:
+		return true
+	case Duplicate:
+		return true
+	case Ignored:
+		return true
+	case Stale:
+		return true
+	case UnknownCustomer:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for UserPlan.
+const (
+	Free UserPlan = "free"
+	Paid UserPlan = "paid"
+)
+
+// Valid indicates whether the value is a known member of the UserPlan enum.
+func (e UserPlan) Valid() bool {
+	switch e {
+	case Free:
+		return true
+	case Paid:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UserRole.
 const (
 	UserRoleAdmin UserRole = "admin"
@@ -260,6 +305,23 @@ type Recording struct {
 	Transcript *Transcript `json:"transcript"`
 }
 
+// StripeEvent A Stripe event object, as Stripe sends it. Only the members below are read; the signature covers the raw body.
+type StripeEvent struct {
+	Created              *int64                 `json:"created,omitempty"`
+	Id                   string                 `json:"id"`
+	Type                 string                 `json:"type"`
+	AdditionalProperties map[string]interface{} `json:"-"`
+}
+
+// StripeEventReceipt defines model for StripeEventReceipt.
+type StripeEventReceipt struct {
+	// Outcome `applied` changed the subscription's stored state and recomputed the plan; `duplicate` is an event id already processed; `stale` is older than the last event applied to its subscription, or the subscription has already ended; `unknown_customer` is for a Stripe customer no user has; and `ignored` is an event type, or a checkout that is not a paid subscription, that does not change the plan.
+	Outcome StripeEventReceiptOutcome `json:"outcome"`
+}
+
+// StripeEventReceiptOutcome `applied` changed the subscription's stored state and recomputed the plan; `duplicate` is an event id already processed; `stale` is older than the last event applied to its subscription, or the subscription has already ended; `unknown_customer` is for a Stripe customer no user has; and `ignored` is an event type, or a checkout that is not a paid subscription, that does not change the plan.
+type StripeEventReceiptOutcome string
+
 // Transcript defines model for Transcript.
 type Transcript struct {
 	// Segments The full transcript as timestamped segments, in order.
@@ -290,9 +352,15 @@ type User struct {
 	// Id The user's id in this service.
 	Id openapi_types.UUID `json:"id"`
 
+	// Plan The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks; `free` otherwise, which is also the plan of a new user.
+	Plan UserPlan `json:"plan"`
+
 	// Role What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.
 	Role UserRole `json:"role"`
 }
+
+// UserPlan The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks; `free` otherwise, which is also the plan of a new user.
+type UserPlan string
 
 // UserRole What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.
 type UserRole string
@@ -333,6 +401,9 @@ type BillingFailed = Error
 // BillingUnavailable defines model for BillingUnavailable.
 type BillingUnavailable = Error
 
+// InvalidStripeEvent defines model for InvalidStripeEvent.
+type InvalidStripeEvent = Error
+
 // InvalidSubmission defines model for InvalidSubmission.
 type InvalidSubmission = ValidationError
 
@@ -344,6 +415,12 @@ type NotFound = Error
 
 // PayloadTooLarge defines model for PayloadTooLarge.
 type PayloadTooLarge = Error
+
+// StripeEventTooLarge defines model for StripeEventTooLarge.
+type StripeEventTooLarge = Error
+
+// StripeWebhookNotConfigured defines model for StripeWebhookNotConfigured.
+type StripeWebhookNotConfigured = Error
 
 // SubmissionLimit defines model for SubmissionLimit.
 type SubmissionLimit = Error
@@ -375,8 +452,111 @@ type ListAgencyMeetingsParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// ReceiveStripeEventParams defines parameters for ReceiveStripeEvent.
+type ReceiveStripeEventParams struct {
+	// StripeSignature Stripe's signature header, `t=<unix time>,v1=<hex HMAC>[,v1=...]`.
+	StripeSignature *string `json:"Stripe-Signature,omitempty"`
+}
+
 // CreateAgencySubmissionJSONRequestBody defines body for CreateAgencySubmission for application/json ContentType.
 type CreateAgencySubmissionJSONRequestBody = AgencySubmissionInput
+
+// ReceiveStripeEventJSONRequestBody defines body for ReceiveStripeEvent for application/json ContentType.
+type ReceiveStripeEventJSONRequestBody = StripeEvent
+
+// Getter for additional properties for StripeEvent. Returns the specified
+// element and whether it was found
+func (a StripeEvent) Get(fieldName string) (value interface{}, found bool) {
+	if a.AdditionalProperties != nil {
+		value, found = a.AdditionalProperties[fieldName]
+	}
+	return
+}
+
+// Setter for additional properties for StripeEvent
+func (a *StripeEvent) Set(fieldName string, value interface{}) {
+	if a.AdditionalProperties == nil {
+		a.AdditionalProperties = make(map[string]interface{})
+	}
+	a.AdditionalProperties[fieldName] = value
+}
+
+// Override default JSON handling for StripeEvent to handle AdditionalProperties
+func (a *StripeEvent) UnmarshalJSON(b []byte) error {
+	object := make(map[string]json.RawMessage)
+	err := json.Unmarshal(b, &object)
+	if err != nil {
+		return err
+	}
+
+	if raw, found := object["created"]; found {
+		err = json.Unmarshal(raw, &a.Created)
+		if err != nil {
+			return fmt.Errorf("error reading 'created': %w", err)
+		}
+		delete(object, "created")
+	}
+
+	if raw, found := object["id"]; found {
+		err = json.Unmarshal(raw, &a.Id)
+		if err != nil {
+			return fmt.Errorf("error reading 'id': %w", err)
+		}
+		delete(object, "id")
+	}
+
+	if raw, found := object["type"]; found {
+		err = json.Unmarshal(raw, &a.Type)
+		if err != nil {
+			return fmt.Errorf("error reading 'type': %w", err)
+		}
+		delete(object, "type")
+	}
+
+	if len(object) != 0 {
+		a.AdditionalProperties = make(map[string]interface{})
+		for fieldName, fieldBuf := range object {
+			var fieldVal interface{}
+			err := json.Unmarshal(fieldBuf, &fieldVal)
+			if err != nil {
+				return fmt.Errorf("error unmarshaling field %s: %w", fieldName, err)
+			}
+			a.AdditionalProperties[fieldName] = fieldVal
+		}
+	}
+	return nil
+}
+
+// Override default JSON handling for StripeEvent to handle AdditionalProperties
+func (a StripeEvent) MarshalJSON() ([]byte, error) {
+	var err error
+	object := make(map[string]json.RawMessage)
+
+	if a.Created != nil {
+		object["created"], err = json.Marshal(a.Created)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling 'created': %w", err)
+		}
+	}
+
+	object["id"], err = json.Marshal(a.Id)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'id': %w", err)
+	}
+
+	object["type"], err = json.Marshal(a.Type)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling 'type': %w", err)
+	}
+
+	for fieldName, field := range a.AdditionalProperties {
+		object[fieldName], err = json.Marshal(field)
+		if err != nil {
+			return nil, fmt.Errorf("error marshaling '%s': %w", fieldName, err)
+		}
+	}
+	return json.Marshal(object)
+}
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -404,6 +584,9 @@ type ServerInterface interface {
 	// CreateBillingPortalSession Open the Stripe billing portal
 	// (POST /billing/portal-session)
 	CreateBillingPortalSession(w http.ResponseWriter, r *http.Request)
+	// ReceiveStripeEvent Receive a Stripe webhook event
+	// (POST /billing/stripe-webhook)
+	ReceiveStripeEvent(w http.ResponseWriter, r *http.Request, params ReceiveStripeEventParams)
 	// GetHealth Liveness and readiness probe
 	// (GET /healthz)
 	GetHealth(w http.ResponseWriter, r *http.Request)
@@ -464,6 +647,12 @@ func (_ Unimplemented) CreateCheckoutSession(w http.ResponseWriter, r *http.Requ
 // CreateBillingPortalSession Open the Stripe billing portal
 // (POST /billing/portal-session)
 func (_ Unimplemented) CreateBillingPortalSession(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ReceiveStripeEvent Receive a Stripe webhook event
+// (POST /billing/stripe-webhook)
+func (_ Unimplemented) ReceiveStripeEvent(w http.ResponseWriter, r *http.Request, params ReceiveStripeEventParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -731,6 +920,47 @@ func (siw *ServerInterfaceWrapper) CreateBillingPortalSession(w http.ResponseWri
 	handler.ServeHTTP(w, r)
 }
 
+// ReceiveStripeEvent operation middleware
+func (siw *ServerInterfaceWrapper) ReceiveStripeEvent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ReceiveStripeEventParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Stripe-Signature" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Stripe-Signature")]; found {
+		var StripeSignature string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Stripe-Signature", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Stripe-Signature", valueList[0], &StripeSignature, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Stripe-Signature", Err: err})
+			return
+		}
+
+		params.StripeSignature = &StripeSignature
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ReceiveStripeEvent(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetHealth operation middleware
 func (siw *ServerInterfaceWrapper) GetHealth(w http.ResponseWriter, r *http.Request) {
 
@@ -931,6 +1161,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/billing/portal-session", wrapper.CreateBillingPortalSession)
 	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/billing/stripe-webhook", wrapper.ReceiveStripeEvent)
+	})
 
 	return r
 }
@@ -1002,6 +1235,8 @@ type BillingUnavailableJSONResponse struct {
 	Headers BillingUnavailableResponseHeaders
 }
 
+type InvalidStripeEventJSONResponse Error
+
 type InvalidSubmissionResponseHeaders struct {
 	CacheControl *string
 }
@@ -1038,6 +1273,10 @@ type PayloadTooLargeJSONResponse struct {
 
 	Headers PayloadTooLargeResponseHeaders
 }
+
+type StripeEventTooLargeJSONResponse Error
+
+type StripeWebhookNotConfiguredJSONResponse Error
 
 type SubmissionLimitResponseHeaders struct {
 	CacheControl *string
@@ -1951,6 +2190,109 @@ func (response CreateBillingPortalSessiondefaultJSONResponse) VisitCreateBilling
 	return err
 }
 
+type ReceiveStripeEventRequestObject struct {
+	Params ReceiveStripeEventParams
+	Body   *ReceiveStripeEventJSONRequestBody
+}
+
+type ReceiveStripeEventResponseObject interface {
+	VisitReceiveStripeEventResponse(w http.ResponseWriter) error
+}
+
+type ReceiveStripeEvent200JSONResponse StripeEventReceipt
+
+func (response ReceiveStripeEvent200JSONResponse) VisitReceiveStripeEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeEvent400JSONResponse struct{ InvalidStripeEventJSONResponse }
+
+func (response ReceiveStripeEvent400JSONResponse) VisitReceiveStripeEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeEvent405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response ReceiveStripeEvent405JSONResponse) VisitReceiveStripeEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeEvent413JSONResponse struct {
+	StripeEventTooLargeJSONResponse
+}
+
+func (response ReceiveStripeEvent413JSONResponse) VisitReceiveStripeEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeEvent503JSONResponse struct {
+	StripeWebhookNotConfiguredJSONResponse
+}
+
+func (response ReceiveStripeEvent503JSONResponse) VisitReceiveStripeEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ReceiveStripeEventdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ReceiveStripeEventdefaultJSONResponse) VisitReceiveStripeEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthRequestObject struct {
 }
 
@@ -2227,6 +2569,9 @@ type StrictServerInterface interface {
 	// CreateBillingPortalSession Open the Stripe billing portal
 	// (POST /billing/portal-session)
 	CreateBillingPortalSession(ctx context.Context, request CreateBillingPortalSessionRequestObject) (CreateBillingPortalSessionResponseObject, error)
+	// ReceiveStripeEvent Receive a Stripe webhook event
+	// (POST /billing/stripe-webhook)
+	ReceiveStripeEvent(ctx context.Context, request ReceiveStripeEventRequestObject) (ReceiveStripeEventResponseObject, error)
 	// GetHealth Liveness and readiness probe
 	// (GET /healthz)
 	GetHealth(ctx context.Context, request GetHealthRequestObject) (GetHealthResponseObject, error)
@@ -2480,6 +2825,39 @@ func (sh *strictHandler) CreateBillingPortalSession(w http.ResponseWriter, r *ht
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateBillingPortalSessionResponseObject); ok {
 		if err := validResponse.VisitCreateBillingPortalSessionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ReceiveStripeEvent operation middleware
+func (sh *strictHandler) ReceiveStripeEvent(w http.ResponseWriter, r *http.Request, params ReceiveStripeEventParams) {
+	var request ReceiveStripeEventRequestObject
+
+	request.Params = params
+
+	var body ReceiveStripeEventJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ReceiveStripeEvent(ctx, request.(ReceiveStripeEventRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ReceiveStripeEvent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ReceiveStripeEventResponseObject); ok {
+		if err := validResponse.VisitReceiveStripeEventResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -106,6 +106,64 @@ func TestStripeOnlyAffectsBillingWhenPublicWebURLIsMalformed(t *testing.T) {
 	}
 }
 
+func TestLoadStripeWebhookSecret(t *testing.T) {
+	setStripeEnv(t, "", "", "")
+	t.Setenv("STRIPE_WEBHOOK_SECRET", " whsec_FAKEFAKEFAKE ")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := cfg.Stripe
+	if !s.WebhookConfigured() || s.WebhookSecret.Reveal() != "whsec_FAKEFAKEFAKE" || s.WebhookProblem != "" {
+		t.Errorf("webhook configured %v, problem %q", s.WebhookConfigured(), s.WebhookProblem)
+	}
+	if s.Configured() || s.Problem != "" {
+		t.Errorf("the webhook secret alone configured checkout: configured %v, problem %q", s.Configured(), s.Problem)
+	}
+}
+
+func TestLoadStripeWebhookSecretSurvivesACheckoutProblem(t *testing.T) {
+	setStripeEnv(t, testStripeKey, "", "https://civic.example")
+	t.Setenv("STRIPE_WEBHOOK_SECRET", "whsec_FAKEFAKEFAKE")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := cfg.Stripe; s.Configured() || s.Problem == "" || !s.WebhookConfigured() {
+		t.Errorf("Stripe = configured %v, problem %q, webhook configured %v", s.Configured(), s.Problem, s.WebhookConfigured())
+	}
+}
+
+func TestLoadStripeWebhookSecretProblems(t *testing.T) {
+	for name, value := range map[string]string{
+		"secret key":   testStripeKey,
+		"prefix only":  "whsec_",
+		"inner space":  "whsec_FAKE FAKE",
+		"no prefix":    "FAKEFAKEFAKE",
+		"other prefix": "we_FAKEFAKEFAKE",
+	} {
+		setStripeEnv(t, testStripeKey, testStripePrice, "https://civic.example")
+		t.Setenv("STRIPE_WEBHOOK_SECRET", value)
+		cfg, err := Load()
+		if err != nil {
+			t.Errorf("%s: Load failed: %v", name, err)
+			continue
+		}
+		s := cfg.Stripe
+		if s.WebhookConfigured() || s.WebhookSecret.IsSet() || !strings.Contains(s.WebhookProblem, "STRIPE_WEBHOOK_SECRET must be") {
+			t.Errorf("%s: webhook configured %v, problem %q", name, s.WebhookConfigured(), s.WebhookProblem)
+		}
+		if strings.Contains(s.WebhookProblem, fakeMarker) {
+			t.Errorf("%s: the problem shows the value: %q", name, s.WebhookProblem)
+		}
+		if !s.Configured() {
+			t.Errorf("%s: a bad webhook secret turned checkout off", name)
+		}
+	}
+}
+
 func TestSecretsNeverPrint(t *testing.T) {
 	cfg := Config{
 		DatabaseURL: "postgres://localhost/test",
