@@ -26,6 +26,13 @@ const (
 
 func (s WebhookStatus) Valid() bool { return s == WebhookActive || s == WebhookPaused }
 
+type WebhookPausedReason string
+
+const (
+	WebhookPausedByOwner          WebhookPausedReason = "owner"
+	WebhookPausedFailedDeliveries WebhookPausedReason = "failed_deliveries"
+)
+
 type WebhookFormat string
 
 const (
@@ -67,26 +74,46 @@ func (u WebhookSubscriptionUpdate) Empty() bool {
 }
 
 type WebhookSubscription struct {
-	ID              uuid.UUID
-	UserID          uuid.UUID
-	AgencyID        uuid.UUID
-	AgencySlug      string
-	AgencyName      string
-	URL             string
-	PayloadVersion  string
-	Format          WebhookFormat
-	Status          WebhookStatus
-	SecretRotatedAt time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                      uuid.UUID
+	UserID                  uuid.UUID
+	AgencyID                uuid.UUID
+	AgencySlug              string
+	AgencyName              string
+	URL                     string
+	PayloadVersion          string
+	Format                  WebhookFormat
+	Status                  WebhookStatus
+	PausedReason            *WebhookPausedReason
+	PausedAt                *time.Time
+	ConsecutiveFailedEvents int
+	SecretRotatedAt         time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
-const webhookColumns = `w.id, w.user_id, w.agency_id, a.slug, a.name, w.url, w.payload_version, w.format, w.status, w.secret_rotated_at, w.created_at, w.updated_at`
+const webhookColumns = `w.id, w.user_id, w.agency_id, a.slug, a.name, w.url, w.payload_version, w.format, w.status, w.paused_reason, w.paused_at,
+w.consecutive_failed_events, w.secret_rotated_at, w.created_at, w.updated_at`
 
 func scanWebhookSubscription(row pgx.Row) (WebhookSubscription, error) {
 	var w WebhookSubscription
-	err := row.Scan(&w.ID, &w.UserID, &w.AgencyID, &w.AgencySlug, &w.AgencyName, &w.URL, &w.PayloadVersion, &w.Format, &w.Status, &w.SecretRotatedAt, &w.CreatedAt, &w.UpdatedAt)
-	return w, err
+	err := row.Scan(&w.ID, &w.UserID, &w.AgencyID, &w.AgencySlug, &w.AgencyName, &w.URL, &w.PayloadVersion, &w.Format, &w.Status,
+		&w.PausedReason, &w.PausedAt, &w.ConsecutiveFailedEvents, &w.SecretRotatedAt, &w.CreatedAt, &w.UpdatedAt)
+	if err != nil {
+		return w, err
+	}
+	if w.Status != WebhookPaused {
+		w.PausedReason, w.PausedAt = nil, nil
+		return w, nil
+	}
+	if w.PausedReason == nil {
+		reason := WebhookPausedByOwner
+		w.PausedReason = &reason
+	}
+	if w.PausedAt == nil {
+		at := w.UpdatedAt
+		w.PausedAt = &at
+	}
+	return w, nil
 }
 
 func isWebhookDuplicate(err error) bool {
@@ -177,7 +204,17 @@ func (s *Store) UpdateWebhookSubscription(ctx context.Context, userID, id uuid.U
 WITH w AS (
     UPDATE webhook_subscriptions
     SET url = COALESCE($3, url), payload_version = COALESCE($4, payload_version), format = COALESCE($6, format),
-        status = COALESCE($5, status), updated_at = now()
+        status = COALESCE($5, status),
+        paused_reason = CASE
+            WHEN $5::text IS NULL OR $5::text = status THEN paused_reason
+            WHEN $5::text = 'paused' THEN 'owner'
+        END,
+        paused_at = CASE
+            WHEN $5::text IS NULL OR $5::text = status THEN paused_at
+            WHEN $5::text = 'paused' THEN now()
+        END,
+        consecutive_failed_events = CASE WHEN $5::text = 'active' THEN 0 ELSE consecutive_failed_events END,
+        updated_at = now()
     WHERE id = $1 AND user_id = $2
     RETURNING *
 )

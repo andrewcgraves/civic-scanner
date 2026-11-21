@@ -377,12 +377,19 @@ func TestCreateWebhookSubscription(t *testing.T) {
 	if err != nil || opened.Reveal() != got.Secret {
 		t.Errorf("the stored secret does not open to the returned one: %v", err)
 	}
-	for _, key := range []string{"id", "agency", "url", "payloadVersion", "format", "status", "createdAt", "updatedAt", "secretRotatedAt", "secret"} {
+	keys := []string{
+		"id", "agency", "url", "payloadVersion", "format", "status", "pausedReason", "pausedAt", "consecutiveFailedEvents",
+		"createdAt", "updatedAt", "secretRotatedAt", "secret",
+	}
+	for _, key := range keys {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("response has no %q", key)
 		}
 	}
-	if len(raw) != 10 {
+	if raw["pausedReason"] != nil || raw["pausedAt"] != nil || raw["consecutiveFailedEvents"] != float64(0) {
+		t.Errorf("a new subscription is not paused: %v", raw)
+	}
+	if len(raw) != 13 {
 		t.Errorf("response has extra members: %v", raw)
 	}
 	if strings.Contains(env.logs.String(), got.Secret) || strings.Contains(env.logs.String(), "Token=AbC") {
@@ -800,5 +807,24 @@ func TestEveryWebhookOperationIsPaidAndFlagged(t *testing.T) {
 		if flag, ok := paidOperations[op]; !ok || flag != FlagWebhookSubscriptions {
 			t.Errorf("%s: paidOperations flag = %q, %v", op, flag, ok)
 		}
+	}
+}
+
+func TestAPIWebhookSubscriptionShowsWhyItIsPaused(t *testing.T) {
+	pausedAt := time.Date(2026, 11, 19, 8, 0, 0, 0, time.FixedZone("PST", -8*3600))
+	reason := store.WebhookPausedFailedDeliveries
+	got := apiWebhookSubscription(store.WebhookSubscription{
+		ID: uuid.New(), Status: store.WebhookPaused, PausedReason: &reason, PausedAt: &pausedAt, ConsecutiveFailedEvents: 5,
+	})
+	if got.Status != v1.WebhookSubscriptionPaused || got.PausedReason == nil || *got.PausedReason != v1.WebhookPausedFailedDeliveries ||
+		got.PausedAt == nil || !got.PausedAt.Equal(pausedAt) || got.PausedAt.Location() != time.UTC || got.ConsecutiveFailedEvents != 5 {
+		t.Errorf("paused subscription = %+v", got)
+	}
+	with := apiWebhookWithSecret(store.WebhookSubscription{Status: store.WebhookPaused, PausedReason: &reason, PausedAt: &pausedAt, ConsecutiveFailedEvents: 5}, "s")
+	if with.PausedReason == nil || with.PausedAt == nil || with.ConsecutiveFailedEvents != 5 {
+		t.Errorf("with secret = %+v", with)
+	}
+	if active := apiWebhookSubscription(store.WebhookSubscription{Status: store.WebhookActive}); active.PausedReason != nil || active.PausedAt != nil {
+		t.Errorf("active subscription = %+v", active)
 	}
 }

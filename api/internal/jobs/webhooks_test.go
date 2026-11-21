@@ -24,10 +24,25 @@ import (
 var webhookNow = time.Date(2026, 11, 18, 9, 30, 15, 0, time.UTC)
 
 type fakeDeliveryStore struct {
-	delivery  store.WebhookDelivery
-	err       error
-	recordErr error
-	attempts  []store.WebhookAttemptInput
+	delivery   store.WebhookDelivery
+	err        error
+	recordErr  error
+	attempts   []store.WebhookAttemptInput
+	failure    store.WebhookEventFailure
+	failureErr error
+	failed     []int
+	resetErr   error
+	delivered  int
+}
+
+func (s *fakeDeliveryStore) RecordWebhookEventFailed(_ context.Context, _ uuid.UUID, pauseAfter int) (store.WebhookEventFailure, error) {
+	s.failed = append(s.failed, pauseAfter)
+	return s.failure, s.failureErr
+}
+
+func (s *fakeDeliveryStore) RecordWebhookEventDelivered(context.Context, uuid.UUID) error {
+	s.delivered++
+	return s.resetErr
 }
 
 func (s *fakeDeliveryStore) WebhookDelivery(context.Context, uuid.UUID, uuid.UUID) (store.WebhookDelivery, error) {
@@ -101,7 +116,7 @@ func TestWebhookArgs(t *testing.T) {
 	if kind := (DeliverWebhookArgs{}).Kind(); kind != "deliver_webhook" {
 		t.Errorf("deliver Kind() = %q", kind)
 	}
-	if opts := (DeliverWebhookArgs{}).InsertOpts(); opts.MaxAttempts != 5 || opts.Queue != WebhookQueue || !opts.UniqueOpts.ByArgs || !opts.UniqueOpts.ByQueue {
+	if opts := (DeliverWebhookArgs{}).InsertOpts(); opts.MaxAttempts != 8 || opts.Queue != WebhookQueue || !opts.UniqueOpts.ByArgs || !opts.UniqueOpts.ByQueue {
 		t.Errorf("deliver InsertOpts() = %+v", opts)
 	}
 	if kind := (FanOutWebhooksArgs{}).Kind(); kind != "fan_out_webhooks" {
@@ -149,6 +164,9 @@ func TestDeliverWebhookSendsASignedV1Body(t *testing.T) {
 	}
 	if len(st.attempts) != 1 || st.attempts[0] != want {
 		t.Errorf("attempts = %+v, want %+v", st.attempts, want)
+	}
+	if st.delivered != 1 || len(st.failed) != 0 {
+		t.Errorf("delivered %d, failed %v", st.delivered, st.failed)
 	}
 }
 
@@ -251,6 +269,76 @@ func TestDeliverWebhookClassifiesFailures(t *testing.T) {
 		if len(st.attempts) != 1 || st.attempts[0].Succeeded || st.attempts[0].StatusCode != tc.statusCode || st.attempts[0].Error != tc.problem {
 			t.Errorf("%s: attempts = %+v", name, st.attempts)
 		}
+		if wantFailed := tc.cancel; (len(st.failed) == 1) != wantFailed || st.delivered != 0 {
+			t.Errorf("%s: failed events %v, delivered %d; a cancelled delivery is a failed event, a retried one is not yet", name, st.failed, st.delivered)
+		}
+	}
+}
+
+func TestDeliverWebhookCountsTheEventAfterTheLastAttempt(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	for name, tc := range map[string]struct {
+		failure store.WebhookEventFailure
+		err     error
+	}{
+		"counted": {failure: store.WebhookEventFailure{ConsecutiveFailedEvents: 2}},
+		"paused":  {failure: store.WebhookEventFailure{ConsecutiveFailedEvents: 5, Paused: true}},
+		"gone":    {err: store.ErrNotFound},
+		"db down": {err: errors.New("db down")},
+	} {
+		st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer), failure: tc.failure, failureErr: tc.err}
+		job := deliverJob()
+		job.Attempt = job.MaxAttempts
+		err := deliverWorker(t, st, &fakeSender{result: webhooks.Result{StatusCode: 500}}, sealer).Work(t.Context(), job)
+		var cancel *river.JobCancelError
+		if err == nil || errors.As(err, &cancel) {
+			t.Errorf("%s: Work = %v, want the delivery error", name, err)
+		}
+		if len(st.failed) != 1 || st.failed[0] != webhookPauseAfterFailures {
+			t.Errorf("%s: failed events = %v", name, st.failed)
+		}
+	}
+}
+
+func TestDeliverWebhookResetErrorDoesNotRetryADeliveredEvent(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer), resetErr: errors.New("db down")}
+	if err := deliverWorker(t, st, &fakeSender{result: webhooks.Result{StatusCode: 200}}, sealer).Work(t.Context(), deliverJob()); err != nil || st.delivered != 1 {
+		t.Errorf("Work = %v, delivered %d", err, st.delivered)
+	}
+}
+
+func TestWebhookRetryDelaySpansADay(t *testing.T) {
+	want := []time.Duration{time.Minute, 4 * time.Minute, 16 * time.Minute, 64 * time.Minute, 256 * time.Minute, 9 * time.Hour, 9 * time.Hour}
+	if len(want) != webhookDeliverAttempts-1 {
+		t.Fatalf("schedule has %d retries, attempts %d", len(want), webhookDeliverAttempts)
+	}
+	var total time.Duration
+	for i, d := range want {
+		if got := webhookRetryDelay(i+1, 0.5); got != d {
+			t.Errorf("retry after failure %d = %v, want %v", i+1, got, d)
+		}
+		total += d
+	}
+	if total < 22*time.Hour || total > 26*time.Hour {
+		t.Errorf("retries span %v, want about a day", total)
+	}
+	if got := webhookRetryDelay(40, 0.5); got != webhookRetryCap {
+		t.Errorf("a late retry = %v, want the cap", got)
+	}
+	if lo, hi := webhookRetryDelay(3, 0), webhookRetryDelay(3, 1); lo != 16*time.Minute-96*time.Second || hi != 16*time.Minute+96*time.Second {
+		t.Errorf("jitter bounds = %v, %v", lo, hi)
+	}
+}
+
+func TestDeliverWebhookNextRetryCountsErrorsNotSnoozes(t *testing.T) {
+	w := deliverWorker(t, &fakeDeliveryStore{}, &fakeSender{}, nil)
+	job := deliverJob()
+	job.Attempt = 5
+	job.Errors = []rivertype.AttemptError{{}, {}}
+	got := w.NextRetry(job).Sub(webhookNow)
+	if got < 16*time.Minute*9/10 || got > 16*time.Minute*11/10 {
+		t.Errorf("NextRetry after two earlier errors = %v, want about 16m", got)
 	}
 }
 
@@ -267,6 +355,9 @@ func TestDeliverWebhookCancelsWhenTheSecretCannotBeOpened(t *testing.T) {
 	if len(st.attempts) != 1 || !strings.Contains(st.attempts[0].Error, "rotate the secret") || st.attempts[0].Succeeded {
 		t.Errorf("attempts = %+v", st.attempts)
 	}
+	if len(st.failed) != 1 {
+		t.Errorf("failed events = %v", st.failed)
+	}
 }
 
 func TestDeliverWebhookCancelsAPayloadItCannotBuild(t *testing.T) {
@@ -276,8 +367,8 @@ func TestDeliverWebhookCancelsAPayloadItCannotBuild(t *testing.T) {
 	sender := &fakeSender{}
 	err := deliverWorker(t, st, sender, sealer).Work(t.Context(), deliverJob())
 	var cancel *river.JobCancelError
-	if !errors.As(err, &cancel) || len(sender.requests) != 0 || len(st.attempts) != 0 {
-		t.Errorf("Work = %v, requests %d, attempts %d", err, len(sender.requests), len(st.attempts))
+	if !errors.As(err, &cancel) || len(sender.requests) != 0 || len(st.attempts) != 0 || len(st.failed) != 0 {
+		t.Errorf("Work = %v, requests %d, attempts %d, failed events %v", err, len(sender.requests), len(st.attempts), st.failed)
 	}
 }
 

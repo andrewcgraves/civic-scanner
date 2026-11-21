@@ -753,7 +753,10 @@ paths:
         Changes the URL, the payload version, the format or the status of one of
         the signed-in user's subscriptions. Members left out are
         unchanged; at least one is required. `status: paused` pauses
-        the subscription and `status: active` resumes it. The agency
+        the subscription and `status: active` resumes it, including one
+        paused for failed deliveries, and resets
+        `consecutiveFailedEvents` to 0. Events that happen while a
+        subscription is paused are not delivered later. The agency
         and the secret cannot be changed here. The checks are the same
         for every webhook subscription route: the token (401, or 503
         when it cannot be checked), then the `accounts` and
@@ -1785,9 +1788,19 @@ components:
       description: >-
         Whether the subscription is to be sent webhooks: `active` ones are,
         `paused` ones are not.
+    WebhookSubscriptionPausedReason:
+      type: string
+      enum: [owner, failed_deliveries]
+      x-enum-varnames: [WebhookPausedByOwner, WebhookPausedFailedDeliveries]
+      description: >-
+        Why a subscription is paused: `owner` when its owner paused it,
+        `failed_deliveries` when deliveries of five events in a row failed
+        after every retry. A delivery is retried for about a day before it
+        counts as failed. Setting `status: active` resumes the subscription
+        either way.
     WebhookSubscription:
       type: object
-      required: [id, agency, url, payloadVersion, format, status, createdAt, updatedAt, secretRotatedAt]
+      required: [id, agency, url, payloadVersion, format, status, pausedReason, pausedAt, consecutiveFailedEvents, createdAt, updatedAt, secretRotatedAt]
       properties:
         id:
           type: string
@@ -1805,6 +1818,24 @@ components:
           $ref: "#/components/schemas/WebhookFormat"
         status:
           $ref: "#/components/schemas/WebhookSubscriptionStatus"
+        pausedReason:
+          type: string
+          allOf:
+            - $ref: "#/components/schemas/WebhookSubscriptionPausedReason"
+          nullable: true
+          description: Why the subscription is paused; null while it is active.
+        pausedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the subscription was paused; null while it is active.
+        consecutiveFailedEvents:
+          type: integer
+          format: int64
+          minimum: 0
+          description: >-
+            How many events in a row failed to be delivered after every retry.
+            A delivered event and resuming the subscription reset it to 0.
         createdAt:
           type: string
           format: date-time

@@ -79,32 +79,45 @@ func webhookFormat(format *v1.WebhookFormat) (store.WebhookFormat, *v1.InvalidWe
 }
 
 func apiWebhookSubscription(s store.WebhookSubscription) v1.WebhookSubscription {
-	return v1.WebhookSubscription{
-		Id:              s.ID,
-		Agency:          s.AgencySlug,
-		Url:             s.URL,
-		PayloadVersion:  v1.WebhookPayloadVersion(s.PayloadVersion),
-		Format:          v1.WebhookFormat(s.Format),
-		Status:          v1.WebhookSubscriptionStatus(s.Status),
-		CreatedAt:       s.CreatedAt.UTC(),
-		UpdatedAt:       s.UpdatedAt.UTC(),
-		SecretRotatedAt: s.SecretRotatedAt.UTC(),
+	sub := v1.WebhookSubscription{
+		Id:                      s.ID,
+		Agency:                  s.AgencySlug,
+		Url:                     s.URL,
+		PayloadVersion:          v1.WebhookPayloadVersion(s.PayloadVersion),
+		Format:                  v1.WebhookFormat(s.Format),
+		Status:                  v1.WebhookSubscriptionStatus(s.Status),
+		ConsecutiveFailedEvents: int64(s.ConsecutiveFailedEvents),
+		CreatedAt:               s.CreatedAt.UTC(),
+		UpdatedAt:               s.UpdatedAt.UTC(),
+		SecretRotatedAt:         s.SecretRotatedAt.UTC(),
 	}
+	if s.PausedReason != nil {
+		reason := v1.WebhookSubscriptionPausedReason(*s.PausedReason)
+		sub.PausedReason = &reason
+	}
+	if s.PausedAt != nil {
+		at := s.PausedAt.UTC()
+		sub.PausedAt = &at
+	}
+	return sub
 }
 
 func apiWebhookWithSecret(s store.WebhookSubscription, secret string) v1.WebhookSubscriptionWithSecret {
 	sub := apiWebhookSubscription(s)
 	return v1.WebhookSubscriptionWithSecret{
-		Id:              sub.Id,
-		Agency:          sub.Agency,
-		Url:             sub.Url,
-		PayloadVersion:  sub.PayloadVersion,
-		Format:          sub.Format,
-		Status:          sub.Status,
-		CreatedAt:       sub.CreatedAt,
-		UpdatedAt:       sub.UpdatedAt,
-		SecretRotatedAt: sub.SecretRotatedAt,
-		Secret:          secret,
+		Id:                      sub.Id,
+		Agency:                  sub.Agency,
+		Url:                     sub.Url,
+		PayloadVersion:          sub.PayloadVersion,
+		Format:                  sub.Format,
+		Status:                  sub.Status,
+		PausedReason:            sub.PausedReason,
+		PausedAt:                sub.PausedAt,
+		ConsecutiveFailedEvents: sub.ConsecutiveFailedEvents,
+		CreatedAt:               sub.CreatedAt,
+		UpdatedAt:               sub.UpdatedAt,
+		SecretRotatedAt:         sub.SecretRotatedAt,
+		Secret:                  secret,
 	}
 }
 

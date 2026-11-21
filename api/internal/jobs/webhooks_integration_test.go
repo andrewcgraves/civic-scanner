@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,9 +16,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/open-feature/go-sdk/openfeature"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/config"
 	"github.com/andrewcgraves/civic-scanner/api/internal/jobs"
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 	"github.com/andrewcgraves/civic-scanner/api/internal/testdb"
 	"github.com/andrewcgraves/civic-scanner/api/internal/webhooks"
@@ -301,4 +304,148 @@ func TestWebhookToANonPublicAddressIsCancelledAndStored(t *testing.T) {
 	if want := "address is not a public internet address"; !bytes.Contains([]byte(*attempts[0].Error), []byte(want)) {
 		t.Errorf("error = %q", *attempts[0].Error)
 	}
+}
+
+func TestWebhookRetryIsScheduledOnTheBackoff(t *testing.T) {
+	pool := testdb.Pool(t)
+	sealer := webhookSealer(t)
+	slug := "jobs-test-webhook-backoff-" + randomSuffix(t)
+	meeting := seedMeeting(t, pool, seedAgency(t, pool, slug, "live"), "webhook-backoff")
+	s := subscribe(t, pool, sealer, slug, true, func(int) int { return http.StatusServiceUnavailable })
+	now := time.Now().UTC()
+	h := start(t, pool, jobs.Config{
+		Clock:    sourcestest.NewClock(now),
+		Webhooks: jobs.Webhooks{Sealer: sealer, Sender: webhooks.NewSender("CivicScanner/test", s.receiver.SenderOptions()...)},
+	})
+	event := recordAgendaChange(t, pool, meeting.ID, "Changed the agenda")
+	h.fanOut(event.ID)
+	job := h.waitForError(h.deliveryJobs(event.ID)[s.sub.ID])
+	if job.State != rivertype.JobStateRetryable || job.MaxAttempts != 8 {
+		t.Fatalf("job = %s, max attempts %d", job.State, job.MaxAttempts)
+	}
+	if wait := job.ScheduledAt.Sub(now); wait < 54*time.Second || wait > 66*time.Second {
+		t.Errorf("first retry in %v, want about a minute", wait)
+	}
+	read, err := store.New(pool).GetWebhookSubscription(t.Context(), s.user.ID, s.sub.ID)
+	if err != nil || read.ConsecutiveFailedEvents != 0 || read.Status != store.WebhookActive {
+		t.Errorf("an event still being retried is not counted: %+v, %v", read, err)
+	}
+}
+
+func (h *harness) exhaust(id int64) {
+	h.t.Helper()
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		var state string
+		err := h.pool.QueryRow(h.t.Context(), `UPDATE river_job SET state = CASE WHEN state = 'retryable' THEN 'available' ELSE state END,
+    scheduled_at = CASE WHEN state = 'retryable' THEN now() ELSE scheduled_at END
+WHERE id = $1 RETURNING state`, id).Scan(&state)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		if state == "discarded" {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	h.t.Fatalf("job %d was not discarded after 60s", id)
+}
+
+func TestWebhookSubscriptionPausesAfterFiveFailedEventsUntilResumed(t *testing.T) {
+	ctx := t.Context()
+	pool := testdb.Pool(t)
+	st := store.New(pool)
+	sealer := webhookSealer(t)
+	slug := "jobs-test-webhook-pause-" + randomSuffix(t)
+	meeting := seedMeeting(t, pool, seedAgency(t, pool, slug, "live"), "webhook-pause")
+	var (
+		mu      sync.Mutex
+		failing = true
+	)
+	respond := func(fail bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		failing = fail
+	}
+	s := subscribe(t, pool, sealer, slug, true, func(int) int {
+		mu.Lock()
+		defer mu.Unlock()
+		if failing {
+			return http.StatusInternalServerError
+		}
+		return http.StatusNoContent
+	})
+	h := start(t, pool, jobs.Config{
+		Webhooks: jobs.Webhooks{Sealer: sealer, Sender: webhooks.NewSender("CivicScanner/test", s.receiver.SenderOptions()...)},
+	})
+	event := func(note string) (store.MeetingEvent, int64) {
+		t.Helper()
+		e := recordAgendaChange(t, pool, meeting.ID, note)
+		h.fanOut(e.ID)
+		return e, h.deliveryJobs(e.ID)[s.sub.ID]
+	}
+	subscription := func() store.WebhookSubscription {
+		t.Helper()
+		read, err := st.GetWebhookSubscription(ctx, s.user.ID, s.sub.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return read
+	}
+	earlierFailures := func(n int) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE webhook_subscriptions SET consecutive_failed_events = $2 WHERE id = $1`, s.sub.ID, n); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	earlierFailures(3)
+	_, id := event("fourth failure")
+	h.exhaust(id)
+	if read := subscription(); read.Status != store.WebhookActive || read.ConsecutiveFailedEvents != 4 {
+		t.Fatalf("after the fourth failed event: %+v", read)
+	}
+
+	respond(false)
+	_, id = event("delivered")
+	testdb.WaitForJobState(t, pool, id, "completed")
+	if read := subscription(); read.Status != store.WebhookActive || read.ConsecutiveFailedEvents != 0 {
+		t.Fatalf("a delivered event resets the count: %+v", read)
+	}
+
+	respond(true)
+	earlierFailures(4)
+	last, id := event("fifth failure")
+	h.exhaust(id)
+	read := subscription()
+	if read.Status != store.WebhookPaused || read.PausedReason == nil || *read.PausedReason != store.WebhookPausedFailedDeliveries ||
+		read.PausedAt == nil || read.ConsecutiveFailedEvents != 5 {
+		t.Fatalf("after the fifth failed event: %+v", read)
+	}
+	attempts, err := st.ListWebhookAttempts(ctx, s.sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perEvent := 0
+	for _, a := range attempts {
+		if a.EventID == last.ID {
+			perEvent++
+		}
+	}
+	if perEvent != 8 {
+		t.Errorf("attempts for the fifth failed event = %d, want 8", perEvent)
+	}
+
+	if _, id := event("while paused"); id != 0 {
+		t.Error("a paused subscription was sent an event")
+	}
+
+	respond(false)
+	active := store.WebhookActive
+	if read, err := st.UpdateWebhookSubscription(ctx, s.user.ID, s.sub.ID, store.WebhookSubscriptionUpdate{Status: &active}); err != nil ||
+		read.Status != store.WebhookActive || read.ConsecutiveFailedEvents != 0 || read.PausedReason != nil {
+		t.Fatalf("resumed = %+v, %v", read, err)
+	}
+	_, id = event("after resuming")
+	testdb.WaitForJobState(t, pool, id, "completed")
 }

@@ -246,6 +246,24 @@ func (e WebhookPayloadVersion) Valid() bool {
 	}
 }
 
+// Defines values for WebhookSubscriptionPausedReason.
+const (
+	WebhookPausedByOwner          WebhookSubscriptionPausedReason = "owner"
+	WebhookPausedFailedDeliveries WebhookSubscriptionPausedReason = "failed_deliveries"
+)
+
+// Valid indicates whether the value is a known member of the WebhookSubscriptionPausedReason enum.
+func (e WebhookSubscriptionPausedReason) Valid() bool {
+	switch e {
+	case WebhookPausedByOwner:
+		return true
+	case WebhookPausedFailedDeliveries:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for WebhookSubscriptionStatus.
 const (
 	WebhookSubscriptionActive WebhookSubscriptionStatus = "active"
@@ -655,12 +673,21 @@ type WebhookPayloadVersion string
 // WebhookSubscription defines model for WebhookSubscription.
 type WebhookSubscription struct {
 	// Agency The slug of the agency.
-	Agency    string    `json:"agency"`
-	CreatedAt time.Time `json:"createdAt"`
+	Agency string `json:"agency"`
+
+	// ConsecutiveFailedEvents How many events in a row failed to be delivered after every retry. A delivered event and resuming the subscription reset it to 0.
+	ConsecutiveFailedEvents int64     `json:"consecutiveFailedEvents"`
+	CreatedAt               time.Time `json:"createdAt"`
 
 	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
 	Format WebhookFormat      `json:"format"`
 	Id     openapi_types.UUID `json:"id"`
+
+	// PausedAt When the subscription was paused; null while it is active.
+	PausedAt *time.Time `json:"pausedAt"`
+
+	// PausedReason Why the subscription is paused; null while it is active.
+	PausedReason *WebhookSubscriptionPausedReason `json:"pausedReason"`
 
 	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
@@ -698,6 +725,9 @@ type WebhookSubscriptionList struct {
 	Subscriptions []WebhookSubscription `json:"subscriptions"`
 }
 
+// WebhookSubscriptionPausedReason Why a subscription is paused: `owner` when its owner paused it, `failed_deliveries` when deliveries of five events in a row failed after every retry. A delivery is retried for about a day before it counts as failed. Setting `status: active` resumes the subscription either way.
+type WebhookSubscriptionPausedReason string
+
 // WebhookSubscriptionStatus Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
 type WebhookSubscriptionStatus string
 
@@ -719,12 +749,21 @@ type WebhookSubscriptionUpdate struct {
 // WebhookSubscriptionWithSecret defines model for WebhookSubscriptionWithSecret.
 type WebhookSubscriptionWithSecret struct {
 	// Agency The slug of the agency.
-	Agency    string    `json:"agency"`
-	CreatedAt time.Time `json:"createdAt"`
+	Agency string `json:"agency"`
+
+	// ConsecutiveFailedEvents How many events in a row failed to be delivered after every retry. A delivered event and resuming the subscription reset it to 0.
+	ConsecutiveFailedEvents int64     `json:"consecutiveFailedEvents"`
+	CreatedAt               time.Time `json:"createdAt"`
 
 	// Format The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
 	Format WebhookFormat      `json:"format"`
 	Id     openapi_types.UUID `json:"id"`
+
+	// PausedAt When the subscription was paused; null while it is active.
+	PausedAt *time.Time `json:"pausedAt"`
+
+	// PausedReason Why the subscription is paused; null while it is active.
+	PausedReason *WebhookSubscriptionPausedReason `json:"pausedReason"`
 
 	// PayloadVersion The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
 	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
