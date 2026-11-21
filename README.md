@@ -591,7 +591,7 @@ The actions (`startCheckoutAction`, `openBillingPortalAction`) call the API with
 
 ## Webhook subscriptions
 
-A user on the paid plan can subscribe to a live agency by webhook: an `https` URL that is to receive that agency's meeting events, signed with a secret of the subscription's own. This story is the API and the storage only. Nothing is sent yet: delivery, the signature scheme and the payload are CIV-50, and the dashboard pages are described in [Webhook subscriptions on the web](#webhook-subscriptions-on-the-web). Endpoints that are or resolve to non-public addresses are refused when saved (CIV-57, see [The endpoint's addresses](#the-endpoints-addresses)); delivery must check again (CIV-50). `internal/httpapi/webhook_subscriptions.go`, `internal/store/webhook_subscriptions.go` and `internal/webhooks` hold it.
+A user on the paid plan can subscribe to a live agency by webhook: an `https` URL that is to receive that agency's meeting events, signed with a secret of the subscription's own. The worker delivers every meeting event of that agency to each active subscription (see [Delivery](#delivery)), and the dashboard pages are described in [Webhook subscriptions on the web](#webhook-subscriptions-on-the-web). Endpoints that are or resolve to non-public addresses are refused when saved (CIV-57, see [The endpoint's addresses](#the-endpoints-addresses)), and delivery checks again on every connection (see [The request](#the-request)). `internal/httpapi/webhook_subscriptions.go`, `internal/store/webhook_subscriptions.go` and `internal/webhooks` hold it.
 
 | Route | Does |
 | --- | --- |
@@ -628,22 +628,22 @@ Webhook URLs are user input that the worker will POST to, so a subscription must
 - **Names.** `localhost`, `*.localhost` and numeric hosts that some resolvers read as IPv4 (`2130706433`, `0x7f000001`, `127.1`) are 400 `not_public` without a lookup (`netguard.Dialer.CheckHost`). Any other name is resolved (A and AAAA, through the system resolver, `net.DefaultResolver`) with a 5-second limit; a non-ASCII name is looked up in its IDNA ASCII form, as Go's HTTP client dials it, and one with no valid ASCII form is `invalid_url`. If **any** address is not public, it is 400 `not_public`: a name with one public and one private address is refused, since the delivery could connect to either.
 - **Lookup failures.** No such name, an empty answer, a resolver error and the 5-second timeout are all 400 `unresolvable_host`, and nothing is stored. A receiver must have DNS in place before subscribing.
 - **Responses.** The same 400 shape as the other URL problems, `{"code": ..., "message": ...}`; the message never echoes the URL or the addresses. A refusal is logged at `info` as `webhook endpoint refused` with the `code` and `user_id`, never the URL.
-- **Not a guarantee.** The check is at save time only. DNS can change afterwards (or answer differently per query), so delivery (CIV-50) must refuse non-public addresses on every connection, as the fetchers do, by dialling through `netguard.Dialer` and not following redirects.
+- **Not a guarantee.** The check is at save time only. DNS can change afterwards (or answer differently per query), so delivery refuses non-public addresses on every connection, as the fetchers do, by dialling through `netguard.Dialer` and not following redirects (see [The request](#the-request)).
 - **Tests.** `httpapi.WithWebhookAddressCheck(webhooks.AddressCheck{Resolver: ..., Allow: ...})` replaces the resolver and the rule; the unit and integration tests pass a fake resolver, so they never use real DNS. Production sets neither.
 
 ### The signing secret
 
-`webhooks.NewSecret` makes `whsec_` followed by 32 bytes from `crypto/rand` in standard base64. The `whsec_` prefix and the encoding follow the Standard Webhooks convention, so receivers' libraries can take it as is; whether the signature follows that standard is CIV-50's decision. In memory the secret is a `config.Secret`, which prints as `[redacted]` everywhere (see [Configuration](#configuration)); only the handler calls `Reveal()`, to write the response.
+`webhooks.NewSecret` makes `whsec_` followed by 32 bytes from `crypto/rand` in standard base64. The `whsec_` prefix and the encoding follow the Standard Webhooks convention, so receivers' libraries can take it as is, and the signature follows that standard too (see [Signature](#signature)). In memory the secret is a `config.Secret`, which prints as `[redacted]` everywhere (see [Configuration](#configuration)); only the handler calls `Reveal()`, to write the response.
 
-**How it is stored.** The delivery job will need the secret itself to compute an HMAC, so it cannot be hashed. It is encrypted instead, with AES-256-GCM under `WEBHOOK_SECRET_KEY`, and only the ciphertext is stored (`webhook_subscriptions.secret_ciphertext`): one version byte (`1`), a random 12-byte nonce, then the sealed secret and its tag. The additional data is a fixed context string and the subscription's id, so a ciphertext copied onto another subscription's row does not open. A database dump or backup alone does not reveal any secret; the key and the database together do. `webhooks.Sealer` does the sealing (`Seal`, `Open`); `store.WebhookSubscriptionSecret` reads the ciphertext for the delivery job, and no route returns it.
+**How it is stored.** The delivery job needs the secret itself to compute an HMAC, so it cannot be hashed. It is encrypted instead, with AES-256-GCM under `WEBHOOK_SECRET_KEY`, and only the ciphertext is stored (`webhook_subscriptions.secret_ciphertext`): one version byte (`1`), a random 12-byte nonce, then the sealed secret and its tag. The additional data is a fixed context string and the subscription's id, so a ciphertext copied onto another subscription's row does not open. A database dump or backup alone does not reveal any secret; the key and the database together do. `webhooks.Sealer` does the sealing (`Seal`, `Open`); `store.WebhookSubscriptionSecret` reads the ciphertext for the delivery job, and no route returns it.
 
 | Variable | Meaning |
 | --- | --- |
 | `WEBHOOK_SECRET_KEY` | 32 random bytes in standard base64, from `openssl rand -base64 32`. A secret: set it in Railway, where it is declared on the API service with `preserve()`, and keep a copy outside Railway, since losing it makes every stored secret unreadable. Held in `config.Secret`. |
 
-Like billing, a missing or bad key does not stop any binary. Without one, creating a subscription and rotating a secret answer 503 `webhooks_not_configured` (nothing is stored); listing, reading, changing and deleting still work, since they never touch a secret. A value that is not standard base64 of exactly 32 bytes is logged once at startup at `error`, `webhook subscriptions are not configured: the secret key is invalid`, naming the variable, never its value; a good one logs `webhook secrets configured`. The worker does not read the key yet; CIV-50 must add it to the worker service too.
+Like billing, a missing or bad key does not stop any binary. Without one, creating a subscription and rotating a secret answer 503 `webhooks_not_configured` (nothing is stored); listing, reading, changing and deleting still work, since they never touch a secret. A value that is not standard base64 of exactly 32 bytes is logged once at startup at `error`, `webhook subscriptions are not configured: the secret key is invalid`, naming the variable, never its value; a good one logs `webhook secrets configured`. The worker reads the same key to open secrets for signing; `.railway/railway.ts` gives the worker service a reference to the API service's value (`${{civic-scanner.WEBHOOK_SECRET_KEY}}`), so it is set once. Without a key the worker logs `webhooks_configured: false` at startup and delivers nothing (see [Delivery](#delivery)); a bad one is logged at `error` as `webhook delivery is not configured: the secret key is invalid`.
 
-Not done: rotating `WEBHOOK_SECRET_KEY` itself. The version byte leaves room for a second key, but today changing the key makes every stored secret unreadable, so the delivery job would have to fail those subscriptions until their owners rotate. Do not change it once subscriptions exist.
+Not done: rotating `WEBHOOK_SECRET_KEY` itself. The version byte leaves room for a second key, but today changing the key makes every stored secret unreadable, so the delivery job cancels those subscriptions' deliveries until their owners rotate. Do not change it once subscriptions exist.
 
 ### Storage
 
@@ -651,12 +651,85 @@ Migration `00016` adds `webhook_subscriptions` and changes nothing else: `id`, `
 
 `store.CreateWebhookSubscription` runs in one transaction: it locks the user's row (`SELECT ... FOR UPDATE`), counts the user's subscriptions, and inserts the row only if a live agency has the slug, so the limit holds under concurrent creates (tested with 35 at once: 25 succeed). The unique constraint decides duplicates. Updates, rotations and deletes are single statements filtered by the user's id.
 
+### Delivery
+
+`internal/jobs/webhooks.go` holds three River jobs, `internal/webhooks` the payload, the signature and the HTTP request, and `internal/store/webhook_deliveries.go` the queries.
+
+1. **Sweep.** `enqueue_webhook_fan_outs` is a periodic job that runs every minute and when the worker starts (args: the minute, unique by args and queue). It asks `store.ListEventsAwaitingFanOut` for at most 100 events of the outbox with no row in `webhook_event_fan_outs`, oldest `sequence` first, and inserts one `fan_out_webhooks` job for each. Without `WEBHOOK_SECRET_KEY` it does nothing, so events wait until the key is set and are then delivered.
+2. **Fan-out.** `fan_out_webhooks` (args: the event id; unique by args and queue; 5 attempts) reads the active subscriptions of the event's agency whose users are on the paid plan, keeps those whose user has the `accounts` and `webhook-subscriptions` flags on (evaluated with the user's WorkOS id as the targeting key, as the API does), and in one transaction inserts the event's `webhook_event_fan_outs` row (`ON CONFLICT DO NOTHING`) and, only when that inserted it, one `deliver_webhook` job per kept subscription. So an event fans out exactly once, to the subscriptions that are active and enabled at that moment; a subscription created, resumed or enabled later does not receive earlier events. An event whose row is gone cancels the job.
+3. **Delivery.** `deliver_webhook` (args: subscription and event id; unique by args and queue; on its own `webhooks` queue with 10 workers, so slow receivers never hold up ingestion) reads the subscription and the event again. It completes without sending when the subscription is gone or paused, its user is no longer paid, or either flag is now off for that user. Otherwise it builds the payload for the subscription's `payloadVersion`, opens the secret with `WEBHOOK_SECRET_KEY`, signs and sends it, and stores the attempt.
+
+**Which events.** Every event type in the outbox (`agenda_published`, `agenda_changed`, `transcript_ready`). Migration `00019` marks every event that already existed as fanned out (with 0 deliveries), so turning delivery on does not replay history. The sweep looks only at events whose `sequence` is above the highest fanned-out one minus 1,000 (`webhookSweepLookback`), which keeps its cost flat as the outbox grows while still catching an event whose transaction committed after later ones (see [Meeting events](#meeting-events)): it would be missed only if 1,000 later events were fanned out while its transaction was still open.
+
+**Latency.** An event is fanned out within about a minute of its commit and delivered right after.
+
+#### Payload
+
+Version `v1` is `WebhookEventV1` in `openapi/v1.yaml`, and the job builds it from the generated Go type (`webhooks.Payload`), so the spec is what is sent:
+
+```json
+{
+  "id": "3f1c2b0e-8a4d-4e7b-9c1a-0d2e3f4a5b6c",
+  "type": "agenda_changed",
+  "payloadVersion": "v1",
+  "occurredAt": "2026-11-17T21:00:00Z",
+  "agency": { "slug": "la-metro", "name": "LA Metro" },
+  "meeting": { "id": "…", "title": "Board of Directors", "startsAt": "2026-11-20T18:00:00Z", "sourceUrl": "https://…" },
+  "agenda": { "versionId": "…", "version": 2, "changeNote": "Added: “14. Adopt the 2027 calendar”", "changeNoteSource": "model" }
+}
+```
+
+- `id` is the event's id, the same in the `webhook-id` header, on every retry and for every subscriber.
+- `agenda` is present for `agenda_published` and `agenda_changed`. `changeNote` and `changeNoteSource` are present only for an `agenda_changed` recorded with its note (see [Agenda changes](#agenda-changes)).
+- `transcript` (`id`, `recordingId`) is present for `transcript_ready`.
+- `occurredAt` follows the event (for `agenda_changed`, when the change was found). Times are UTC.
+- Nothing else leaves the database: no summaries, agenda text or storage keys. Receivers fetch the rest from the API. New optional members and new event types may be added within `v1`; receivers must ignore what they do not know.
+
+An event whose payload cannot be built (an unknown type, or a stored payload without its ids) cancels the delivery without a request.
+
+#### Signature
+
+It follows [Standard Webhooks](https://www.standardwebhooks.com/), so its libraries verify it as is. Every request carries:
+
+| Header | Value |
+| --- | --- |
+| `webhook-id` | The event id. Receivers drop a delivery whose id they have already processed. |
+| `webhook-timestamp` | When this attempt was signed, in Unix seconds. A retry has a new timestamp. |
+| `webhook-signature` | `v1,` and the standard base64 of the HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}`, keyed with the bytes the secret encodes after `whsec_`. |
+
+The signed content covers the timestamp and the body, as the issue asks, and the id as the standard does. A receiver checks the signature with a constant-time comparison and rejects timestamps too far from its own clock (the standard suggests five minutes), which stops replays. `webhooks.Sign` is checked against the standard's published test vector. `internal/webhooks/webhookstest` has a TLS receiver that verifies signatures with its own implementation; the tests use it as the fake subscriber.
+
+#### The request
+
+`webhooks.Sender` posts the body with `Content-Type: application/json` and `User-Agent` set to `FETCH_USER_AGENT`.
+
+- **Addresses.** It dials through `netguard.Dialer`, the guard of the fetchers and the recording download, so every address `netguard.PublicAddress` refuses is refused on the IP actually dialled, after DNS (see [Non-public addresses](#non-public-addresses)); an IP literal, `localhost` or a numeric host is refused before any socket is opened. No proxy from the environment is used.
+- **Redirects** are not followed: a 3xx is a failed attempt, like any other answer outside 2xx.
+- **Limits.** 15 seconds for the whole request (`webhooks.DefaultRequestTimeout`), TLS 1.2 or later with the system roots, response headers up to 64 KiB, and at most 64 KiB of the response body read and discarded. The job's own timeout is 30 seconds.
+- **Tests.** `webhooks.AllowAddress(func(netip.Addr) bool)` replaces the address rule and `webhooks.WithRootCAs` trusts a test certificate. Only tests set them: the integration tests reach their `httptest` receivers with `webhookstest.Receiver.SenderOptions()`, which allows loopback only. Production passes neither.
+
+#### Attempts and retries
+
+Every attempt that reaches the signing step is a row in `webhook_delivery_attempts` (migration `00019`): subscription, event, River attempt number, when it started, how long the request took (`duration_ms`), the HTTP status (null when there was no answer), a short error (at most 500 bytes; null for an HTTP answer, which the status describes) and `succeeded`. The text never includes the URL, whose query may hold the receiver's token, or the response body. Rows go with their subscription. Nothing reads them through the API yet; the delivery log is CIV-53. They are not pruned yet.
+
+| Outcome | Job |
+| --- | --- |
+| 2xx | Completed. |
+| Any other status, a network error or a timeout | Returns the error; River retries with its default backoff (about 1 s, 16 s, 81 s and 256 s), at most 5 attempts in all (`webhookDeliverAttempts`), then discards the job. |
+| A non-public address | Cancelled: retrying cannot help until the URL changes. |
+| A secret that `WEBHOOK_SECRET_KEY` cannot open | Cancelled, with the error `the signing secret cannot be read; rotate the secret`. |
+| `WEBHOOK_SECRET_KEY` missing on the worker | Snoozed for 10 minutes, no attempt stored. |
+
+So a receiver that is down for more than about six minutes misses the event. Retrying over a day and pausing a subscription that keeps failing are CIV-52. An attempt that could not be stored is logged at `error` and does not fail a delivery that succeeded, so a receiver is not sent the same event again for that reason; delivery is at least once in every other case, which is what `webhook-id` is for.
+
+**Logs.** Each delivery logs `webhook delivered`, `webhook delivery failed` or `webhook delivery cancelled` with the subscription, event, attempt, status and duration, and `webhook not delivered` with a `reason` (`subscription_gone`, `paused`, `free_plan`, `flag_off`) when it sends nothing. No URL or secret is logged.
+
 ### Turning it on
 
-1. Generate the key (`openssl rand -base64 32`), keep a copy outside Railway, and set it as `WEBHOOK_SECRET_KEY` on the API service in the Railway dashboard. The API logs `webhook secrets configured`.
-2. Create the `webhook-subscriptions` flag in PostHog, off. Turn it on for the users who should have it, with `accounts` already on; billing must be live for anyone to be on the paid plan. The web app reads the same flag, for its one anonymous identity, to show the dashboard's pages (see [Webhook subscriptions on the web](#webhook-subscriptions-on-the-web)), so a rollout to some users only shows the pages to nobody; release it to everyone, and the API's plan check still keeps free users out.
+1. Generate the key (`openssl rand -base64 32`), keep a copy outside Railway, and set it as `WEBHOOK_SECRET_KEY` on the API service in the Railway dashboard. The API logs `webhook secrets configured`. The worker reads the same value through its reference variable and logs `webhooks_configured: true` in `worker started`.
+2. Create the `webhook-subscriptions` flag in PostHog, off. Turn it on for the users who should have it, with `accounts` already on; billing must be live for anyone to be on the paid plan. The same flag decides, per user, whether their subscriptions are delivered. The web app reads the same flag, for its one anonymous identity, to show the dashboard's pages (see [Webhook subscriptions on the web](#webhook-subscriptions-on-the-web)), so a rollout to some users only shows the pages to nobody; release it to everyone, and the API's plan check still keeps free users out.
 
-Turning the flag on before delivery exists (CIV-50) lets paid users create subscriptions that receive nothing yet.
+Turning the flag off for a user stops their deliveries, including retries already queued, as soon as the worker's flag cache sees it (`POSTHOG_FLAG_CACHE_TTL`); events fanned out while it was off are not sent later.
 
 ## Feature flags
 
@@ -2189,7 +2262,7 @@ An event is written in the same transaction as the change it describes, so a con
 
 The table's check constraints accept only the three types and only a JSON object payload. The unique constraint on `sequence` and the index on `(meeting_id, sequence)` serve readers of all events and of one meeting's events in sequence order.
 
-**Sequence order is assignment order, not commit order.** `sequence` is taken from the identity when the row is inserted, and transactions commit in any order: a transaction that inserted sequence 41 can commit after another that inserted 42. A reader that has seen 42 may therefore see 41 appear later. A consumer must not treat "the highest sequence seen" as a safe cursor without handling transactions still in flight, or it skips events for good. `occurred_at` has the same problem and the uuid `id` has no order at all. The RSS feed does not page through the outbox at all; it reads the newest events of one agency on every request (see "Agency RSS feeds"). How webhooks track what they have delivered belongs to CIV-46.
+**Sequence order is assignment order, not commit order.** `sequence` is taken from the identity when the row is inserted, and transactions commit in any order: a transaction that inserted sequence 41 can commit after another that inserted 42. A reader that has seen 42 may therefore see 41 appear later. A consumer must not treat "the highest sequence seen" as a safe cursor without handling transactions still in flight, or it skips events for good. `occurred_at` has the same problem and the uuid `id` has no order at all. The RSS feed does not page through the outbox at all; it reads the newest events of one agency on every request (see "Agency RSS feeds"). Webhooks track which events they have fanned out with a row per event in `webhook_event_fan_outs` rather than a cursor, and look back 1,000 sequences for late commits (see [Delivery](#delivery)).
 
 ## Recordings and transcripts
 

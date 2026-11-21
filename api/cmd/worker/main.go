@@ -22,6 +22,7 @@ import (
 	"github.com/andrewcgraves/civic-scanner/api/internal/storage"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 	"github.com/andrewcgraves/civic-scanner/api/internal/transcribe"
+	"github.com/andrewcgraves/civic-scanner/api/internal/webhooks"
 )
 
 const shutdownTimeout = 25 * time.Second
@@ -58,6 +59,9 @@ func run(ctx context.Context) error {
 		return err
 	}
 	logger := config.NewLogger(cfg)
+	if cfg.Webhooks.Problem != "" {
+		logger.ErrorContext(ctx, "webhook delivery is not configured: the secret key is invalid", "problem", cfg.Webhooks.Problem)
+	}
 
 	shutdownFlags, err := featureflags.Init(ctx, cfg.FeatureFlags, logger)
 	if err != nil {
@@ -89,6 +93,12 @@ func run(ctx context.Context) error {
 	if cfg.Transcription.APIKey != "" {
 		transcriber = transcribe.New(cfg.Transcription, transcribe.WithSplitter(media.NewSplitter(audio.Tool)))
 	}
+	var sealer *webhooks.Sealer
+	if cfg.Webhooks.Configured() {
+		if sealer, err = webhooks.NewSealer(cfg.Webhooks.SecretKey); err != nil {
+			return err
+		}
+	}
 	client, err := jobs.NewClient(pool, logger, jobs.Config{
 		Registry:     registry,
 		Fetcher:      fetcher,
@@ -103,6 +113,7 @@ func run(ctx context.Context) error {
 		LLM:          summarizer,
 		SummaryTier:  llm.Tier(cfg.Summary.AgendaTier),
 		LLMTimeout:   cfg.LLM.Timeout,
+		Webhooks:     jobs.Webhooks{Sealer: sealer, Sender: webhooks.NewSender(cfg.Fetch.UserAgent)},
 		Transcription: jobs.Transcription{
 			Client:          transcriber,
 			Model:           cfg.Transcription.Provider + "/" + cfg.Transcription.Model,
@@ -124,7 +135,8 @@ func run(ctx context.Context) error {
 		"agenda_refresh_grace", cfg.Ingest.AgendaRefreshGrace.String(),
 		"pdf_extractor", pdfExtractor.Binary, "agenda_summary_tier", cfg.Summary.AgendaTier, "llm_configured", summarizer != nil, "llm_provider", cfg.LLM.Provider,
 		"audio_limit", audio.Tool.Limit, "ffmpeg", audio.Tool.FFmpeg, "yt_dlp", audio.Tool.YTDLP,
-		"storage_configured", cfg.Storage.Configured(), "transcription_configured", transcriber != nil)
+		"storage_configured", cfg.Storage.Configured(), "transcription_configured", transcriber != nil,
+		"webhooks_configured", sealer != nil)
 	if _, err := os.Stat(pdfExtractor.Binary); err != nil {
 		logger.WarnContext(ctx, "pdf extractor not found: PDF agendas will be cancelled; build it next to the worker or set EXTRACT_PDF_BINARY",
 			"pdf_extractor", pdfExtractor.Binary, "error", err)

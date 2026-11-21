@@ -1,0 +1,306 @@
+package jobs
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/open-feature/go-sdk/openfeature"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
+
+	"github.com/andrewcgraves/civic-scanner/api/internal/config"
+	"github.com/andrewcgraves/civic-scanner/api/internal/sources/sourcestest"
+	"github.com/andrewcgraves/civic-scanner/api/internal/store"
+	"github.com/andrewcgraves/civic-scanner/api/internal/webhooks"
+)
+
+var webhookNow = time.Date(2026, 11, 18, 9, 30, 15, 0, time.UTC)
+
+type fakeDeliveryStore struct {
+	delivery  store.WebhookDelivery
+	err       error
+	recordErr error
+	attempts  []store.WebhookAttemptInput
+}
+
+func (s *fakeDeliveryStore) WebhookDelivery(context.Context, uuid.UUID, uuid.UUID) (store.WebhookDelivery, error) {
+	return s.delivery, s.err
+}
+
+func (s *fakeDeliveryStore) RecordWebhookAttempt(_ context.Context, in store.WebhookAttemptInput) error {
+	s.attempts = append(s.attempts, in)
+	return s.recordErr
+}
+
+type fakeSender struct {
+	result   webhooks.Result
+	requests []webhooks.Request
+}
+
+func (s *fakeSender) Send(_ context.Context, req webhooks.Request) webhooks.Result {
+	s.requests = append(s.requests, req)
+	return s.result
+}
+
+func testWebhookSealer(t *testing.T) *webhooks.Sealer {
+	t.Helper()
+	s, err := webhooks.NewSealer(config.NewSecret(string(bytes.Repeat([]byte{7}, config.WebhookSecretKeyBytes))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func deliveryFixture(t *testing.T, sealer *webhooks.Sealer) store.WebhookDelivery {
+	t.Helper()
+	subID := uuid.New()
+	sealed, err := sealer.Seal(subID, config.NewSecret("whsec_c2VjcmV0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(store.AgendaEventPayload{AgendaVersionID: uuid.New(), Version: 1})
+	return store.WebhookDelivery{
+		SubscriptionID:   subID,
+		UserID:           uuid.New(),
+		WorkOSUserID:     "user_paid",
+		Paid:             true,
+		URL:              "https://hooks.example/a",
+		PayloadVersion:   "v1",
+		Status:           store.WebhookActive,
+		SecretCiphertext: sealed,
+		Event:            store.MeetingEvent{ID: uuid.New(), Type: store.EventAgendaPublished, Payload: payload, OccurredAt: webhookNow},
+		AgencySlug:       "agency",
+		AgencyName:       "Agency",
+		Meeting:          store.Meeting{ID: uuid.New(), Title: "Board", StartsAt: webhookNow},
+	}
+}
+
+func deliverWorker(t *testing.T, st *fakeDeliveryStore, sender *fakeSender, sealer *webhooks.Sealer) *DeliverWebhookWorker {
+	t.Helper()
+	return &DeliverWebhookWorker{
+		logger:   discard,
+		store:    st,
+		webhooks: Webhooks{Sealer: sealer, Sender: sender},
+		clock:    sourcestest.NewClock(webhookNow),
+		enabled:  func(context.Context, string) bool { return true },
+	}
+}
+
+func deliverJob() *river.Job[DeliverWebhookArgs] {
+	return &river.Job[DeliverWebhookArgs]{JobRow: &rivertype.JobRow{ID: 3, Attempt: 2, MaxAttempts: webhookDeliverAttempts}}
+}
+
+func TestWebhookArgs(t *testing.T) {
+	if kind := (DeliverWebhookArgs{}).Kind(); kind != "deliver_webhook" {
+		t.Errorf("deliver Kind() = %q", kind)
+	}
+	if opts := (DeliverWebhookArgs{}).InsertOpts(); opts.MaxAttempts != 5 || opts.Queue != WebhookQueue || !opts.UniqueOpts.ByArgs || !opts.UniqueOpts.ByQueue {
+		t.Errorf("deliver InsertOpts() = %+v", opts)
+	}
+	if kind := (FanOutWebhooksArgs{}).Kind(); kind != "fan_out_webhooks" {
+		t.Errorf("fan-out Kind() = %q", kind)
+	}
+	if opts := (FanOutWebhooksArgs{}).InsertOpts(); opts.MaxAttempts != 5 || !opts.UniqueOpts.ByArgs {
+		t.Errorf("fan-out InsertOpts() = %+v", opts)
+	}
+	if kind := (EnqueueWebhookFanOutsArgs{}).Kind(); kind != "enqueue_webhook_fan_outs" {
+		t.Errorf("sweep Kind() = %q", kind)
+	}
+	if opts := (EnqueueWebhookFanOutsArgs{}).InsertOpts(); opts.MaxAttempts != 1 || !opts.UniqueOpts.ByArgs || !opts.UniqueOpts.ByQueue {
+		t.Errorf("sweep InsertOpts() = %+v", opts)
+	}
+	args, opts := periodicWebhookSweep(sourcestest.NewClock(webhookNow), "ingest")()
+	if got, ok := args.(EnqueueWebhookFanOutsArgs); !ok || !got.Slot.Equal(time.Date(2026, 11, 18, 9, 30, 0, 0, time.UTC)) || opts.Queue != "ingest" {
+		t.Errorf("periodic constructor = %#v, %+v", args, opts)
+	}
+	if got := (&DeliverWebhookWorker{}).Timeout(nil); got != webhookDeliverTimeout {
+		t.Errorf("Timeout = %v", got)
+	}
+}
+
+func TestDeliverWebhookSendsASignedV1Body(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+	sender := &fakeSender{result: webhooks.Result{StatusCode: http.StatusOK, Duration: 42 * time.Millisecond}}
+	if err := deliverWorker(t, st, sender, sealer).Work(t.Context(), deliverJob()); err != nil {
+		t.Fatalf("Work = %v", err)
+	}
+	if len(sender.requests) != 1 {
+		t.Fatalf("requests = %d", len(sender.requests))
+	}
+	req := sender.requests[0]
+	if req.URL != st.delivery.URL || req.ID != st.delivery.Event.ID.String() || !req.At.Equal(webhookNow) || req.Secret.Reveal() != "whsec_c2VjcmV0" {
+		t.Errorf("request = %+v", req)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(req.Body, &body); err != nil || body["type"] != "agenda_published" || body["payloadVersion"] != "v1" {
+		t.Errorf("body = %s, %v", req.Body, err)
+	}
+	want := store.WebhookAttemptInput{
+		SubscriptionID: st.delivery.SubscriptionID, EventID: st.delivery.Event.ID, Attempt: 2,
+		StartedAt: webhookNow, Duration: 42 * time.Millisecond, StatusCode: 200, Succeeded: true,
+	}
+	if len(st.attempts) != 1 || st.attempts[0] != want {
+		t.Errorf("attempts = %+v, want %+v", st.attempts, want)
+	}
+}
+
+func TestDeliverWebhookSkipsWhatShouldNotBeSent(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	for name, change := range map[string]func(*fakeDeliveryStore, *DeliverWebhookWorker){
+		"gone":      func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.err = store.ErrNotFound },
+		"paused":    func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.delivery.Status = store.WebhookPaused },
+		"free plan": func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.delivery.Paid = false },
+		"flag off": func(_ *fakeDeliveryStore, w *DeliverWebhookWorker) {
+			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptions }
+		},
+		"accounts off": func(_ *fakeDeliveryStore, w *DeliverWebhookWorker) {
+			w.enabled = func(_ context.Context, flag string) bool { return flag != flagAccounts }
+		},
+	} {
+		st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+		sender := &fakeSender{}
+		w := deliverWorker(t, st, sender, sealer)
+		change(st, w)
+		if err := w.Work(t.Context(), deliverJob()); err != nil || len(sender.requests) != 0 || len(st.attempts) != 0 {
+			t.Errorf("%s: Work = %v, requests %d, attempts %d", name, err, len(sender.requests), len(st.attempts))
+		}
+	}
+}
+
+func TestDeliverWebhookChecksFlagsForTheSubscriber(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+	var identities []string
+	w := deliverWorker(t, st, &fakeSender{result: webhooks.Result{StatusCode: 204}}, sealer)
+	w.enabled = func(ctx context.Context, _ string) bool {
+		identities = append(identities, openfeature.TransactionContext(ctx).TargetingKey())
+		return true
+	}
+	if err := w.Work(t.Context(), deliverJob()); err != nil {
+		t.Fatal(err)
+	}
+	if len(identities) != 2 || identities[0] != "user_paid" || identities[1] != "user_paid" {
+		t.Errorf("identities = %q", identities)
+	}
+}
+
+func TestDeliverWebhookClassifiesFailures(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	refused := webhooks.Result{Err: errors.Join(errors.New("refused to connect to 10.0.0.1"), webhooks.ErrForbiddenAddress), Duration: time.Millisecond}
+	for name, tc := range map[string]struct {
+		result     webhooks.Result
+		cancel     bool
+		statusCode int
+		problem    string
+	}{
+		"server error":    {webhooks.Result{StatusCode: 503}, false, 503, "the endpoint answered 503"},
+		"client error":    {webhooks.Result{StatusCode: 404}, false, 404, "the endpoint answered 404"},
+		"redirect":        {webhooks.Result{StatusCode: 302}, false, 302, "the endpoint answered 302"},
+		"network":         {webhooks.Result{Err: errors.New("connection reset")}, false, 0, "connection reset"},
+		"refused address": {refused, true, 0, refused.Err.Error()},
+	} {
+		st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+		err := deliverWorker(t, st, &fakeSender{result: tc.result}, sealer).Work(t.Context(), deliverJob())
+		var cancel *river.JobCancelError
+		if err == nil || errors.As(err, &cancel) != tc.cancel {
+			t.Errorf("%s: Work = %v, want cancel %v", name, err, tc.cancel)
+		}
+		if len(st.attempts) != 1 || st.attempts[0].Succeeded || st.attempts[0].StatusCode != tc.statusCode || st.attempts[0].Error != tc.problem {
+			t.Errorf("%s: attempts = %+v", name, st.attempts)
+		}
+	}
+}
+
+func TestDeliverWebhookCancelsWhenTheSecretCannotBeOpened(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+	st.delivery.SecretCiphertext = []byte{1, 2, 3}
+	sender := &fakeSender{}
+	err := deliverWorker(t, st, sender, sealer).Work(t.Context(), deliverJob())
+	var cancel *river.JobCancelError
+	if !errors.As(err, &cancel) || len(sender.requests) != 0 {
+		t.Fatalf("Work = %v, requests %d", err, len(sender.requests))
+	}
+	if len(st.attempts) != 1 || !strings.Contains(st.attempts[0].Error, "rotate the secret") || st.attempts[0].Succeeded {
+		t.Errorf("attempts = %+v", st.attempts)
+	}
+}
+
+func TestDeliverWebhookCancelsAPayloadItCannotBuild(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+	st.delivery.Event.Payload = json.RawMessage(`{}`)
+	sender := &fakeSender{}
+	err := deliverWorker(t, st, sender, sealer).Work(t.Context(), deliverJob())
+	var cancel *river.JobCancelError
+	if !errors.As(err, &cancel) || len(sender.requests) != 0 || len(st.attempts) != 0 {
+		t.Errorf("Work = %v, requests %d, attempts %d", err, len(sender.requests), len(st.attempts))
+	}
+}
+
+func TestDeliverWebhookWaitsForTheSecretKey(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+	sender := &fakeSender{}
+	err := deliverWorker(t, st, sender, nil).Work(t.Context(), deliverJob())
+	var snooze *river.JobSnoozeError
+	if !errors.As(err, &snooze) || len(sender.requests) != 0 {
+		t.Errorf("Work = %v, requests %d", err, len(sender.requests))
+	}
+}
+
+func TestDeliverWebhookStoreErrors(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{err: errors.New("db down")}
+	if err := deliverWorker(t, st, &fakeSender{}, sealer).Work(t.Context(), deliverJob()); err == nil || err.Error() != "db down" {
+		t.Errorf("read error: %v", err)
+	}
+	st = &fakeDeliveryStore{delivery: deliveryFixture(t, sealer), recordErr: errors.New("db down")}
+	if err := deliverWorker(t, st, &fakeSender{result: webhooks.Result{StatusCode: 200}}, sealer).Work(t.Context(), deliverJob()); err != nil {
+		t.Errorf("a delivered webhook whose attempt was not recorded is not sent again: %v", err)
+	}
+}
+
+type fakeWebhookSweepStore struct {
+	ids   []uuid.UUID
+	err   error
+	calls []store.FanOutParams
+}
+
+func (s *fakeWebhookSweepStore) ListEventsAwaitingFanOut(_ context.Context, p store.FanOutParams) ([]uuid.UUID, error) {
+	s.calls = append(s.calls, p)
+	return s.ids, s.err
+}
+
+func TestWebhookSweepNeedsTheSecretKey(t *testing.T) {
+	st := &fakeWebhookSweepStore{ids: []uuid.UUID{uuid.New()}}
+	w := &EnqueueWebhookFanOutsWorker{logger: discard, store: st, webhooks: Webhooks{Sender: &fakeSender{}}, queue: "q"}
+	if err := w.Work(t.Context(), &river.Job[EnqueueWebhookFanOutsArgs]{JobRow: &rivertype.JobRow{}}); err != nil || len(st.calls) != 0 {
+		t.Errorf("Work = %v, calls %d", err, len(st.calls))
+	}
+}
+
+func TestWebhookSweepAsksForABatch(t *testing.T) {
+	st := &fakeWebhookSweepStore{}
+	w := &EnqueueWebhookFanOutsWorker{logger: discard, store: st, webhooks: Webhooks{Sealer: testWebhookSealer(t), Sender: &fakeSender{}}, queue: "q"}
+	job := &river.Job[EnqueueWebhookFanOutsArgs]{JobRow: &rivertype.JobRow{}}
+	if err := w.Work(t.Context(), job); err != nil || len(st.calls) != 1 || st.calls[0] != (store.FanOutParams{Limit: 100, Lookback: 1000}) {
+		t.Errorf("Work = %v, calls %+v", err, st.calls)
+	}
+	st.err = errors.New("db down")
+	if err := w.Work(t.Context(), job); err == nil {
+		t.Error("a store error is returned")
+	}
+	st.err, st.ids = nil, []uuid.UUID{uuid.New()}
+	if err := w.Work(t.Context(), job); err == nil {
+		t.Error("outside a River client the insert fails")
+	}
+}

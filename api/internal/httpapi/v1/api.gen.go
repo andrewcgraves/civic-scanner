@@ -171,6 +171,45 @@ func (e UserRole) Valid() bool {
 	}
 }
 
+// Defines values for WebhookAgendaChangeNoteSource.
+const (
+	WebhookChangeNoteFromDiff  WebhookAgendaChangeNoteSource = "diff"
+	WebhookChangeNoteFromModel WebhookAgendaChangeNoteSource = "model"
+)
+
+// Valid indicates whether the value is a known member of the WebhookAgendaChangeNoteSource enum.
+func (e WebhookAgendaChangeNoteSource) Valid() bool {
+	switch e {
+	case WebhookChangeNoteFromDiff:
+		return true
+	case WebhookChangeNoteFromModel:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WebhookEventType.
+const (
+	WebhookAgendaChanged   WebhookEventType = "agenda_changed"
+	WebhookAgendaPublished WebhookEventType = "agenda_published"
+	WebhookTranscriptReady WebhookEventType = "transcript_ready"
+)
+
+// Valid indicates whether the value is a known member of the WebhookEventType enum.
+func (e WebhookEventType) Valid() bool {
+	switch e {
+	case WebhookAgendaChanged:
+		return true
+	case WebhookAgendaPublished:
+		return true
+	case WebhookTranscriptReady:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for WebhookPayloadVersion.
 const (
 	WebhookPayloadV1 WebhookPayloadVersion = "v1"
@@ -475,6 +514,67 @@ type ValidationError struct {
 	Message string `json:"message"`
 }
 
+// WebhookAgency defines model for WebhookAgency.
+type WebhookAgency struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// WebhookAgenda Present for `agenda_published` and `agenda_changed`.
+type WebhookAgenda struct {
+	// ChangeNote For `agenda_changed`, what changed, in plain text. Absent when the change was recorded without a note. Agency and model text: show it as text, never as HTML or Markdown.
+	ChangeNote *string `json:"changeNote,omitempty"`
+
+	// ChangeNoteSource Who wrote `changeNote`: `model` when a language model described the change, `diff` when it was built from the word differences.
+	ChangeNoteSource *WebhookAgendaChangeNoteSource `json:"changeNoteSource,omitempty"`
+
+	// Version 1 for the first agenda of the meeting, then counting up.
+	Version int `json:"version"`
+
+	// VersionId The agenda version the event is about.
+	VersionId openapi_types.UUID `json:"versionId"`
+}
+
+// WebhookAgendaChangeNoteSource Who wrote `changeNote`: `model` when a language model described the change, `diff` when it was built from the word differences.
+type WebhookAgendaChangeNoteSource string
+
+// WebhookEventType What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
+type WebhookEventType string
+
+// WebhookEventV1 The body of a webhook delivery with payload version `v1`, sent as `POST` with `Content-Type: application/json` to the subscription's URL. Not a route of this API: Civic Scanner sends it to subscribers. Each request carries the Standard Webhooks headers: `webhook-id` (the event's `id`, the same on every retry and at every subscriber, so a receiver can drop duplicates), `webhook-timestamp` (when this attempt was signed, in Unix seconds) and `webhook-signature` (`v1,` followed by the standard base64 HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}`, keyed with the bytes the subscription's `whsec_` secret encodes). Any 2xx answer is a delivery; anything else, a redirect included, is retried. New optional members may be added; receivers must ignore members they do not know.
+type WebhookEventV1 struct {
+	Agency WebhookAgency `json:"agency"`
+
+	// Agenda Present for `agenda_published` and `agenda_changed`.
+	Agenda *WebhookAgenda `json:"agenda,omitempty"`
+
+	// Id The event's id, repeated in the `webhook-id` header.
+	Id      openapi_types.UUID `json:"id"`
+	Meeting WebhookMeeting     `json:"meeting"`
+
+	// OccurredAt When what the event describes happened. For `agenda_changed`, when the change was found, which can be earlier than the delivery of an event sent before it.
+	OccurredAt time.Time `json:"occurredAt"`
+
+	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
+
+	// Transcript Present for `transcript_ready`.
+	Transcript *WebhookTranscript `json:"transcript,omitempty"`
+
+	// Type What happened to the meeting. `agenda_published`: its first agenda was found. `agenda_changed`: a later agenda differs from the one before. `transcript_ready`: a recording's transcript and its summary are ready. New types may be added; receivers must ignore types they do not know.
+	Type WebhookEventType `json:"type"`
+}
+
+// WebhookMeeting defines model for WebhookMeeting.
+type WebhookMeeting struct {
+	Id openapi_types.UUID `json:"id"`
+
+	// SourceUrl The agency's own page for the meeting. Absent when the source gave none.
+	SourceUrl *string   `json:"sourceUrl,omitempty"`
+	StartsAt  time.Time `json:"startsAt"`
+	Title     string    `json:"title"`
+}
+
 // WebhookPayloadVersion The version of the payload to send. `v1` is the only one.
 type WebhookPayloadVersion string
 
@@ -557,6 +657,12 @@ type WebhookSubscriptionWithSecret struct {
 
 	// Url The URL as stored.
 	Url string `json:"url"`
+}
+
+// WebhookTranscript Present for `transcript_ready`.
+type WebhookTranscript struct {
+	Id          openapi_types.UUID `json:"id"`
+	RecordingId openapi_types.UUID `json:"recordingId"`
 }
 
 // AgencySlug defines model for AgencySlug.
