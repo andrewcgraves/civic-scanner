@@ -40,6 +40,9 @@ func presetEvents() map[string]webhooks.Event {
 	noLink := cases["agenda_published"]
 	noLink.PageURL = ""
 	cases["agenda_published_no_link"] = noLink
+	directed := cases["agenda_changed_diff"]
+	directed.Message = "Student fares on the A Line drop to *$1* from July 1, approved 9 to 3 <@123>."
+	cases["agenda_changed_directed"] = directed
 	return cases
 }
 

@@ -13,6 +13,7 @@ import (
 
 const (
 	MaxWebhookSubscriptionsPerUser = 25
+	MaxWebhookPromptChars          = 500
 	WebhookPayloadV1               = "v1"
 	webhookUniqueConstraint        = "webhook_subscriptions_user_agency_url_unique"
 )
@@ -60,6 +61,7 @@ type WebhookSubscriptionInput struct {
 	PayloadVersion   string
 	Format           WebhookFormat
 	SecretCiphertext []byte
+	Prompt           *string
 }
 
 type WebhookSubscriptionUpdate struct {
@@ -67,10 +69,11 @@ type WebhookSubscriptionUpdate struct {
 	PayloadVersion *string
 	Format         *WebhookFormat
 	Status         *WebhookStatus
+	Prompt         *string
 }
 
 func (u WebhookSubscriptionUpdate) Empty() bool {
-	return u.URL == nil && u.PayloadVersion == nil && u.Format == nil && u.Status == nil
+	return u.URL == nil && u.PayloadVersion == nil && u.Format == nil && u.Status == nil && u.Prompt == nil
 }
 
 type WebhookSubscription struct {
@@ -83,6 +86,7 @@ type WebhookSubscription struct {
 	PayloadVersion          string
 	Format                  WebhookFormat
 	Status                  WebhookStatus
+	Prompt                  *string
 	PausedReason            *WebhookPausedReason
 	PausedAt                *time.Time
 	ConsecutiveFailedEvents int
@@ -92,12 +96,12 @@ type WebhookSubscription struct {
 }
 
 const webhookColumns = `w.id, w.user_id, w.agency_id, a.slug, a.name, w.url, w.payload_version, w.format, w.status, w.paused_reason, w.paused_at,
-w.consecutive_failed_events, w.secret_rotated_at, w.created_at, w.updated_at`
+w.consecutive_failed_events, w.prompt, w.secret_rotated_at, w.created_at, w.updated_at`
 
 func scanWebhookSubscription(row pgx.Row) (WebhookSubscription, error) {
 	var w WebhookSubscription
 	err := row.Scan(&w.ID, &w.UserID, &w.AgencyID, &w.AgencySlug, &w.AgencyName, &w.URL, &w.PayloadVersion, &w.Format, &w.Status,
-		&w.PausedReason, &w.PausedAt, &w.ConsecutiveFailedEvents, &w.SecretRotatedAt, &w.CreatedAt, &w.UpdatedAt)
+		&w.PausedReason, &w.PausedAt, &w.ConsecutiveFailedEvents, &w.Prompt, &w.SecretRotatedAt, &w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		return w, err
 	}
@@ -143,12 +147,12 @@ func (s *Store) CreateWebhookSubscription(ctx context.Context, in WebhookSubscri
 		var err error
 		created, err = scanWebhookSubscription(tx.QueryRow(ctx, `
 WITH w AS (
-    INSERT INTO webhook_subscriptions (id, user_id, agency_id, url, payload_version, format, secret_ciphertext)
-    SELECT $1, $2, a.id, $4, $5, $6, $7 FROM agencies a WHERE a.slug = $3 AND a.status = 'live'
+    INSERT INTO webhook_subscriptions (id, user_id, agency_id, url, payload_version, format, secret_ciphertext, prompt)
+    SELECT $1, $2, a.id, $4, $5, $6, $7, NULLIF($8, '') FROM agencies a WHERE a.slug = $3 AND a.status = 'live'
     RETURNING *
 )
 SELECT `+webhookColumns+` FROM w JOIN agencies a ON a.id = w.agency_id`,
-			in.ID, in.UserID, in.AgencySlug, in.URL, in.PayloadVersion, in.Format, in.SecretCiphertext))
+			in.ID, in.UserID, in.AgencySlug, in.URL, in.PayloadVersion, in.Format, in.SecretCiphertext, in.Prompt))
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return ErrUnknownAgency
@@ -214,11 +218,12 @@ WITH w AS (
             WHEN $5::text = 'paused' THEN now()
         END,
         consecutive_failed_events = CASE WHEN $5::text = 'active' THEN 0 ELSE consecutive_failed_events END,
+        prompt = CASE WHEN $7::text IS NULL THEN prompt ELSE NULLIF($7, '') END,
         updated_at = now()
     WHERE id = $1 AND user_id = $2
     RETURNING *
 )
-SELECT `+webhookColumns+` FROM w JOIN agencies a ON a.id = w.agency_id`, id, userID, update.URL, update.PayloadVersion, update.Status, update.Format))
+SELECT `+webhookColumns+` FROM w JOIN agencies a ON a.id = w.agency_id`, id, userID, update.URL, update.PayloadVersion, update.Status, update.Format, update.Prompt))
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return WebhookSubscription{}, ErrNotFound

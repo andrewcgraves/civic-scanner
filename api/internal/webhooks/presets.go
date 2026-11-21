@@ -23,6 +23,7 @@ const (
 	presetFooter          = "Civic Scanner"
 	openMeeting           = "Open the meeting"
 	byModel               = "Change described by a language model."
+	byDirectedPrompt      = "Written by a language model for this subscription's prompt."
 	slackDateFallback     = "Monday, January 2, 2006 at 3:04 PM UTC"
 	testLabelPrefix       = "Test: "
 )
@@ -32,7 +33,7 @@ type preset struct {
 	color   int
 	summary string
 	note    string
-	byModel bool
+	credit  string
 	event   v1.WebhookEventV1
 	link    string
 }
@@ -52,11 +53,16 @@ func presetFor(e Event) (preset, error) {
 		p.summary = fmt.Sprintf("The agenda changed (now version %d).", ev.Agenda.Version)
 		if ev.Agenda.ChangeNote != nil {
 			p.note = *ev.Agenda.ChangeNote
-			p.byModel = ev.Agenda.ChangeNoteSource != nil && *ev.Agenda.ChangeNoteSource == v1.WebhookChangeNoteFromModel
+			if ev.Agenda.ChangeNoteSource != nil && *ev.Agenda.ChangeNoteSource == v1.WebhookChangeNoteFromModel {
+				p.credit = byModel
+			}
 		}
 	case v1.WebhookTranscriptReady:
 		p.label, p.color = "Transcript ready", 0x1565C0
 		p.summary = "The recording's transcript and summary are ready."
+	}
+	if ev.Message != nil {
+		p.note, p.credit = ev.Message.Text, byDirectedPrompt
 	}
 	if e.Test {
 		p.label = testLabelPrefix + p.label
@@ -137,8 +143,8 @@ func discordBody(e Event) ([]byte, error) {
 	description := "**" + p.label + "**\n" + p.summary
 	if p.note != "" {
 		credit := ""
-		if p.byModel {
-			credit = "\n\n*" + byModel + "*"
+		if p.credit != "" {
+			credit = "\n\n*" + p.credit + "*"
 		}
 		room := DiscordDescriptionMax - textUnits(description) - 2 - textUnits(credit)
 		note, cut := fit(p.note, room, discordEscape)
@@ -235,8 +241,8 @@ func slackBody(e Event) ([]byte, error) {
 		{Type: "context", Elements: context},
 		{Type: "section", Text: slackPlain(section)},
 	}
-	if p.byModel {
-		blocks = append(blocks, SlackBlock{Type: "context", Elements: []SlackElement{{Type: "plain_text", Text: byModel, Emoji: &off}}})
+	if p.credit != "" {
+		blocks = append(blocks, SlackBlock{Type: "context", Elements: []SlackElement{{Type: "plain_text", Text: p.credit, Emoji: &off}}})
 	}
 	if p.link != "" {
 		blocks = append(blocks, SlackBlock{Type: "actions", Elements: []SlackElement{

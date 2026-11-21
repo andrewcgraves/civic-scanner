@@ -229,6 +229,16 @@ func NewClient(pool *pgxpool.Pool, logger *slog.Logger, cfg Config) (*river.Clie
 		store:        st,
 		enabled:      cfg.Enabled,
 		deliverQueue: cfg.WebhookQueue,
+		promptQueue:  cfg.Queue,
+	})
+	river.AddWorker(workers, &RunPaidPromptsWorker{
+		logger:       logger,
+		pool:         pool,
+		store:        st,
+		llm:          summaryLLM,
+		llmTimeout:   cfg.LLMTimeout,
+		enabled:      cfg.Enabled,
+		deliverQueue: cfg.WebhookQueue,
 	})
 	river.AddWorker(workers, &DeliverWebhookWorker{
 		logger:   logger,

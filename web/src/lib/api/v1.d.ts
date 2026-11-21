@@ -335,7 +335,7 @@ export interface paths {
     head?: never;
     /**
      * Change, pause or resume a webhook subscription
-     * @description Changes the URL, the payload version, the format or the status of one of the signed-in user's subscriptions. Members left out are unchanged; at least one is required. `status: paused` pauses the subscription and `status: active` resumes it, including one paused for failed deliveries, and resets `consecutiveFailedEvents` to 0. Events that happen while a subscription is paused are not delivered later. The agency and the secret cannot be changed here. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     * @description Changes the URL, the payload version, the format, the status or the directed prompt of one of the signed-in user's subscriptions. Members left out are unchanged; at least one is required. `status: paused` pauses the subscription and `status: active` resumes it, including one paused for failed deliveries, and resets `consecutiveFailedEvents` to 0. Events that happen while a subscription is paused are not delivered later. The agency and the secret cannot be changed here. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
      */
     patch: operations["updateWebhookSubscription"];
     trace?: never;
@@ -596,6 +596,7 @@ export interface components {
       url: string;
       payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
       format?: components["schemas"]["WebhookFormat"];
+      prompt?: components["schemas"]["WebhookPrompt"];
     };
     WebhookSubscriptionUpdate: {
       /** @description A new URL, with the same rules as when creating. The host's addresses are checked only when the URL differs from the stored one. */
@@ -603,7 +604,11 @@ export interface components {
       payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
       format?: components["schemas"]["WebhookFormat"];
       status?: components["schemas"]["WebhookSubscriptionStatus"];
+      /** @description A new directed prompt, with the same rules as when creating. An empty string, or one of only white space, removes the prompt, and the subscription is sent standard deliveries again. */
+      prompt?: string;
     };
+    /** @description A directed prompt: what this subscription is to focus on, for example fare changes or a particular rail line, in at most 500 characters after trimming. With a prompt, each agenda or transcript is read against it and the delivery carries a `message` covering only that focus; when nothing in it is relevant, nothing is sent. Empty or absent means standard deliveries. Private to its owner: it is returned only on these routes, to the subscription's owner. */
+    WebhookPrompt: string;
     /**
      * @description The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
      * @default v1
@@ -639,6 +644,7 @@ export interface components {
       payloadVersion: components["schemas"]["WebhookPayloadVersion"];
       format: components["schemas"]["WebhookFormat"];
       status: components["schemas"]["WebhookSubscriptionStatus"];
+      prompt?: components["schemas"]["WebhookPrompt"];
       /** @description Why the subscription is paused; null while it is active. */
       pausedReason:
         | (string & components["schemas"]["WebhookSubscriptionPausedReason"])
@@ -800,6 +806,17 @@ export interface components {
       transcript?: components["schemas"]["WebhookTranscript"];
       /** @description `true` on a test sent with `POST /webhook-subscriptions/{id}/test`, whose event, meeting, agenda and transcript ids are made up and found nowhere in the API. Absent on real deliveries. */
       test?: boolean;
+      message?: components["schemas"]["WebhookMessage"];
+    };
+    /** @description Present when the subscription has a directed prompt: what the agenda or transcript says about that focus. */
+    WebhookMessage: {
+      /** @description Plain text written by a language model from agency text, at most 4,000 bytes. Show it as text, never as HTML or Markdown. */
+      text: string;
+      /**
+       * @description What the message was written from. `directed_prompt` is the only one; new values may be added.
+       * @enum {string}
+       */
+      source: "directed_prompt";
     };
     WebhookAgency: {
       slug: string;
@@ -1062,7 +1079,7 @@ export interface components {
         "application/json": components["schemas"]["Error"];
       };
     };
-    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_status`, `nothing_to_update` for an update with no members, `invalid_event_type` for a test of a type that is not a `WebhookEventType`, or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials`, `fragment`, `not_public` when the host is, or resolves to, an address that is not on the public internet (private, loopback, link-local, cloud metadata or reserved), or `unresolvable_host` when the host name has no address or cannot be looked up. */
+    /** @description The body or the id is not valid. `code` is `invalid_parameter` for an id that is not a UUID and `invalid_body` for a body that is not a JSON object of the documented members. Otherwise `code` names the problem: `unknown_agency` when no live agency has the slug, `invalid_payload_version`, `invalid_status`, `nothing_to_update` for an update with no members, `invalid_event_type` for a test of a type that is not a `WebhookEventType`, for the prompt `prompt_too_long`, `invalid_prompt` (control characters other than line breaks and tabs) or `prompts_unavailable` (directed prompts are not turned on for the user), or, for the URL, `required`, `too_long`, `invalid_url`, `unsupported_scheme` (not `https`), `credentials`, `fragment`, `not_public` when the host is, or resolves to, an address that is not on the public internet (private, loopback, link-local, cloud metadata or reserved), or `unresolvable_host` when the host name has no address or cannot be looked up. */
     InvalidWebhookSubscription: {
       headers: {
         "Cache-Control": components["headers"]["NoStore"];
