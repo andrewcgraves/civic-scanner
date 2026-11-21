@@ -1,6 +1,7 @@
 package transcribe_test
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -486,5 +487,37 @@ func TestGatewayAlwaysReencodesLargeAndUnknownFormats(t *testing.T) {
 				t.Errorf("sent without re-encoding = %v, want %v", direct, tc.direct)
 			}
 		})
+	}
+}
+
+func audioFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "meeting.mp3")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func assertTranscript(t *testing.T, got, want transcribe.Transcript) {
+	t.Helper()
+	if got.Text != want.Text || got.Duration != want.Duration || len(got.Segments) != len(want.Segments) {
+		t.Fatalf("transcript = %+v, want %+v", got, want)
+	}
+	for i := range want.Segments {
+		if got.Segments[i] != want.Segments[i] {
+			t.Errorf("segment %d = %+v, want %+v", i, got.Segments[i], want.Segments[i])
+		}
+	}
+}
+
+func TestGatewayCanceledContextIsRetryable(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := transcribe.New(gatewayConfig("http://127.0.0.1:1")).Transcribe(ctx, audioFile(t, "a"))
+
+	if !transcribe.IsRetryable(err) || !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v", err)
 	}
 }

@@ -471,7 +471,7 @@ Billing is the only feature whose bad configuration does not stop the binaries. 
 
 A malformed `PUBLIC_WEB_URL` still stops the API at startup, as before, because the RSS feed relies on it too.
 
-The key and the webhook secret are held in `config.Secret` (as is `WEBHOOK_SECRET_KEY`, see [Webhook subscriptions](#webhook-subscriptions)), which prints as `[redacted]` through `fmt` (every verb, including `%#v`), `slog` (JSON and text handlers, via `LogValue`), `encoding/json` and `MarshalText`; only `Reveal()` returns them, and only `internal/billing` and `internal/webhooks` call that. The other secrets in `config` (`AI_GATEWAY_API_KEY`, `GROQ_API_KEY`, `FIRECRAWL_API_KEY`, `STORAGE_SECRET_ACCESS_KEY`, `POSTHOG_API_KEY`) are still plain strings and would print if a whole config were logged; nothing logs one today. Moving them to `config.Secret` is a separate change across their packages.
+The key and the webhook secret are held in `config.Secret` (as is `WEBHOOK_SECRET_KEY`, see [Webhook subscriptions](#webhook-subscriptions)), which prints as `[redacted]` through `fmt` (every verb, including `%#v`), `slog` (JSON and text handlers, via `LogValue`), `encoding/json` and `MarshalText`; only `Reveal()` returns them, and only `internal/billing` and `internal/webhooks` call that. The other secrets in `config` (`AI_GATEWAY_API_KEY`, `FIRECRAWL_API_KEY`, `STORAGE_SECRET_ACCESS_KEY`, `POSTHOG_API_KEY`) are still plain strings and would print if a whole config were logged; nothing logs one today. Moving them to `config.Secret` is a separate change across their packages.
 
 #### Turning billing on in production
 
@@ -1903,7 +1903,7 @@ The job's integration tests use a fake downloader and the in-memory bucket: a he
 `transcribe_audio` reads one recording's stored audio from the bucket, transcribes it through [`internal/transcribe`](#transcription) and saves the timestamped transcript (`store.AddTranscriptTx`). Its args are the recording id. Two things enqueue it: the audio follow-up hook, in the transaction that records the audio, and the hourly sweep below. It runs on the `audio` queue, whose one worker it shares with `download_audio`, so the worker never holds more than one recording's audio and its chunks at a time.
 
 - **Flag.** `ingest-transcribe`, separate from `ingest-download-audio`, so audio keeps being stored while transcription (the most expensive call in the pipeline) is off.
-- **Off or unconfigured costs nothing.** With the flag off, the hook inserts nothing and a job that runs anyway completes at once. Without a client (the worker passes none when the selected provider has no key; production has no `AI_GATEWAY_API_KEY` yet) or with a client that answers `transcribe.ErrNotConfigured`, the job completes without a model call or a failed attempt and the sweep does nothing. Those recordings wait for the sweep.
+- **Off or unconfigured costs nothing.** With the flag off, the hook inserts nothing and a job that runs anyway completes at once. Without a client (the worker passes none when `AI_GATEWAY_API_KEY` is empty; production has no `AI_GATEWAY_API_KEY` yet) or with a client that answers `transcribe.ErrNotConfigured`, the job completes without a model call or a failed attempt and the sweep does nothing. Those recordings wait for the sweep.
 - **Enqueue.** `jobs.EnqueueTranscribeAudio` is the default `jobs.AudioFollowUp`. It inserts the job inside a savepoint of the audio transaction; if the insert fails it rolls back to the savepoint, logs `transcription not enqueued` at `warn` and returns nil, so the audio is still recorded. A transcription must never undo a download: rolling back would leave the uploaded object unrecorded and make `download_audio` retry the Granicus fetch, and the sweep enqueues the recording later anyway. (Agenda changes, by contrast, require their job, because the change event is held back until it runs.)
 - **Uniqueness.** By args and queue over the non-final states (`available`, `pending`, `retryable`, `running`, `scheduled`), like `summarize_agenda`: while a job for a recording is waiting, running or retrying, another insert is skipped; once it is final, the sweep may insert a new one.
 - **Timeout and attempts.** `TRANSCRIPTION_JOB_TIMEOUT` (2 hours), at most 3 attempts. The stuck-job rescuer keeps its one-hour default: as for downloads, it leaves a running job alone until the job's own timeout has passed (`TestRescuerLeavesARunningDownloadAloneWhileRescuingOtherJobs` checks a 65-minute transcription too).
@@ -2209,17 +2209,18 @@ The gateway call is `POST {origin}/v4/ai/transcription-model` with `Authorizatio
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TRANSCRIPTION_PROVIDER` | `gateway` | `gateway` or `groq`. Anything else fails at startup. |
+| `TRANSCRIPTION_PROVIDER` | `gateway` | Only `gateway` is accepted. Anything else, including the removed `groq`, fails at startup. |
 | `AI_GATEWAY_API_KEY` | none | Shared with the LLM client. A secret: set it in Railway, never in `.railway/railway.ts`. |
 | `AI_GATEWAY_BASE_URL` | `https://ai-gateway.vercel.sh/v1` | Shared with the LLM client. The transcription endpoint lives under `/v4/ai/`, not `/v1`, so only the scheme and host of this URL are used (`https://ai-gateway.vercel.sh`). |
-| `TRANSCRIPTION_MODEL` | `elevenlabs/scribe-v2` | Gateway model ID (`whisper-large-v3-turbo` when the provider is `groq`). `elevenlabs/scribe-v2` labels speakers and times every word by default. |
+| `TRANSCRIPTION_MODEL` | `elevenlabs/scribe-v2` | Gateway model ID. `elevenlabs/scribe-v2` labels speakers and times every word by default. |
 | `TRANSCRIPTION_TIMEOUT` | `5m` | Limit on one request, upload included, as a Go duration. Must be positive. |
 | `TRANSCRIPTION_DIRECT_UPLOAD_MB` | `2` | Largest MP3 sent as is, in MiB. Anything larger, or not an `.mp3`, is re-encoded in chunks. |
 | `TRANSCRIPTION_MAX_CHUNK_MB` | `8` | Largest single chunk, in MiB. The gateway documents no request size limit, so chunks stay small. |
 | `TRANSCRIPTION_PROVIDER_OPTIONS` | none | A JSON object sent verbatim as the request's `providerOptions`, for example `{"azure":{"timestamps":"word","diarization":{"enabled":true}}}` for `microsoft/mai-transcribe-2`. A value that is not a JSON object fails at startup. |
-| `GROQ_API_KEY`, `GROQ_BASE_URL`, `TRANSCRIPTION_MAX_UPLOAD_MB` | none, `https://api.groq.com/openai/v1`, `25` | Used only when the provider is `groq`, which keeps the previous multipart client. `TRANSCRIPTION_MAX_UPLOAD_MB` is both its direct-upload threshold and its chunk limit. |
 
-Without a key for the selected provider the binaries start normally, and every `Transcribe` call returns `transcribe.ErrNotConfigured` without contacting the service.
+Without `AI_GATEWAY_API_KEY` the binaries start normally, and every `Transcribe` call returns `transcribe.ErrNotConfigured` without contacting the service.
+
+The direct Groq Whisper client (`TRANSCRIPTION_PROVIDER=groq`, `GROQ_API_KEY`, `GROQ_BASE_URL`, `TRANSCRIPTION_MAX_UPLOAD_MB`) was removed after the model comparison in CIV-69; `elevenlabs/scribe-v2` stays the default.
 
 The REST response is `{text, segments, language, durationInSeconds, warnings, providerMetadata}`, where each segment is `{text, startSecond, endSecond}`. Segments carry no speaker, so speaker data is read from `providerMetadata`:
 
@@ -2234,7 +2235,7 @@ Models that return neither get segments from `segments`, or none (the `Text` is 
 
 ### Chunking
 
-The gateway path always re-encodes through `ffprobe` and `ffmpeg` (which must be on `PATH`; the worker image installs Debian's `ffmpeg` package, see [The worker image](#the-worker-image)), unless the file is an `.mp3` at or under `TRANSCRIPTION_DIRECT_UPLOAD_MB`. Chunks are 10 minutes long and overlap by 30 seconds, so each starts 9 minutes 30 seconds after the previous one. Each chunk is re-encoded as 16 kHz mono 32 kbps MP3 (about 2.4 MB, about 3.2 MB as base64). A chunk over `TRANSCRIPTION_MAX_CHUNK_MB` fails with `transcribe.ErrChunkTooLarge`. The `groq` provider uploads a file at or under `TRANSCRIPTION_MAX_UPLOAD_MB` as is and chunks larger ones.
+The gateway path always re-encodes through `ffprobe` and `ffmpeg` (which must be on `PATH`; the worker image installs Debian's `ffmpeg` package, see [The worker image](#the-worker-image)), unless the file is an `.mp3` at or under `TRANSCRIPTION_DIRECT_UPLOAD_MB`. Chunks are 10 minutes long and overlap by 30 seconds, so each starts 9 minutes 30 seconds after the previous one. Each chunk is re-encoded as 16 kHz mono 32 kbps MP3 (about 2.4 MB, about 3.2 MB as base64). A chunk over `TRANSCRIPTION_MAX_CHUNK_MB` fails with `transcribe.ErrChunkTooLarge`.
 
 Each chunk's segment (and word) times are shifted by the chunk's offset, and the two views of the 30-second overlap are stitched so that each moment of audio is represented once and no word is cut in half (`internal/transcribe/stitch.go`):
 
@@ -2259,7 +2260,7 @@ Each chunk's segment (and word) times are shifted by the chunk's offset, and the
 
 ### Tests
 
-Tests never call the gateway or Groq; the client's own tests run against `httptest` servers and a fake `Splitter`. One test runs real `ffmpeg` on a generated tone and skips when `ffmpeg` or `ffprobe` is not installed. `internal/transcribe/transcribetest` provides `transcribetest.Fake`, a `transcribe.Client` for other packages' tests (`Returning(transcript)`, `Failing(err)`, or a `Respond` function; `Calls()` returns the paths received), and `transcribetest.FakeSplitter`.
+Tests never call the gateway; the client's own tests run against `httptest` servers and a fake `Splitter`. One test runs real `ffmpeg` on a generated tone and skips when `ffmpeg` or `ffprobe` is not installed. `internal/transcribe/transcribetest` provides `transcribetest.Fake`, a `transcribe.Client` for other packages' tests (`Returning(transcript)`, `Failing(err)`, or a `Respond` function; `Calls()` returns the paths received), and `transcribetest.FakeSplitter`.
 
 ## Migrations
 
