@@ -42,7 +42,7 @@ func (p *paidProbe) handler(ctx context.Context, w http.ResponseWriter, _ *http.
 func runPaidGate(t *testing.T, h *Handler, probe *paidProbe, operationID string, authErr error) *httptest.ResponseRecorder {
 	t.Helper()
 	ctx := context.WithValue(t.Context(), authContextKey{}, authResult{identity: auth.Identity{UserID: "user_01"}, err: authErr})
-	gated := h.paidGate(map[string]bool{testPaidOperation: true})(probe.handler, operationID)
+	gated := h.paidGate(map[string]string{testPaidOperation: ""})(probe.handler, operationID)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/test-paid", nil)
 	if _, err := gated(ctx, rec, req, nil); err != nil {
@@ -143,7 +143,7 @@ func TestPaidFromFailsClosed(t *testing.T) {
 }
 
 func TestRouterRunsThePaidGate(t *testing.T) {
-	paidOperations["GetMe"] = true
+	paidOperations["GetMe"] = ""
 	t.Cleanup(func() { delete(paidOperations, "GetMe") })
 
 	calls := &userCalls{user: store.User{ID: uuid.New(), Plan: store.PlanFree}}
@@ -184,7 +184,7 @@ func TestGetMePlan(t *testing.T) {
 	}
 }
 
-func paidSpecProblems(doc *openapi3.T, operations map[string]bool) []string {
+func paidSpecProblems(doc *openapi3.T, operations map[string]string) []string {
 	var problems []string
 	marked := map[string]bool{}
 	known := map[string]bool{}
@@ -211,7 +211,7 @@ func paidSpecProblems(doc *openapi3.T, operations map[string]bool) []string {
 			}
 			if isPaid {
 				marked[id] = true
-				if !operations[id] {
+				if _, ok := operations[id]; !ok {
 					problems = append(problems, fmt.Sprintf("%s: marked %s in the spec but missing from paidOperations", id, paidExtension))
 				}
 			}
@@ -283,7 +283,7 @@ func TestPaidSpecProblemsCatchesMistakes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := paidSpecProblems(doc, map[string]bool{"CreateAlert": true, "ListUnrequired": true, "GetPublic": true, "CreatAlert": true})
+	got := paidSpecProblems(doc, map[string]string{"CreateAlert": "", "ListUnrequired": "", "GetPublic": "", "CreatAlert": ""})
 	want := []string{
 		"CreatAlert: in paidOperations but not an operation in the spec",
 		"GetPublic: in paidOperations but not marked x-paid in the spec",
@@ -295,7 +295,7 @@ func TestPaidSpecProblemsCatchesMistakes(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("problems:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
-	if missing := paidSpecProblems(doc, map[string]bool{}); !slices.Contains(missing, "CreateAlert: marked x-paid in the spec but missing from paidOperations") {
+	if missing := paidSpecProblems(doc, map[string]string{}); !slices.Contains(missing, "CreateAlert: marked x-paid in the spec but missing from paidOperations") {
 		t.Errorf("missing entry not reported: %v", missing)
 	}
 }

@@ -153,6 +153,39 @@ func (e UserRole) Valid() bool {
 	}
 }
 
+// Defines values for WebhookPayloadVersion.
+const (
+	WebhookPayloadV1 WebhookPayloadVersion = "v1"
+)
+
+// Valid indicates whether the value is a known member of the WebhookPayloadVersion enum.
+func (e WebhookPayloadVersion) Valid() bool {
+	switch e {
+	case WebhookPayloadV1:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for WebhookSubscriptionStatus.
+const (
+	WebhookSubscriptionActive WebhookSubscriptionStatus = "active"
+	WebhookSubscriptionPaused WebhookSubscriptionStatus = "paused"
+)
+
+// Valid indicates whether the value is a known member of the WebhookSubscriptionStatus enum.
+func (e WebhookSubscriptionStatus) Valid() bool {
+	switch e {
+	case WebhookSubscriptionActive:
+		return true
+	case WebhookSubscriptionPaused:
+		return true
+	default:
+		return false
+	}
+}
+
 // Agency defines model for Agency.
 type Agency struct {
 	Id   openapi_types.UUID `json:"id"`
@@ -377,11 +410,98 @@ type ValidationError struct {
 	Message string `json:"message"`
 }
 
+// WebhookPayloadVersion The version of the payload to send. `v1` is the only one.
+type WebhookPayloadVersion string
+
+// WebhookSubscription defines model for WebhookSubscription.
+type WebhookSubscription struct {
+	// Agency The slug of the agency.
+	Agency    string             `json:"agency"`
+	CreatedAt time.Time          `json:"createdAt"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
+
+	// SecretRotatedAt When the current signing secret was made.
+	SecretRotatedAt time.Time `json:"secretRotatedAt"`
+
+	// Status Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
+	Status WebhookSubscriptionStatus `json:"status"`
+
+	// UpdatedAt When the subscription or its secret last changed.
+	UpdatedAt time.Time `json:"updatedAt"`
+
+	// Url The URL as stored.
+	Url string `json:"url"`
+}
+
+// WebhookSubscriptionInput defines model for WebhookSubscriptionInput.
+type WebhookSubscriptionInput struct {
+	// Agency The slug of the live agency to subscribe to.
+	Agency string `json:"agency"`
+
+	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	PayloadVersion *WebhookPayloadVersion `json:"payloadVersion,omitempty"`
+
+	// Url Where to send the webhooks: an absolute `https` URL of at most 2,048 bytes, without a user name, password or fragment. The scheme and host are stored in lower case; the path and query as given.
+	Url string `json:"url"`
+}
+
+// WebhookSubscriptionList defines model for WebhookSubscriptionList.
+type WebhookSubscriptionList struct {
+	Subscriptions []WebhookSubscription `json:"subscriptions"`
+}
+
+// WebhookSubscriptionStatus Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
+type WebhookSubscriptionStatus string
+
+// WebhookSubscriptionUpdate defines model for WebhookSubscriptionUpdate.
+type WebhookSubscriptionUpdate struct {
+	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	PayloadVersion *WebhookPayloadVersion `json:"payloadVersion,omitempty"`
+
+	// Status Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
+	Status *WebhookSubscriptionStatus `json:"status,omitempty"`
+
+	// Url A new URL, with the same rules as when creating.
+	Url *string `json:"url,omitempty"`
+}
+
+// WebhookSubscriptionWithSecret defines model for WebhookSubscriptionWithSecret.
+type WebhookSubscriptionWithSecret struct {
+	// Agency The slug of the agency.
+	Agency    string             `json:"agency"`
+	CreatedAt time.Time          `json:"createdAt"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// PayloadVersion The version of the payload to send. `v1` is the only one.
+	PayloadVersion WebhookPayloadVersion `json:"payloadVersion"`
+
+	// Secret The signing secret, `whsec_` followed by 32 random bytes in standard base64. Returned only in this response; store it now.
+	Secret string `json:"secret"`
+
+	// SecretRotatedAt When the current signing secret was made.
+	SecretRotatedAt time.Time `json:"secretRotatedAt"`
+
+	// Status Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
+	Status WebhookSubscriptionStatus `json:"status"`
+
+	// UpdatedAt When the subscription or its secret last changed.
+	UpdatedAt time.Time `json:"updatedAt"`
+
+	// Url The URL as stored.
+	Url string `json:"url"`
+}
+
 // AgencySlug defines model for AgencySlug.
 type AgencySlug = string
 
 // IfNoneMatch defines model for IfNoneMatch.
 type IfNoneMatch = string
+
+// WebhookSubscriptionId defines model for WebhookSubscriptionId.
+type WebhookSubscriptionId = openapi_types.UUID
 
 // AlreadyOnFile defines model for AlreadyOnFile.
 type AlreadyOnFile = Error
@@ -407,6 +527,9 @@ type InvalidStripeEvent = Error
 // InvalidSubmission defines model for InvalidSubmission.
 type InvalidSubmission = ValidationError
 
+// InvalidWebhookSubscription defines model for InvalidWebhookSubscription.
+type InvalidWebhookSubscription = Error
+
 // MethodNotAllowed defines model for MethodNotAllowed.
 type MethodNotAllowed = Error
 
@@ -415,6 +538,9 @@ type NotFound = Error
 
 // PayloadTooLarge defines model for PayloadTooLarge.
 type PayloadTooLarge = Error
+
+// PaymentRequired defines model for PaymentRequired.
+type PaymentRequired = Error
 
 // StripeEventTooLarge defines model for StripeEventTooLarge.
 type StripeEventTooLarge = Error
@@ -430,6 +556,18 @@ type Unauthorized = Error
 
 // UnsupportedMediaType defines model for UnsupportedMediaType.
 type UnsupportedMediaType = Error
+
+// WebhookSubscriptionExists defines model for WebhookSubscriptionExists.
+type WebhookSubscriptionExists = Error
+
+// WebhookSubscriptionLimit defines model for WebhookSubscriptionLimit.
+type WebhookSubscriptionLimit = Error
+
+// WebhookSubscriptionNotFound defines model for WebhookSubscriptionNotFound.
+type WebhookSubscriptionNotFound = Error
+
+// WebhooksUnavailable defines model for WebhooksUnavailable.
+type WebhooksUnavailable = Error
 
 // GetAgencyFeedParams defines parameters for GetAgencyFeed.
 type GetAgencyFeedParams struct {
@@ -463,6 +601,12 @@ type CreateAgencySubmissionJSONRequestBody = AgencySubmissionInput
 
 // ReceiveStripeEventJSONRequestBody defines body for ReceiveStripeEvent for application/json ContentType.
 type ReceiveStripeEventJSONRequestBody = StripeEvent
+
+// CreateWebhookSubscriptionJSONRequestBody defines body for CreateWebhookSubscription for application/json ContentType.
+type CreateWebhookSubscriptionJSONRequestBody = WebhookSubscriptionInput
+
+// UpdateWebhookSubscriptionJSONRequestBody defines body for UpdateWebhookSubscription for application/json ContentType.
+type UpdateWebhookSubscriptionJSONRequestBody = WebhookSubscriptionUpdate
 
 // Getter for additional properties for StripeEvent. Returns the specified
 // element and whether it was found
@@ -596,6 +740,24 @@ type ServerInterface interface {
 	// GetMeeting Get a meeting
 	// (GET /meetings/{id})
 	GetMeeting(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
+	// ListWebhookSubscriptions List the signed-in user's webhook subscriptions
+	// (GET /webhook-subscriptions)
+	ListWebhookSubscriptions(w http.ResponseWriter, r *http.Request)
+	// CreateWebhookSubscription Subscribe to an agency by webhook
+	// (POST /webhook-subscriptions)
+	CreateWebhookSubscription(w http.ResponseWriter, r *http.Request)
+	// DeleteWebhookSubscription Delete a webhook subscription
+	// (DELETE /webhook-subscriptions/{id})
+	DeleteWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId)
+	// GetWebhookSubscription Get a webhook subscription
+	// (GET /webhook-subscriptions/{id})
+	GetWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId)
+	// UpdateWebhookSubscription Change, pause or resume a webhook subscription
+	// (PATCH /webhook-subscriptions/{id})
+	UpdateWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId)
+	// RotateWebhookSubscriptionSecret Rotate a webhook subscription's signing secret
+	// (POST /webhook-subscriptions/{id}/secret)
+	RotateWebhookSubscriptionSecret(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -671,6 +833,42 @@ func (_ Unimplemented) GetMe(w http.ResponseWriter, r *http.Request) {
 // GetMeeting Get a meeting
 // (GET /meetings/{id})
 func (_ Unimplemented) GetMeeting(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ListWebhookSubscriptions List the signed-in user's webhook subscriptions
+// (GET /webhook-subscriptions)
+func (_ Unimplemented) ListWebhookSubscriptions(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// CreateWebhookSubscription Subscribe to an agency by webhook
+// (POST /webhook-subscriptions)
+func (_ Unimplemented) CreateWebhookSubscription(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// DeleteWebhookSubscription Delete a webhook subscription
+// (DELETE /webhook-subscriptions/{id})
+func (_ Unimplemented) DeleteWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetWebhookSubscription Get a webhook subscription
+// (GET /webhook-subscriptions/{id})
+func (_ Unimplemented) GetWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// UpdateWebhookSubscription Change, pause or resume a webhook subscription
+// (PATCH /webhook-subscriptions/{id})
+func (_ Unimplemented) UpdateWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RotateWebhookSubscriptionSecret Rotate a webhook subscription's signing secret
+// (POST /webhook-subscriptions/{id}/secret)
+func (_ Unimplemented) RotateWebhookSubscriptionSecret(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -1015,6 +1213,138 @@ func (siw *ServerInterfaceWrapper) GetMeeting(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// ListWebhookSubscriptions operation middleware
+func (siw *ServerInterfaceWrapper) ListWebhookSubscriptions(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWebhookSubscriptions(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateWebhookSubscription operation middleware
+func (siw *ServerInterfaceWrapper) CreateWebhookSubscription(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateWebhookSubscription(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteWebhookSubscription operation middleware
+func (siw *ServerInterfaceWrapper) DeleteWebhookSubscription(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id WebhookSubscriptionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteWebhookSubscription(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetWebhookSubscription operation middleware
+func (siw *ServerInterfaceWrapper) GetWebhookSubscription(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id WebhookSubscriptionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetWebhookSubscription(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateWebhookSubscription operation middleware
+func (siw *ServerInterfaceWrapper) UpdateWebhookSubscription(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id WebhookSubscriptionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateWebhookSubscription(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RotateWebhookSubscriptionSecret operation middleware
+func (siw *ServerInterfaceWrapper) RotateWebhookSubscriptionSecret(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id WebhookSubscriptionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RotateWebhookSubscriptionSecret(w, r, id)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1164,6 +1494,24 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/billing/stripe-webhook", wrapper.ReceiveStripeEvent)
 	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/webhook-subscriptions", wrapper.ListWebhookSubscriptions)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/webhook-subscriptions", wrapper.CreateWebhookSubscription)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/webhook-subscriptions/{id}", wrapper.DeleteWebhookSubscription)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/webhook-subscriptions/{id}", wrapper.GetWebhookSubscription)
+	})
+	r.Group(func(r chi.Router) {
+		r.Patch(options.BaseURL+"/webhook-subscriptions/{id}", wrapper.UpdateWebhookSubscription)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/webhook-subscriptions/{id}/secret", wrapper.RotateWebhookSubscriptionSecret)
+	})
 
 	return r
 }
@@ -1246,6 +1594,15 @@ type InvalidSubmissionJSONResponse struct {
 	Headers InvalidSubmissionResponseHeaders
 }
 
+type InvalidWebhookSubscriptionResponseHeaders struct {
+	CacheControl *string
+}
+type InvalidWebhookSubscriptionJSONResponse struct {
+	Body Error
+
+	Headers InvalidWebhookSubscriptionResponseHeaders
+}
+
 type MethodNotAllowedResponseHeaders struct {
 	Allow *string
 }
@@ -1272,6 +1629,15 @@ type PayloadTooLargeJSONResponse struct {
 	Body Error
 
 	Headers PayloadTooLargeResponseHeaders
+}
+
+type PaymentRequiredResponseHeaders struct {
+	CacheControl *string
+}
+type PaymentRequiredJSONResponse struct {
+	Body Error
+
+	Headers PaymentRequiredResponseHeaders
 }
 
 type StripeEventTooLargeJSONResponse Error
@@ -1304,6 +1670,42 @@ type UnsupportedMediaTypeJSONResponse struct {
 	Body Error
 
 	Headers UnsupportedMediaTypeResponseHeaders
+}
+
+type WebhookSubscriptionExistsResponseHeaders struct {
+	CacheControl *string
+}
+type WebhookSubscriptionExistsJSONResponse struct {
+	Body Error
+
+	Headers WebhookSubscriptionExistsResponseHeaders
+}
+
+type WebhookSubscriptionLimitResponseHeaders struct {
+	CacheControl *string
+}
+type WebhookSubscriptionLimitJSONResponse struct {
+	Body Error
+
+	Headers WebhookSubscriptionLimitResponseHeaders
+}
+
+type WebhookSubscriptionNotFoundResponseHeaders struct {
+	CacheControl *string
+}
+type WebhookSubscriptionNotFoundJSONResponse struct {
+	Body Error
+
+	Headers WebhookSubscriptionNotFoundResponseHeaders
+}
+
+type WebhooksUnavailableResponseHeaders struct {
+	CacheControl *string
+}
+type WebhooksUnavailableJSONResponse struct {
+	Body Error
+
+	Headers WebhooksUnavailableResponseHeaders
 }
 
 type ListAgenciesRequestObject struct {
@@ -2543,6 +2945,961 @@ func (response GetMeetingdefaultJSONResponse) VisitGetMeetingResponse(w http.Res
 	return err
 }
 
+type ListWebhookSubscriptionsRequestObject struct {
+}
+
+type ListWebhookSubscriptionsResponseObject interface {
+	VisitListWebhookSubscriptionsResponse(w http.ResponseWriter) error
+}
+
+type ListWebhookSubscriptions200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type ListWebhookSubscriptions200JSONResponse struct {
+	Body    WebhookSubscriptionList
+	Headers ListWebhookSubscriptions200ResponseHeaders
+}
+
+func (response ListWebhookSubscriptions200JSONResponse) VisitListWebhookSubscriptionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookSubscriptions401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListWebhookSubscriptions401JSONResponse) VisitListWebhookSubscriptionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookSubscriptions402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response ListWebhookSubscriptions402JSONResponse) VisitListWebhookSubscriptionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookSubscriptions404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response ListWebhookSubscriptions404JSONResponse) VisitListWebhookSubscriptionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookSubscriptions405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response ListWebhookSubscriptions405JSONResponse) VisitListWebhookSubscriptionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookSubscriptions503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response ListWebhookSubscriptions503JSONResponse) VisitListWebhookSubscriptionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWebhookSubscriptionsdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response ListWebhookSubscriptionsdefaultJSONResponse) VisitListWebhookSubscriptionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscriptionRequestObject struct {
+	Body *CreateWebhookSubscriptionJSONRequestBody
+}
+
+type CreateWebhookSubscriptionResponseObject interface {
+	VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error
+}
+
+type CreateWebhookSubscription201ResponseHeaders struct {
+	CacheControl *string
+}
+
+type CreateWebhookSubscription201JSONResponse struct {
+	Body    WebhookSubscriptionWithSecret
+	Headers CreateWebhookSubscription201ResponseHeaders
+}
+
+func (response CreateWebhookSubscription201JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscription400JSONResponse struct {
+	InvalidWebhookSubscriptionJSONResponse
+}
+
+func (response CreateWebhookSubscription400JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscription401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response CreateWebhookSubscription401JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscription402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response CreateWebhookSubscription402JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscription404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response CreateWebhookSubscription404JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscription405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response CreateWebhookSubscription405JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscription409JSONResponse struct {
+	WebhookSubscriptionExistsJSONResponse
+}
+
+func (response CreateWebhookSubscription409JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscription429JSONResponse struct {
+	WebhookSubscriptionLimitJSONResponse
+}
+
+func (response CreateWebhookSubscription429JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscription503JSONResponse struct {
+	WebhooksUnavailableJSONResponse
+}
+
+func (response CreateWebhookSubscription503JSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateWebhookSubscriptiondefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response CreateWebhookSubscriptiondefaultJSONResponse) VisitCreateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWebhookSubscriptionRequestObject struct {
+	Id WebhookSubscriptionId `json:"id"`
+}
+
+type DeleteWebhookSubscriptionResponseObject interface {
+	VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error
+}
+
+type DeleteWebhookSubscription204ResponseHeaders struct {
+	CacheControl *string
+}
+
+type DeleteWebhookSubscription204Response struct {
+	Headers DeleteWebhookSubscription204ResponseHeaders
+}
+
+func (response DeleteWebhookSubscription204Response) VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error {
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteWebhookSubscription400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response DeleteWebhookSubscription400JSONResponse) VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWebhookSubscription401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response DeleteWebhookSubscription401JSONResponse) VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWebhookSubscription402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response DeleteWebhookSubscription402JSONResponse) VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWebhookSubscription404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response DeleteWebhookSubscription404JSONResponse) VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWebhookSubscription405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response DeleteWebhookSubscription405JSONResponse) VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWebhookSubscription503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response DeleteWebhookSubscription503JSONResponse) VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteWebhookSubscriptiondefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response DeleteWebhookSubscriptiondefaultJSONResponse) VisitDeleteWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWebhookSubscriptionRequestObject struct {
+	Id WebhookSubscriptionId `json:"id"`
+}
+
+type GetWebhookSubscriptionResponseObject interface {
+	VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error
+}
+
+type GetWebhookSubscription200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type GetWebhookSubscription200JSONResponse struct {
+	Body    WebhookSubscription
+	Headers GetWebhookSubscription200ResponseHeaders
+}
+
+func (response GetWebhookSubscription200JSONResponse) VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWebhookSubscription400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetWebhookSubscription400JSONResponse) VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWebhookSubscription401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetWebhookSubscription401JSONResponse) VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWebhookSubscription402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response GetWebhookSubscription402JSONResponse) VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWebhookSubscription404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response GetWebhookSubscription404JSONResponse) VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWebhookSubscription405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response GetWebhookSubscription405JSONResponse) VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWebhookSubscription503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response GetWebhookSubscription503JSONResponse) VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetWebhookSubscriptiondefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response GetWebhookSubscriptiondefaultJSONResponse) VisitGetWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscriptionRequestObject struct {
+	Id   WebhookSubscriptionId `json:"id"`
+	Body *UpdateWebhookSubscriptionJSONRequestBody
+}
+
+type UpdateWebhookSubscriptionResponseObject interface {
+	VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error
+}
+
+type UpdateWebhookSubscription200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type UpdateWebhookSubscription200JSONResponse struct {
+	Body    WebhookSubscription
+	Headers UpdateWebhookSubscription200ResponseHeaders
+}
+
+func (response UpdateWebhookSubscription200JSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscription400JSONResponse struct {
+	InvalidWebhookSubscriptionJSONResponse
+}
+
+func (response UpdateWebhookSubscription400JSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscription401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response UpdateWebhookSubscription401JSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscription402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response UpdateWebhookSubscription402JSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscription404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response UpdateWebhookSubscription404JSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscription405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response UpdateWebhookSubscription405JSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscription409JSONResponse struct {
+	WebhookSubscriptionExistsJSONResponse
+}
+
+func (response UpdateWebhookSubscription409JSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscription503JSONResponse struct{ AuthUnavailableJSONResponse }
+
+func (response UpdateWebhookSubscription503JSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateWebhookSubscriptiondefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response UpdateWebhookSubscriptiondefaultJSONResponse) VisitUpdateWebhookSubscriptionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateWebhookSubscriptionSecretRequestObject struct {
+	Id WebhookSubscriptionId `json:"id"`
+}
+
+type RotateWebhookSubscriptionSecretResponseObject interface {
+	VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error
+}
+
+type RotateWebhookSubscriptionSecret200ResponseHeaders struct {
+	CacheControl *string
+}
+
+type RotateWebhookSubscriptionSecret200JSONResponse struct {
+	Body    WebhookSubscriptionWithSecret
+	Headers RotateWebhookSubscriptionSecret200ResponseHeaders
+}
+
+func (response RotateWebhookSubscriptionSecret200JSONResponse) VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateWebhookSubscriptionSecret400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response RotateWebhookSubscriptionSecret400JSONResponse) VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateWebhookSubscriptionSecret401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response RotateWebhookSubscriptionSecret401JSONResponse) VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateWebhookSubscriptionSecret402JSONResponse struct{ PaymentRequiredJSONResponse }
+
+func (response RotateWebhookSubscriptionSecret402JSONResponse) VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(402)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateWebhookSubscriptionSecret404JSONResponse struct {
+	WebhookSubscriptionNotFoundJSONResponse
+}
+
+func (response RotateWebhookSubscriptionSecret404JSONResponse) VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateWebhookSubscriptionSecret405JSONResponse struct{ MethodNotAllowedJSONResponse }
+
+func (response RotateWebhookSubscriptionSecret405JSONResponse) VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Allow != nil {
+		w.Header().Set("Allow", fmt.Sprint(*response.Headers.Allow))
+	}
+	w.WriteHeader(405)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateWebhookSubscriptionSecret503JSONResponse struct {
+	WebhooksUnavailableJSONResponse
+}
+
+func (response RotateWebhookSubscriptionSecret503JSONResponse) VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.CacheControl != nil {
+		w.Header().Set("Cache-Control", fmt.Sprint(*response.Headers.CacheControl))
+	}
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RotateWebhookSubscriptionSecretdefaultJSONResponse struct {
+	Body       Error
+	StatusCode int
+}
+
+func (response RotateWebhookSubscriptionSecretdefaultJSONResponse) VisitRotateWebhookSubscriptionSecretResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// ListAgencies List tracked agencies
@@ -2581,6 +3938,24 @@ type StrictServerInterface interface {
 	// GetMeeting Get a meeting
 	// (GET /meetings/{id})
 	GetMeeting(ctx context.Context, request GetMeetingRequestObject) (GetMeetingResponseObject, error)
+	// ListWebhookSubscriptions List the signed-in user's webhook subscriptions
+	// (GET /webhook-subscriptions)
+	ListWebhookSubscriptions(ctx context.Context, request ListWebhookSubscriptionsRequestObject) (ListWebhookSubscriptionsResponseObject, error)
+	// CreateWebhookSubscription Subscribe to an agency by webhook
+	// (POST /webhook-subscriptions)
+	CreateWebhookSubscription(ctx context.Context, request CreateWebhookSubscriptionRequestObject) (CreateWebhookSubscriptionResponseObject, error)
+	// DeleteWebhookSubscription Delete a webhook subscription
+	// (DELETE /webhook-subscriptions/{id})
+	DeleteWebhookSubscription(ctx context.Context, request DeleteWebhookSubscriptionRequestObject) (DeleteWebhookSubscriptionResponseObject, error)
+	// GetWebhookSubscription Get a webhook subscription
+	// (GET /webhook-subscriptions/{id})
+	GetWebhookSubscription(ctx context.Context, request GetWebhookSubscriptionRequestObject) (GetWebhookSubscriptionResponseObject, error)
+	// UpdateWebhookSubscription Change, pause or resume a webhook subscription
+	// (PATCH /webhook-subscriptions/{id})
+	UpdateWebhookSubscription(ctx context.Context, request UpdateWebhookSubscriptionRequestObject) (UpdateWebhookSubscriptionResponseObject, error)
+	// RotateWebhookSubscriptionSecret Rotate a webhook subscription's signing secret
+	// (POST /webhook-subscriptions/{id}/secret)
+	RotateWebhookSubscriptionSecret(ctx context.Context, request RotateWebhookSubscriptionSecretRequestObject) (RotateWebhookSubscriptionSecretResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -2932,6 +4307,172 @@ func (sh *strictHandler) GetMeeting(w http.ResponseWriter, r *http.Request, id o
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetMeetingResponseObject); ok {
 		if err := validResponse.VisitGetMeetingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListWebhookSubscriptions operation middleware
+func (sh *strictHandler) ListWebhookSubscriptions(w http.ResponseWriter, r *http.Request) {
+	var request ListWebhookSubscriptionsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListWebhookSubscriptions(ctx, request.(ListWebhookSubscriptionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListWebhookSubscriptions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListWebhookSubscriptionsResponseObject); ok {
+		if err := validResponse.VisitListWebhookSubscriptionsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateWebhookSubscription operation middleware
+func (sh *strictHandler) CreateWebhookSubscription(w http.ResponseWriter, r *http.Request) {
+	var request CreateWebhookSubscriptionRequestObject
+
+	var body CreateWebhookSubscriptionJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateWebhookSubscription(ctx, request.(CreateWebhookSubscriptionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateWebhookSubscription")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateWebhookSubscriptionResponseObject); ok {
+		if err := validResponse.VisitCreateWebhookSubscriptionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteWebhookSubscription operation middleware
+func (sh *strictHandler) DeleteWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	var request DeleteWebhookSubscriptionRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteWebhookSubscription(ctx, request.(DeleteWebhookSubscriptionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteWebhookSubscription")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteWebhookSubscriptionResponseObject); ok {
+		if err := validResponse.VisitDeleteWebhookSubscriptionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetWebhookSubscription operation middleware
+func (sh *strictHandler) GetWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	var request GetWebhookSubscriptionRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetWebhookSubscription(ctx, request.(GetWebhookSubscriptionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetWebhookSubscription")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetWebhookSubscriptionResponseObject); ok {
+		if err := validResponse.VisitGetWebhookSubscriptionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateWebhookSubscription operation middleware
+func (sh *strictHandler) UpdateWebhookSubscription(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	var request UpdateWebhookSubscriptionRequestObject
+
+	request.Id = id
+
+	var body UpdateWebhookSubscriptionJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateWebhookSubscription(ctx, request.(UpdateWebhookSubscriptionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateWebhookSubscription")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateWebhookSubscriptionResponseObject); ok {
+		if err := validResponse.VisitUpdateWebhookSubscriptionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RotateWebhookSubscriptionSecret operation middleware
+func (sh *strictHandler) RotateWebhookSubscriptionSecret(w http.ResponseWriter, r *http.Request, id WebhookSubscriptionId) {
+	var request RotateWebhookSubscriptionSecretRequestObject
+
+	request.Id = id
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RotateWebhookSubscriptionSecret(ctx, request.(RotateWebhookSubscriptionSecretRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RotateWebhookSubscriptionSecret")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RotateWebhookSubscriptionSecretResponseObject); ok {
+		if err := validResponse.VisitRotateWebhookSubscriptionSecretResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

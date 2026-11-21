@@ -22,6 +22,8 @@ tags:
     description: Signed-in users.
   - name: billing
     description: The paid plan, through Stripe.
+  - name: webhooks
+    description: Webhook subscriptions to agencies, for paid users.
 paths:
   /healthz:
     get:
@@ -461,8 +463,307 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /webhook-subscriptions:
+    get:
+      operationId: listWebhookSubscriptions
+      summary: List the signed-in user's webhook subscriptions
+      description: >-
+        Returns every webhook subscription of the signed-in user,
+        oldest first. Other users' subscriptions are never listed. The
+        signing secrets are not returned. The checks are the same for
+        every webhook subscription route: the token (401, or 503 when
+        it cannot be checked), then the `accounts` and
+        `webhook-subscriptions` flags for that user (404), then the
+        plan (402 on the free plan). Every response carries
+        `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: The user's subscriptions.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSubscriptionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    post:
+      operationId: createWebhookSubscription
+      summary: Subscribe to an agency by webhook
+      description: >-
+        Creates a webhook subscription to a live agency for the
+        signed-in user, with a new signing secret. The response is the
+        only time the secret is returned; it cannot be read again,
+        only rotated. The subscription starts `active`. The URL must
+        be `https`. A user may have at most 25 subscriptions (429),
+        and one subscription per agency and URL (409). The checks are
+        the same for every webhook subscription route: the token (401,
+        or 503 when it cannot be checked), then the `accounts` and
+        `webhook-subscriptions` flags for that user (404), then the
+        plan (402 on the free plan). Every response carries
+        `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookSubscriptionInput"
+      responses:
+        "201":
+          description: The subscription, with its signing secret.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSubscriptionWithSecret"
+        "400":
+          $ref: "#/components/responses/InvalidWebhookSubscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "409":
+          $ref: "#/components/responses/WebhookSubscriptionExists"
+        "429":
+          $ref: "#/components/responses/WebhookSubscriptionLimit"
+        "503":
+          $ref: "#/components/responses/WebhooksUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /webhook-subscriptions/{id}:
+    get:
+      operationId: getWebhookSubscription
+      summary: Get a webhook subscription
+      description: >-
+        Returns one of the signed-in user's subscriptions, without its
+        secret. Another user's subscription is a 404, the same as one
+        that does not exist. The checks are the same for every webhook
+        subscription route: the token (401, or 503 when it cannot be
+        checked), then the `accounts` and `webhook-subscriptions`
+        flags for that user (404), then the plan (402 on the free
+        plan). Every response carries `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WebhookSubscriptionId"
+      responses:
+        "200":
+          description: The subscription.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSubscription"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateWebhookSubscription
+      summary: Change, pause or resume a webhook subscription
+      description: >-
+        Changes the URL, the payload version or the status of one of
+        the signed-in user's subscriptions. Members left out are
+        unchanged; at least one is required. `status: paused` pauses
+        the subscription and `status: active` resumes it. The agency
+        and the secret cannot be changed here. The checks are the same
+        for every webhook subscription route: the token (401, or 503
+        when it cannot be checked), then the `accounts` and
+        `webhook-subscriptions` flags for that user (404), then the
+        plan (402 on the free plan). Every response carries
+        `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WebhookSubscriptionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookSubscriptionUpdate"
+      responses:
+        "200":
+          description: The subscription as changed.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSubscription"
+        "400":
+          $ref: "#/components/responses/InvalidWebhookSubscription"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "409":
+          $ref: "#/components/responses/WebhookSubscriptionExists"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: deleteWebhookSubscription
+      summary: Delete a webhook subscription
+      description: >-
+        Deletes one of the signed-in user's subscriptions and its
+        secret. Deleting it again is a 404. The checks are the same
+        for every webhook subscription route: the token (401, or 503
+        when it cannot be checked), then the `accounts` and
+        `webhook-subscriptions` flags for that user (404), then the
+        plan (402 on the free plan). Every response carries
+        `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WebhookSubscriptionId"
+      responses:
+        "204":
+          description: The subscription was deleted.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "503":
+          $ref: "#/components/responses/AuthUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /webhook-subscriptions/{id}/secret:
+    post:
+      operationId: rotateWebhookSubscriptionSecret
+      summary: Rotate a webhook subscription's signing secret
+      description: >-
+        Replaces the signing secret of one of the signed-in user's
+        subscriptions with a new one and returns it. The old secret
+        stops being used at once. The response is the only time the
+        new secret is returned. The checks are the same for every
+        webhook subscription route: the token (401, or 503 when it
+        cannot be checked), then the `accounts` and
+        `webhook-subscriptions` flags for that user (404), then the
+        plan (402 on the free plan). Every response carries
+        `Cache-Control: no-store`.
+      tags: [webhooks]
+      x-paid: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/WebhookSubscriptionId"
+      responses:
+        "200":
+          description: The subscription, with its new signing secret.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookSubscriptionWithSecret"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "404":
+          $ref: "#/components/responses/WebhookSubscriptionNotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "503":
+          $ref: "#/components/responses/WebhooksUnavailable"
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
+    WebhookSubscriptionId:
+      name: id
+      in: path
+      required: true
+      description: The subscription's id.
+      schema:
+        type: string
+        format: uuid
     AgencySlug:
       name: slug
       in: path
@@ -715,6 +1016,70 @@ components:
         The user already has as many submissions awaiting review as one user
         may have. `code` is `submission_limit_reached`. Waiting does not help;
         the limit frees up as submissions are reviewed.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InvalidWebhookSubscription:
+      description: >-
+        The body or the id is not valid. `code` is `invalid_parameter` for an
+        id that is not a UUID and `invalid_body` for a body that is not a JSON
+        object of the documented members. Otherwise `code` names the problem:
+        `unknown_agency` when no live agency has the slug,
+        `invalid_payload_version`, `invalid_status`, `nothing_to_update` for
+        an update with no members, or, for the URL, `required`, `too_long`,
+        `invalid_url`, `unsupported_scheme` (not `https`), `credentials` or
+        `fragment`.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    WebhookSubscriptionNotFound:
+      description: >-
+        The signed-in user has no subscription with this id (another user's
+        subscription is not found either), or webhook subscriptions are
+        turned off for the user. `code` is `not_found`.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    WebhookSubscriptionExists:
+      description: >-
+        The user already has a subscription to this agency at this URL.
+        `code` is `already_subscribed`.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    WebhookSubscriptionLimit:
+      description: >-
+        The user already has 25 subscriptions. `code` is
+        `subscription_limit_reached`; deleting one frees a place.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    WebhooksUnavailable:
+      description: >-
+        A signing secret cannot be made right now. `code` is
+        `webhooks_not_configured` when the API has no key to store secrets
+        with, or `auth_not_configured` or `auth_unavailable` when the token
+        cannot be checked (see `AuthUnavailable`).
       headers:
         Cache-Control:
           $ref: "#/components/headers/NoStore"
@@ -1028,6 +1393,93 @@ components:
         submittedAt:
           type: string
           format: date-time
+    WebhookSubscriptionInput:
+      type: object
+      required: [agency, url]
+      properties:
+        agency:
+          type: string
+          description: The slug of the live agency to subscribe to.
+        url:
+          type: string
+          description: >-
+            Where to send the webhooks: an absolute `https` URL of at most
+            2,048 bytes, without a user name, password or fragment. The scheme
+            and host are stored in lower case; the path and query as given.
+        payloadVersion:
+          $ref: "#/components/schemas/WebhookPayloadVersion"
+    WebhookSubscriptionUpdate:
+      type: object
+      properties:
+        url:
+          type: string
+          description: A new URL, with the same rules as when creating.
+        payloadVersion:
+          $ref: "#/components/schemas/WebhookPayloadVersion"
+        status:
+          $ref: "#/components/schemas/WebhookSubscriptionStatus"
+    WebhookPayloadVersion:
+      type: string
+      enum: [v1]
+      x-enum-varnames: [WebhookPayloadV1]
+      default: v1
+      description: The version of the payload to send. `v1` is the only one.
+    WebhookSubscriptionStatus:
+      type: string
+      enum: [active, paused]
+      x-enum-varnames: [WebhookSubscriptionActive, WebhookSubscriptionPaused]
+      description: >-
+        Whether the subscription is to be sent webhooks: `active` ones are,
+        `paused` ones are not.
+    WebhookSubscription:
+      type: object
+      required: [id, agency, url, payloadVersion, status, createdAt, updatedAt, secretRotatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        agency:
+          type: string
+          description: The slug of the agency.
+        url:
+          type: string
+          format: uri
+          description: The URL as stored.
+        payloadVersion:
+          $ref: "#/components/schemas/WebhookPayloadVersion"
+        status:
+          $ref: "#/components/schemas/WebhookSubscriptionStatus"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the subscription or its secret last changed.
+        secretRotatedAt:
+          type: string
+          format: date-time
+          description: When the current signing secret was made.
+    WebhookSubscriptionWithSecret:
+      allOf:
+        - $ref: "#/components/schemas/WebhookSubscription"
+        - type: object
+          required: [secret]
+          properties:
+            secret:
+              type: string
+              description: >-
+                The signing secret, `whsec_` followed by 32 random bytes in
+                standard base64. Returned only in this response; store it
+                now.
+    WebhookSubscriptionList:
+      type: object
+      required: [subscriptions]
+      properties:
+        subscriptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/WebhookSubscription"
     ValidationError:
       type: object
       required: [code, message]
