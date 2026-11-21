@@ -158,12 +158,7 @@ func (w *RunPaidPromptsWorker) Work(ctx context.Context, job *river.Job[RunPaidP
 	}
 	run.Outcome = store.DirectedRelevant
 	run.Message = result.Message
-	err = pgx.BeginFunc(context.WithoutCancel(ctx), w.pool, func(tx pgx.Tx) error {
-		if _, err := w.store.RecordDirectedRunTx(ctx, tx, run); err != nil {
-			return err
-		}
-		return w.deliver(ctx, tx, d)
-	})
+	err = w.recordAndDeliver(context.WithoutCancel(ctx), d, run)
 	if err != nil {
 		return err
 	}
@@ -182,17 +177,20 @@ func (w *RunPaidPromptsWorker) failed(ctx context.Context, logger *slog.Logger, 
 		return fmt.Errorf("run paid prompts: %w", err)
 	}
 	run.Outcome = store.DirectedFailed
-	txErr := pgx.BeginFunc(context.WithoutCancel(ctx), w.pool, func(tx pgx.Tx) error {
+	if txErr := w.recordAndDeliver(context.WithoutCancel(ctx), d, run); txErr != nil {
+		return txErr
+	}
+	logger.WarnContext(ctx, "directed prompt failed: standard delivery enqueued", attrs...)
+	return river.JobCancel(fmt.Errorf("run paid prompts: %w", err))
+}
+
+func (w *RunPaidPromptsWorker) recordAndDeliver(ctx context.Context, d store.WebhookDelivery, run store.DirectedRunInput) error {
+	return pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		if _, err := w.store.RecordDirectedRunTx(ctx, tx, run); err != nil {
 			return err
 		}
 		return w.deliver(ctx, tx, d)
 	})
-	if txErr != nil {
-		return txErr
-	}
-	logger.WarnContext(ctx, "directed prompt failed: standard delivery enqueued", attrs...)
-	return river.JobCancel(fmt.Errorf("run paid prompts: %w", err))
 }
 
 func (w *RunPaidPromptsWorker) sourceText(ctx context.Context, e store.MeetingEvent) (summarize.DirectedSource, string, error) {
