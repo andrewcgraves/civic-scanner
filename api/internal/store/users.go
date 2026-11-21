@@ -38,6 +38,15 @@ func ParseRole(s string) (Role, error) {
 
 func (r Role) IsAdmin() bool { return r == RoleAdmin }
 
+type Plan string
+
+const (
+	PlanFree Plan = "free"
+	PlanPaid Plan = "paid"
+)
+
+func (p Plan) IsPaid() bool { return p == PlanPaid }
+
 type UserInput struct {
 	WorkOSUserID string
 	Email        string
@@ -48,15 +57,16 @@ type User struct {
 	WorkOSUserID string
 	Email        *string
 	Role         Role
+	Plan         Plan
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
 
-const userColumns = `id, workos_user_id, email, role, created_at, updated_at`
+const userColumns = `id, workos_user_id, email, role, plan, created_at, updated_at`
 
 func scanUser(row pgx.Row, extra ...any) (User, error) {
 	var u User
-	dest := append([]any{&u.ID, &u.WorkOSUserID, &u.Email, &u.Role, &u.CreatedAt, &u.UpdatedAt}, extra...)
+	dest := append([]any{&u.ID, &u.WorkOSUserID, &u.Email, &u.Role, &u.Plan, &u.CreatedAt, &u.UpdatedAt}, extra...)
 	err := row.Scan(dest...)
 	return u, err
 }

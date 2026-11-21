@@ -129,7 +129,7 @@ func (h *Handler) GetMe(ctx context.Context, _ v1.GetMeRequestObject) (v1.GetMeR
 		h.logger.ErrorContext(ctx, "get me failed", "error", err)
 		return v1.GetMedefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	}
-	return v1.GetMe200JSONResponse{Body: v1.User{Id: user.ID, Email: user.Email, Role: apiRole(user.Role), CreatedAt: user.CreatedAt.UTC()}}, nil
+	return v1.GetMe200JSONResponse{Body: v1.User{Id: user.ID, Email: user.Email, Role: apiRole(user.Role), Plan: apiPlan(user.Plan), CreatedAt: user.CreatedAt.UTC()}}, nil
 }
 
 func apiRole(r store.Role) v1.UserRole {
@@ -137,4 +137,11 @@ func apiRole(r store.Role) v1.UserRole {
 		return v1.UserRoleAdmin
 	}
 	return v1.UserRoleUser
+}
+
+func apiPlan(p store.Plan) v1.UserPlan {
+	if p.IsPaid() {
+		return v1.Paid
+	}
+	return v1.Free
 }

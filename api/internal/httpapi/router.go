@@ -20,7 +20,7 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 
 func apiRoutes(h *Handler, logger *slog.Logger, admin map[string]adminRoute) func(chi.Router) {
 	return func(r chi.Router) {
-		v1.HandlerWithOptions(v1.NewStrictHandlerWithOptions(h, []v1.StrictMiddlewareFunc{noStore, h.adminBackstop(admin)}, v1.StrictHTTPServerOptions{
+		v1.HandlerWithOptions(v1.NewStrictHandlerWithOptions(h, []v1.StrictMiddlewareFunc{noStore, h.adminBackstop(admin), h.paidGate(paidOperations)}, v1.StrictHTTPServerOptions{
 			RequestErrorHandlerFunc:  h.requestBodyError,
 			ResponseErrorHandlerFunc: responseFailed(logger),
 		}), v1.ChiServerOptions{
@@ -33,7 +33,7 @@ func apiRoutes(h *Handler, logger *slog.Logger, admin map[string]adminRoute) fun
 
 func newRouter(h *Handler, logger *slog.Logger, admin map[string]adminRoute, routes func(chi.Router)) *chi.Mux {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), captureBody(maxRequestBodyBytes), authenticate(h.auth, logger), h.adminGate(r, admin))
+	r.Use(middleware.RequestID, requestLogger(logger), recoverer(logger), joinHeaderLines("If-None-Match"), captureBody(maxRequestBodyBytes, map[string]int64{stripeWebhookPath: maxStripeEventBytes}), authenticate(h.auth, logger), h.adminGate(r, admin))
 	r.NotFound(func(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "not found")
 	})

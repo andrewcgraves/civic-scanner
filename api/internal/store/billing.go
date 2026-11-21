@@ -27,7 +27,7 @@ func (s *Store) StripeCustomerID(ctx context.Context, userID uuid.UUID) (string,
 
 func (s *Store) ClearStripeCustomerID(ctx context.Context, userID uuid.UUID, customerID string) error {
 	if _, err := s.pool.Exec(ctx, `
-UPDATE users SET stripe_customer_id = NULL, updated_at = now()
+UPDATE users SET stripe_customer_id = NULL, plan = 'free', updated_at = now()
 WHERE id = $1 AND stripe_customer_id = $2`, userID, customerID); err != nil {
 		return fmt.Errorf("clear stripe customer id: %w", err)
 	}

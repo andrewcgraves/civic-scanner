@@ -169,7 +169,7 @@ func TestGetMeAgainstPostgres(t *testing.T) {
 	if err := json.Unmarshal(raw, &first); err != nil {
 		t.Fatal(err)
 	}
-	if first.Id == uuid.Nil || first.Email == nil || *first.Email != "ada@example.com" || first.Role != v1.UserRoleUser || first.CreatedAt.IsZero() {
+	if first.Id == uuid.Nil || first.Email == nil || *first.Email != "ada@example.com" || first.Role != v1.UserRoleUser || first.Plan != v1.Free || first.CreatedAt.IsZero() {
 		t.Errorf("user = %+v", first)
 	}
 

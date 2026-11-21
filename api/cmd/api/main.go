@@ -43,6 +43,9 @@ func run(ctx context.Context) error {
 	if cfg.Stripe.Problem != "" {
 		logger.ErrorContext(ctx, "billing is not configured: the Stripe settings are invalid", "problem", cfg.Stripe.Problem)
 	}
+	if cfg.Stripe.WebhookProblem != "" {
+		logger.ErrorContext(ctx, "stripe webhooks are not configured: the signing secret is invalid", "problem", cfg.Stripe.WebhookProblem)
+	}
 
 	shutdownFlags, err := featureflags.Init(ctx, cfg.FeatureFlags, logger)
 	if err != nil {
@@ -69,6 +72,10 @@ func run(ctx context.Context) error {
 	if biller.Configured() {
 		logger.InfoContext(ctx, "billing configured", "stripe_mode", cfg.Stripe.Mode(), "stripe_price", cfg.Stripe.PriceID)
 	}
+	stripeEvents := billing.NewWebhook(cfg.Stripe, db, billing.WithLogger(logger))
+	if stripeEvents.Configured() {
+		logger.InfoContext(ctx, "stripe webhooks configured")
+	}
 
 	srv := &http.Server{
 		Addr: net.JoinHostPort("", cfg.Port),
@@ -76,6 +83,7 @@ func run(ctx context.Context) error {
 			httpapi.WithAuthenticator(verifier),
 			httpapi.WithPublicWebURL(cfg.Web.PublicURL),
 			httpapi.WithBilling(biller),
+			httpapi.WithStripeEvents(stripeEvents),
 		), logger),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,

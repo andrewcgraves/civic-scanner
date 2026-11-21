@@ -23,10 +23,14 @@ type failingReader struct{ err error }
 
 func (f failingReader) Read([]byte) (int, error) { return 0, f.err }
 
-func captureBody(limit int64) func(http.Handler) http.Handler {
+func captureBody(limit int64, pathLimits map[string]int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
+			bodyLimit := limit
+			if pathLimit, ok := pathLimits[r.URL.Path]; ok {
+				bodyLimit = pathLimit
+			}
+			data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, bodyLimit))
 			body := capturedBody{contentType: r.Header.Get("Content-Type"), data: data, err: err}
 			if err != nil {
 				r.Body = io.NopCloser(failingReader{err: err})
