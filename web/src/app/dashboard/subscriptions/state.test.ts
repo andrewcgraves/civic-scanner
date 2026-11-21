@@ -18,7 +18,11 @@ import {
   readId,
   readOutcome,
   readValues,
+  readReturnsToSubscription,
   rejection,
+  sentence,
+  subscriptionOutcomePath,
+  subscriptionPath,
 } from "./state";
 
 const ID = "8b0e6c43-3f3b-4f39-9a31-2a1f7c1a9e10";
@@ -39,6 +43,28 @@ describe("paths", () => {
       "/auth/sign-in?returnTo=%2Fdashboard%2Fsubscriptions",
     );
     expect(editPath(ID)).toBe(`/dashboard/subscriptions/${ID}/edit`);
+    expect(subscriptionPath(ID)).toBe(`/dashboard/subscriptions/${ID}`);
+  });
+
+  it("names the outcome on the subscription's own page", () => {
+    expect(subscriptionOutcomePath(ID, "resumed", "la-metro")).toBe(
+      `/dashboard/subscriptions/${ID}?resumed=la-metro`,
+    );
+  });
+
+  it("returns to the subscription's page only when the form says so", () => {
+    expect(readReturnsToSubscription(form({ returnTo: "subscription" }))).toBe(
+      true,
+    );
+    expect(readReturnsToSubscription(form({ returnTo: "list" }))).toBe(false);
+    expect(readReturnsToSubscription(form({}))).toBe(false);
+  });
+
+  it("turns text into a sentence", () => {
+    expect(sentence(" timed out ")).toBe("Timed out.");
+    expect(sentence("Done!")).toBe("Done!");
+    expect(sentence("")).toBeUndefined();
+    expect(sentence(4)).toBeUndefined();
   });
 
   it("names the outcome and the agency in the list's query", () => {
