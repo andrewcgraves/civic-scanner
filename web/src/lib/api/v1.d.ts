@@ -335,7 +335,7 @@ export interface paths {
     head?: never;
     /**
      * Change, pause or resume a webhook subscription
-     * @description Changes the URL, the payload version or the status of one of the signed-in user's subscriptions. Members left out are unchanged; at least one is required. `status: paused` pauses the subscription and `status: active` resumes it, including one paused for failed deliveries, and resets `consecutiveFailedEvents` to 0. Events that happen while a subscription is paused are not delivered later. The agency and the secret cannot be changed here. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
+     * @description Changes the URL, the payload version, the format or the status of one of the signed-in user's subscriptions. Members left out are unchanged; at least one is required. `status: paused` pauses the subscription and `status: active` resumes it, including one paused for failed deliveries, and resets `consecutiveFailedEvents` to 0. Events that happen while a subscription is paused are not delivered later. The agency and the secret cannot be changed here. The checks are the same for every webhook subscription route: the token (401, or 503 when it cannot be checked), then the `accounts` and `webhook-subscriptions` flags for that user (404), then the plan (402 on the free plan). Every response carries `Cache-Control: no-store`.
      */
     patch: operations["updateWebhookSubscription"];
     trace?: never;
@@ -555,19 +555,27 @@ export interface components {
       /** @description Where to send the webhooks: an absolute `https` URL of at most 2,048 bytes, without a user name, password or fragment, whose host is a public IP address or a name that resolves only to public addresses. The scheme and host are stored in lower case; the path and query as given. */
       url: string;
       payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
+      format?: components["schemas"]["WebhookFormat"];
     };
     WebhookSubscriptionUpdate: {
       /** @description A new URL, with the same rules as when creating. The host's addresses are checked only when the URL differs from the stored one. */
       url?: string;
       payloadVersion?: components["schemas"]["WebhookPayloadVersion"];
+      format?: components["schemas"]["WebhookFormat"];
       status?: components["schemas"]["WebhookSubscriptionStatus"];
     };
     /**
-     * @description The version of the payload to send. `v1` is the only one.
+     * @description The version of the `standard` payload to send. `v1` is the only one. The `discord` and `slack` formats ignore it.
      * @default v1
      * @enum {string}
      */
     WebhookPayloadVersion: "v1";
+    /**
+     * @description The shape of each delivery's body. `standard`: the versioned event described by `WebhookEventV1`. `discord`: a message for a Discord incoming webhook (Execute Webhook), with one embed. `slack`: a message for a Slack incoming webhook, with Block Kit blocks and a `text` fallback. The presets are rendered from the same event, cut to fit the service's limits; text that is cut ends with `…` and the message links to the meeting's page. Agency text is shown as text, never as Markdown, and mentions are not sent. Every format is sent with the same `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The URL is not checked against the format.
+     * @default standard
+     * @enum {string}
+     */
+    WebhookFormat: "standard" | "discord" | "slack";
     /**
      * @description Whether the subscription is to be sent webhooks: `active` ones are, `paused` ones are not.
      * @enum {string}
@@ -589,6 +597,7 @@ export interface components {
        */
       url: string;
       payloadVersion: components["schemas"]["WebhookPayloadVersion"];
+      format: components["schemas"]["WebhookFormat"];
       status: components["schemas"]["WebhookSubscriptionStatus"];
       /** @description Why the subscription is paused; null while it is active. */
       pausedReason:

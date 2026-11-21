@@ -24,6 +24,7 @@ function subscription(
     agency: "la-metro",
     url: `https://hooks.example.org/${String(index)}`,
     payloadVersion: "v1",
+    format: "standard",
     status: "active",
     pausedReason: null,
     pausedAt: null,
@@ -43,7 +44,11 @@ describe("SubscriptionList", () => {
       <SubscriptionList
         subscriptions={[
           subscription(1),
-          subscription(2, { agency: "metrolink", status: "paused" }),
+          subscription(2, {
+            agency: "metrolink",
+            status: "paused",
+            format: "discord",
+          }),
         ]}
         names={NAMES}
       />,
@@ -58,13 +63,14 @@ describe("SubscriptionList", () => {
     expect(first).toHaveTextContent("Active");
     expect(first).toHaveTextContent("https://hooks.example.org/1");
     expect(first).toHaveTextContent(
-      /Added .*Nov 3, 2026 · secret made .*Nov 14, 2026/,
+      /Standard JSON · added .*Nov 3, 2026 · secret made .*Nov 14, 2026/,
     );
     expect(first).toHaveTextContent("actions for LA Metro");
     expect(
       within(second).getByRole("heading", { level: 3, name: "metrolink" }),
     ).toBeVisible();
     expect(second).toHaveTextContent("Paused");
+    expect(second).toHaveTextContent(/Discord · added/);
     expect(second).toHaveTextContent("actions for metrolink, paused");
     expect(screen.getByText("You are using 2 of 25.")).toBeVisible();
   });

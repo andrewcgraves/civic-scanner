@@ -1,0 +1,20 @@
+{
+  "agency": {
+    "name": "LA Metro",
+    "slug": "la-metro"
+  },
+  "id": "3f1c2b0e-8a4d-4e7b-9c1a-0d2e3f4a5b6c",
+  "meeting": {
+    "id": "11111111-2222-4333-8444-555555555555",
+    "sourceUrl": "https://metro.example/meetings/1",
+    "startsAt": "2026-11-20T18:00:00Z",
+    "title": "Board of Directors"
+  },
+  "occurredAt": "2026-11-17T21:00:00Z",
+  "payloadVersion": "v1",
+  "transcript": {
+    "id": "7a6b5c4d-3e2f-4a1b-8c9d-0e1f2a3b4c5d",
+    "recordingId": "11111111-2222-4333-8444-555555555555"
+  },
+  "type": "transcript_ready"
+}

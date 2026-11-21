@@ -8,6 +8,7 @@ import {
   MAX_SUBSCRIPTIONS,
   NEW_SUBSCRIPTION_PATH,
   agencyName,
+  formatLabel,
   type Subscription,
 } from "../state";
 
@@ -85,7 +86,7 @@ export function SubscriptionList({
                 {subscription.url}
               </p>
               <p className="text-sm text-ink-muted">
-                Added{" "}
+                {formatLabel(subscription.format)} · added{" "}
                 <MeetingTime
                   value={subscription.createdAt}
                   format="short-date"

@@ -39,8 +39,9 @@ const (
 )
 
 type Webhooks struct {
-	Sealer *webhooks.Sealer
-	Sender WebhookSender
+	Sealer       *webhooks.Sealer
+	Sender       WebhookSender
+	PublicWebURL string
 }
 
 type WebhookSender interface {
@@ -297,7 +298,7 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 		logger.WarnContext(ctx, "webhook not delivered yet: WEBHOOK_SECRET_KEY is not configured on the worker")
 		return river.JobSnooze(webhookUnconfiguredSnooze)
 	}
-	body, err := webhooks.Payload(d.PayloadVersion, webhooks.Event{
+	body, err := webhooks.Body(d.Format, d.PayloadVersion, webhooks.Event{
 		ID:         d.Event.ID,
 		Type:       d.Event.Type,
 		Payload:    d.Event.Payload,
@@ -305,6 +306,7 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 		AgencySlug: d.AgencySlug,
 		AgencyName: d.AgencyName,
 		Meeting:    d.Meeting,
+		PageURL:    webhooks.MeetingPage(w.webhooks.PublicWebURL, d.Meeting),
 	})
 	if err != nil {
 		return river.JobCancel(err)
@@ -336,7 +338,7 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 	if recordErr != nil {
 		logger.ErrorContext(ctx, "webhook attempt not recorded", "error", recordErr)
 	}
-	logger = logger.With("event_type", string(d.Event.Type), "status_code", result.StatusCode, "duration_ms", result.Duration.Milliseconds())
+	logger = logger.With("event_type", string(d.Event.Type), "format", string(d.Format), "status_code", result.StatusCode, "duration_ms", result.Duration.Milliseconds())
 	switch {
 	case result.Succeeded():
 		logger.InfoContext(ctx, "webhook delivered")

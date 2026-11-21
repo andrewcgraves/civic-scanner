@@ -69,7 +69,7 @@ func (f fakeStore) CreateWebhookSubscription(_ context.Context, in store.Webhook
 	now := time.Date(2026, 11, 20, 1, 2, 3, 0, time.FixedZone("PST", -8*3600))
 	sub := store.WebhookSubscription{
 		ID: in.ID, UserID: in.UserID, AgencyID: uuid.New(), AgencySlug: in.AgencySlug, AgencyName: "Agency",
-		URL: in.URL, PayloadVersion: in.PayloadVersion, Status: store.WebhookActive,
+		URL: in.URL, PayloadVersion: in.PayloadVersion, Format: in.Format, Status: store.WebhookActive,
 		SecretRotatedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	f.webhooks.subs = append(f.webhooks.subs, sub)
@@ -105,6 +105,9 @@ func (f fakeStore) UpdateWebhookSubscription(_ context.Context, userID, id uuid.
 	}
 	if update.PayloadVersion != nil {
 		sub.PayloadVersion = *update.PayloadVersion
+	}
+	if update.Format != nil {
+		sub.Format = *update.Format
 	}
 	if update.Status != nil {
 		sub.Status = *update.Status
@@ -209,7 +212,7 @@ func (e webhookEnv) add(t *testing.T, userID uuid.UUID) store.WebhookSubscriptio
 	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	sub := store.WebhookSubscription{
 		ID: uuid.New(), UserID: userID, AgencyID: uuid.New(), AgencySlug: "la-metro", AgencyName: "LA Metro",
-		URL: "https://hooks.example.com/" + uuid.NewString(), PayloadVersion: "v1", Status: store.WebhookActive,
+		URL: "https://hooks.example.com/" + uuid.NewString(), PayloadVersion: "v1", Format: store.WebhookFormatStandard, Status: store.WebhookActive,
 		SecretRotatedAt: at, CreatedAt: at, UpdatedAt: at.Add(time.Hour),
 	}
 	e.calls.subs = append(e.calls.subs, sub)
@@ -344,10 +347,10 @@ func TestCreateWebhookSubscription(t *testing.T) {
 		t.Fatalf("created %d", len(env.calls.created))
 	}
 	in := env.calls.created[0]
-	if in.UserID != env.user.ID || in.AgencySlug != "la-metro" || in.URL != "https://hooks.example.com/In?Token=AbC" || in.PayloadVersion != "v1" || in.ID == uuid.Nil {
+	if in.UserID != env.user.ID || in.AgencySlug != "la-metro" || in.URL != "https://hooks.example.com/In?Token=AbC" || in.PayloadVersion != "v1" || in.Format != store.WebhookFormatStandard || in.ID == uuid.Nil {
 		t.Errorf("store input = %+v", in)
 	}
-	if got.Id != in.ID || got.Agency != "la-metro" || got.Url != in.URL || got.PayloadVersion != v1.WebhookPayloadV1 || got.Status != v1.WebhookSubscriptionActive {
+	if got.Id != in.ID || got.Agency != "la-metro" || got.Url != in.URL || got.PayloadVersion != v1.WebhookPayloadV1 || got.Format != v1.WebhookFormatStandard || got.Status != v1.WebhookSubscriptionActive {
 		t.Errorf("response = %+v", got)
 	}
 	if got.CreatedAt.Location() != time.UTC || !got.CreatedAt.Equal(time.Date(2026, 11, 20, 9, 2, 3, 0, time.UTC)) {
@@ -364,7 +367,7 @@ func TestCreateWebhookSubscription(t *testing.T) {
 		t.Errorf("the stored secret does not open to the returned one: %v", err)
 	}
 	keys := []string{
-		"id", "agency", "url", "payloadVersion", "status", "pausedReason", "pausedAt", "consecutiveFailedEvents",
+		"id", "agency", "url", "payloadVersion", "format", "status", "pausedReason", "pausedAt", "consecutiveFailedEvents",
 		"createdAt", "updatedAt", "secretRotatedAt", "secret",
 	}
 	for _, key := range keys {
@@ -375,7 +378,7 @@ func TestCreateWebhookSubscription(t *testing.T) {
 	if raw["pausedReason"] != nil || raw["pausedAt"] != nil || raw["consecutiveFailedEvents"] != float64(0) {
 		t.Errorf("a new subscription is not paused: %v", raw)
 	}
-	if len(raw) != 12 {
+	if len(raw) != 13 {
 		t.Errorf("response has extra members: %v", raw)
 	}
 	if strings.Contains(env.logs.String(), got.Secret) || strings.Contains(env.logs.String(), "Token=AbC") {
@@ -383,6 +386,20 @@ func TestCreateWebhookSubscription(t *testing.T) {
 	}
 	if !strings.Contains(env.logs.String(), "webhook subscription created") {
 		t.Errorf("logs = %s", env.logs)
+	}
+}
+
+func TestCreateWebhookSubscriptionWithAPreset(t *testing.T) {
+	for _, format := range []v1.WebhookFormat{v1.WebhookFormatDiscord, v1.WebhookFormatSlack, v1.WebhookFormatStandard} {
+		env := newWebhookEnv(t, store.PlanPaid, webhookFlags(FlagAccounts, FlagWebhookSubscriptions))
+		rec := env.do(t, http.MethodPost, "/v1/webhook-subscriptions", "Bearer good",
+			`{"agency":"la-metro","url":"https://hooks.example.com/x","format":"`+string(format)+`"}`)
+		if rec.Code != http.StatusCreated || len(env.calls.created) != 1 || env.calls.created[0].Format != store.WebhookFormat(format) {
+			t.Fatalf("%s: status %d, body %s, created %+v", format, rec.Code, rec.Body, env.calls.created)
+		}
+		if got, _ := decodeWebhookWithSecret(t, rec); got.Format != format {
+			t.Errorf("%s: response format %q", format, got.Format)
+		}
 	}
 }
 
@@ -405,6 +422,9 @@ func TestCreateWebhookSubscriptionRefuses(t *testing.T) {
 		{"too long", `{"agency":"la-metro","url":"https://hooks.example.com/` + strings.Repeat("a", 2048) + `"}`, nil, http.StatusBadRequest, "too_long", false},
 		{"version", `{"agency":"la-metro","url":"https://hooks.example.com","payloadVersion":"v2"}`, nil, http.StatusBadRequest, "invalid_payload_version", false},
 		{"empty version", `{"agency":"la-metro","url":"https://hooks.example.com","payloadVersion":""}`, nil, http.StatusBadRequest, "invalid_payload_version", false},
+		{"format", `{"agency":"la-metro","url":"https://hooks.example.com","format":"teams"}`, nil, http.StatusBadRequest, "invalid_format", false},
+		{"empty format", `{"agency":"la-metro","url":"https://hooks.example.com","format":""}`, nil, http.StatusBadRequest, "invalid_format", false},
+		{"format case", `{"agency":"la-metro","url":"https://hooks.example.com","format":"Discord"}`, nil, http.StatusBadRequest, "invalid_format", false},
 		{"unknown agency", `{"agency":"nowhere","url":"https://hooks.example.com"}`, store.ErrUnknownAgency, http.StatusBadRequest, "unknown_agency", true},
 		{"duplicate", `{"agency":"la-metro","url":"https://hooks.example.com"}`, store.ErrWebhookSubscriptionExists, http.StatusConflict, "already_subscribed", true},
 		{"limit", `{"agency":"la-metro","url":"https://hooks.example.com"}`, store.ErrWebhookSubscriptionLimit, http.StatusTooManyRequests, "subscription_limit_reached", true},
@@ -587,7 +607,7 @@ func TestUpdateWebhookSubscription(t *testing.T) {
 		t.Fatalf("pause: status %d, body %s", rec.Code, rec.Body)
 	}
 	update := env.calls.updates[0]
-	if update.Status == nil || *update.Status != store.WebhookPaused || update.URL != nil || update.PayloadVersion != nil {
+	if update.Status == nil || *update.Status != store.WebhookPaused || update.URL != nil || update.PayloadVersion != nil || update.Format != nil {
 		t.Errorf("pause update = %+v", update)
 	}
 
@@ -597,6 +617,14 @@ func TestUpdateWebhookSubscription(t *testing.T) {
 	}
 	if update := env.calls.updates[1]; *update.URL != "https://new.example.com/h" || *update.PayloadVersion != "v1" {
 		t.Errorf("update = %+v", update)
+	}
+
+	rec = env.do(t, http.MethodPatch, path, "Bearer good", `{"format":"slack"}`)
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); rec.Code != http.StatusOK || err != nil || got.Format != v1.WebhookFormatSlack {
+		t.Fatalf("format: status %d, body %s", rec.Code, rec.Body)
+	}
+	if update := env.calls.updates[2]; update.Format == nil || *update.Format != store.WebhookFormatSlack || update.URL != nil || update.Status != nil {
+		t.Errorf("format update = %+v", update)
 	}
 
 	for _, tc := range []struct {
@@ -612,6 +640,8 @@ func TestUpdateWebhookSubscription(t *testing.T) {
 		{"nulls", path, `{"status":null,"url":null}`, nil, nil, http.StatusBadRequest, "nothing_to_update"},
 		{"bad status", path, `{"status":"disabled"}`, nil, nil, http.StatusBadRequest, "invalid_status"},
 		{"bad version", path, `{"payloadVersion":"v0"}`, nil, nil, http.StatusBadRequest, "invalid_payload_version"},
+		{"bad format", path, `{"format":"teams"}`, nil, nil, http.StatusBadRequest, "invalid_format"},
+		{"null format", path, `{"format":null}`, nil, nil, http.StatusBadRequest, "nothing_to_update"},
 		{"bad url", path, `{"url":"http://x.example"}`, nil, nil, http.StatusBadRequest, "unsupported_scheme"},
 		{"empty url", path, `{"url":""}`, nil, nil, http.StatusBadRequest, "required"},
 		{"private ip", path, `{"url":"https://10.0.0.1/h"}`, nil, nil, http.StatusBadRequest, "not_public"},
