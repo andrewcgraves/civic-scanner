@@ -146,6 +146,7 @@ type FanOutWebhooksWorker struct {
 	store        webhookFanOutStore
 	enabled      func(context.Context, string) bool
 	deliverQueue string
+	promptQueue  string
 }
 
 func (w *FanOutWebhooksWorker) Work(ctx context.Context, job *river.Job[FanOutWebhooksArgs]) error {
@@ -158,17 +159,21 @@ func (w *FanOutWebhooksWorker) Work(ctx context.Context, job *river.Job[FanOutWe
 		return err
 	}
 	allowed := make(map[string]bool)
+	directed := make(map[string]bool)
 	var targets []store.WebhookTarget
 	for _, t := range fo.Targets {
 		on, seen := allowed[t.WorkOSUserID]
 		if !seen {
 			on = webhooksAllowed(ctx, w.enabled, t.WorkOSUserID)
 			allowed[t.WorkOSUserID] = on
+			directed[t.WorkOSUserID] = on && directedAllowed(ctx, w.enabled, t.WorkOSUserID)
 		}
 		if on {
+			t.Directed = t.Directed && directed[t.WorkOSUserID]
 			targets = append(targets, t)
 		}
 	}
+	prompts := 0
 	claimed := false
 	err = pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		var err error
@@ -181,6 +186,14 @@ func (w *FanOutWebhooksWorker) Work(ctx context.Context, job *river.Job[FanOutWe
 		}
 		params := make([]river.InsertManyParams, 0, len(targets))
 		for _, t := range targets {
+			if t.Directed {
+				prompts++
+				params = append(params, river.InsertManyParams{
+					Args:       RunPaidPromptsArgs{SubscriptionID: t.SubscriptionID, EventID: fo.EventID},
+					InsertOpts: &river.InsertOpts{Queue: w.promptQueue},
+				})
+				continue
+			}
 			params = append(params, river.InsertManyParams{
 				Args:       DeliverWebhookArgs{SubscriptionID: t.SubscriptionID, EventID: fo.EventID},
 				InsertOpts: &river.InsertOpts{Queue: w.deliverQueue},
@@ -198,7 +211,7 @@ func (w *FanOutWebhooksWorker) Work(ctx context.Context, job *river.Job[FanOutWe
 		logger.InfoContext(ctx, "webhook event already fanned out")
 		return nil
 	}
-	logger.InfoContext(ctx, "webhook event fanned out", "subscriptions", len(fo.Targets), "deliveries", len(targets))
+	logger.InfoContext(ctx, "webhook event fanned out", "subscriptions", len(fo.Targets), "deliveries", len(targets), "directed_prompts", prompts)
 	return nil
 }
 
@@ -256,9 +269,16 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 	case !webhooksAllowed(ctx, w.enabled, d.WorkOSUserID):
 		logger.InfoContext(ctx, "webhook not delivered", "reason", "flag_off", "user_id", d.UserID)
 		return nil
+	case d.DirectedOutcome != nil && *d.DirectedOutcome == store.DirectedNotRelevant:
+		logger.InfoContext(ctx, "webhook not delivered", "reason", "not_relevant", "user_id", d.UserID)
+		return nil
 	case !w.webhooks.configured():
 		logger.WarnContext(ctx, "webhook not delivered yet: WEBHOOK_SECRET_KEY is not configured on the worker")
 		return river.JobSnooze(webhookUnconfiguredSnooze)
+	}
+	message := ""
+	if d.DirectedOutcome != nil && *d.DirectedOutcome == store.DirectedRelevant && d.DirectedMessage != nil {
+		message = *d.DirectedMessage
 	}
 	body, err := webhooks.Payload(d.PayloadVersion, webhooks.Event{
 		ID:         d.Event.ID,
@@ -268,6 +288,7 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 		AgencySlug: d.AgencySlug,
 		AgencyName: d.AgencyName,
 		Meeting:    d.Meeting,
+		Message:    message,
 	})
 	if err != nil {
 		return river.JobCancel(err)

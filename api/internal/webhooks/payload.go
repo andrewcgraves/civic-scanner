@@ -25,6 +25,7 @@ type Event struct {
 	AgencySlug string
 	AgencyName string
 	Meeting    store.Meeting
+	Message    string
 }
 
 func Payload(version string, e Event) ([]byte, error) {
@@ -45,6 +46,9 @@ func Payload(version string, e Event) ([]byte, error) {
 	}
 	if e.Meeting.SourceURL != "" {
 		body.Meeting.SourceUrl = &e.Meeting.SourceURL
+	}
+	if e.Message != "" {
+		body.Message = &v1.WebhookMessage{Text: e.Message, Source: v1.WebhookMessageFromDirectedPrompt}
 	}
 	switch e.Type {
 	case store.EventAgendaPublished, store.EventAgendaChanged:

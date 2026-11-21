@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -16,6 +18,7 @@ import (
 
 const (
 	FlagWebhookSubscriptions    = "webhook-subscriptions"
+	FlagDirectedPrompts         = "webhook-directed-prompts"
 	webhookSubscriptionsPattern = "/v1/webhook-subscriptions"
 	webhookSubscriptionPattern  = "/v1/webhook-subscriptions/{id}"
 )
@@ -67,6 +70,31 @@ func webhookPayloadVersion(version *v1.WebhookPayloadVersion) (string, *v1.Inval
 	return "", &bad
 }
 
+func (h *Handler) webhookPrompt(ctx context.Context, raw *string) (*string, *v1.InvalidWebhookSubscriptionJSONResponse) {
+	if raw == nil {
+		return nil, nil
+	}
+	prompt := strings.TrimSpace(strings.ReplaceAll(*raw, "\r\n", "\n"))
+	if prompt == "" {
+		return &prompt, nil
+	}
+	if !h.enabled(ctx, FlagDirectedPrompts) {
+		bad := invalidWebhook("prompts_unavailable", "directed prompts are not available on this account yet")
+		return nil, &bad
+	}
+	if utf8.RuneCountInString(prompt) > store.MaxWebhookPromptChars {
+		bad := invalidWebhook("prompt_too_long", fmt.Sprintf("prompt must be at most %d characters", store.MaxWebhookPromptChars))
+		return nil, &bad
+	}
+	for _, r := range prompt {
+		if r != '\n' && r != '\t' && (unicode.IsControl(r) || r == utf8.RuneError) {
+			bad := invalidWebhook("invalid_prompt", "prompt must be text without control characters")
+			return nil, &bad
+		}
+	}
+	return &prompt, nil
+}
+
 func apiWebhookSubscription(s store.WebhookSubscription) v1.WebhookSubscription {
 	return v1.WebhookSubscription{
 		Id:              s.ID,
@@ -74,6 +102,7 @@ func apiWebhookSubscription(s store.WebhookSubscription) v1.WebhookSubscription 
 		Url:             s.URL,
 		PayloadVersion:  v1.WebhookPayloadVersion(s.PayloadVersion),
 		Status:          v1.WebhookSubscriptionStatus(s.Status),
+		Prompt:          s.Prompt,
 		CreatedAt:       s.CreatedAt.UTC(),
 		UpdatedAt:       s.UpdatedAt.UTC(),
 		SecretRotatedAt: s.SecretRotatedAt.UTC(),
@@ -88,6 +117,7 @@ func apiWebhookWithSecret(s store.WebhookSubscription, secret string) v1.Webhook
 		Url:             sub.Url,
 		PayloadVersion:  sub.PayloadVersion,
 		Status:          sub.Status,
+		Prompt:          sub.Prompt,
 		CreatedAt:       sub.CreatedAt,
 		UpdatedAt:       sub.UpdatedAt,
 		SecretRotatedAt: sub.SecretRotatedAt,
@@ -142,6 +172,13 @@ func (h *Handler) CreateWebhookSubscription(ctx context.Context, req v1.CreateWe
 	if bad != nil {
 		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
 	}
+	prompt, bad := h.webhookPrompt(ctx, req.Body.Prompt)
+	if bad != nil {
+		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
+	}
+	if prompt != nil && *prompt == "" {
+		prompt = nil
+	}
 	if bad := h.webhookEndpointAddress(ctx, user.ID, url); bad != nil {
 		return v1.CreateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
 	}
@@ -156,7 +193,7 @@ func (h *Handler) CreateWebhookSubscription(ctx context.Context, req v1.CreateWe
 		return v1.CreateWebhookSubscriptiondefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	}
 	created, err := h.store.CreateWebhookSubscription(ctx, store.WebhookSubscriptionInput{
-		ID: id, UserID: user.ID, AgencySlug: agency, URL: url, PayloadVersion: version, SecretCiphertext: sealed,
+		ID: id, UserID: user.ID, AgencySlug: agency, URL: url, PayloadVersion: version, SecretCiphertext: sealed, Prompt: prompt,
 	})
 	switch {
 	case errors.Is(err, store.ErrUnknownAgency):
@@ -169,7 +206,8 @@ func (h *Handler) CreateWebhookSubscription(ctx context.Context, req v1.CreateWe
 		h.logger.ErrorContext(ctx, "create webhook subscription failed", "error", err, "user_id", user.ID)
 		return v1.CreateWebhookSubscriptiondefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	}
-	h.logger.InfoContext(ctx, "webhook subscription created", "subscription_id", created.ID, "user_id", user.ID, "agency_id", created.AgencyID)
+	h.logger.InfoContext(ctx, "webhook subscription created", "subscription_id", created.ID, "user_id", user.ID, "agency_id", created.AgencyID,
+		"directed", created.Prompt != nil)
 	return v1.CreateWebhookSubscription201JSONResponse{Body: apiWebhookWithSecret(created, secret.Reveal())}, nil
 }
 
@@ -219,8 +257,13 @@ func (h *Handler) UpdateWebhookSubscription(ctx context.Context, req v1.UpdateWe
 		}
 		update.Status = &status
 	}
+	prompt, bad := h.webhookPrompt(ctx, req.Body.Prompt)
+	if bad != nil {
+		return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: *bad}, nil
+	}
+	update.Prompt = prompt
 	if update.Empty() {
-		return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: invalidWebhook("nothing_to_update", "give at least one of url, payloadVersion and status")}, nil
+		return v1.UpdateWebhookSubscription400JSONResponse{InvalidWebhookSubscriptionJSONResponse: invalidWebhook("nothing_to_update", "give at least one of url, payloadVersion, status and prompt")}, nil
 	}
 	if update.URL != nil {
 		current, err := h.store.GetWebhookSubscription(ctx, user.ID, req.Id)
@@ -247,7 +290,8 @@ func (h *Handler) UpdateWebhookSubscription(ctx context.Context, req v1.UpdateWe
 		h.logger.ErrorContext(ctx, "update webhook subscription failed", "error", err, "user_id", user.ID)
 		return v1.UpdateWebhookSubscriptiondefaultJSONResponse{StatusCode: http.StatusInternalServerError, Body: internalError}, nil
 	}
-	h.logger.InfoContext(ctx, "webhook subscription updated", "subscription_id", sub.ID, "user_id", user.ID, "status", string(sub.Status))
+	h.logger.InfoContext(ctx, "webhook subscription updated", "subscription_id", sub.ID, "user_id", user.ID, "status", string(sub.Status),
+		"directed", sub.Prompt != nil)
 	return v1.UpdateWebhookSubscription200JSONResponse{Body: apiWebhookSubscription(sub)}, nil
 }
 
