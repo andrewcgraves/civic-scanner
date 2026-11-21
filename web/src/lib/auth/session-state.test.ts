@@ -9,21 +9,34 @@ describe("parseSessionState", () => {
     });
   });
 
-  it("reads a signed-in state with an email and a role", () => {
+  it("reads a signed-in state with an email, a role and a plan", () => {
     expect(
       parseSessionState({
         signedIn: true,
         email: "a@example.com",
         role: "admin",
+        plan: "paid",
       }),
-    ).toEqual({ signedIn: true, email: "a@example.com", role: "admin" });
+    ).toEqual({
+      signedIn: true,
+      email: "a@example.com",
+      role: "admin",
+      plan: "paid",
+    });
   });
 
-  it("reads a signed-in state without an email or a role", () => {
+  it("reads the free plan", () => {
+    expect(
+      parseSessionState({ signedIn: true, email: null, plan: "free" }),
+    ).toEqual({ signedIn: true, email: null, role: null, plan: "free" });
+  });
+
+  it("reads a signed-in state without an email, a role or a plan", () => {
     expect(parseSessionState({ signedIn: true, email: 42 })).toEqual({
       signedIn: true,
       email: null,
       role: null,
+      plan: null,
     });
   });
 
@@ -34,6 +47,19 @@ describe("parseSessionState", () => {
         signedIn: true,
         email: null,
         role: null,
+        plan: null,
+      });
+    },
+  );
+
+  it.each([["premium"], ["Paid"], [""], [true], [null]])(
+    "treats the plan %j as unknown",
+    (plan) => {
+      expect(parseSessionState({ signedIn: true, email: null, plan })).toEqual({
+        signedIn: true,
+        email: null,
+        role: null,
+        plan: null,
       });
     },
   );
@@ -44,9 +70,10 @@ describe("parseSessionState", () => {
         signedIn: true,
         email: null,
         role: "user",
+        plan: "free",
         accessToken: "t",
       }),
-    ).toEqual({ signedIn: true, email: null, role: "user" });
+    ).toEqual({ signedIn: true, email: null, role: "user", plan: "free" });
   });
 
   it.each([[null], ["signed-in"], [{}], [{ signedIn: "true" }]])(
