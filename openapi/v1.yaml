@@ -410,6 +410,57 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /billing/stripe-webhook:
+    post:
+      operationId: receiveStripeEvent
+      summary: Receive a Stripe webhook event
+      description: >-
+        Stripe's webhook endpoint. Not for clients: it takes no bearer token
+        and is authenticated only by the `Stripe-Signature` header, an
+        HMAC-SHA256 of the raw body with the endpoint's signing secret, whose
+        timestamp must be at most five minutes old. Checkout and subscription
+        events keep the user's plan current. An event id already processed is
+        answered 200 and changes nothing, and so is an event older than the
+        last one applied to its subscription. Event types it does not handle
+        are answered 200 and ignored. The body is at most 1 MiB.
+      tags: [billing]
+      security: []
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: false
+          description: Stripe's signature header, `t=<unix time>,v1=<hex HMAC>[,v1=...]`.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StripeEvent"
+      responses:
+        "200":
+          description: The event was received; `outcome` says what it did.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StripeEventReceipt"
+        "400":
+          $ref: "#/components/responses/InvalidStripeEvent"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "413":
+          $ref: "#/components/responses/StripeEventTooLarge"
+        "503":
+          $ref: "#/components/responses/StripeWebhookNotConfigured"
+        default:
+          description: >-
+            Unexpected error, such as a database error. Stripe retries the
+            event later.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     AgencySlug:
@@ -509,6 +560,43 @@ components:
       headers:
         Cache-Control:
           $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PaymentRequired:
+      description: >-
+        The token is valid but the route needs the paid plan and the
+        signed-in user is on the free plan. `code` is `payment_required`.
+        The plan is read from the database on every request, so it takes
+        effect as soon as Stripe's confirmation has been processed.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/NoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InvalidStripeEvent:
+      description: >-
+        The event was refused. `code` is `invalid_signature` when the
+        `Stripe-Signature` header is missing, malformed, does not match the
+        body or is too old, `invalid_event` when a correctly signed event
+        cannot be read, and `invalid_body` when the body is not JSON.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    StripeEventTooLarge:
+      description: The body is larger than 1 MiB. `code` is `body_too_large`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    StripeWebhookNotConfigured:
+      description: >-
+        The API has no valid `STRIPE_WEBHOOK_SECRET`. `code` is
+        `billing_not_configured`. Stripe retries the event later.
       content:
         application/json:
           schema:
@@ -646,6 +734,36 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    StripeEvent:
+      type: object
+      description: >-
+        A Stripe event object, as Stripe sends it. Only the members below
+        are read; the signature covers the raw body.
+      required: [id, type]
+      additionalProperties: true
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        created:
+          type: integer
+          format: int64
+    StripeEventReceipt:
+      type: object
+      required: [outcome]
+      properties:
+        outcome:
+          type: string
+          enum: [applied, duplicate, stale, unknown_customer, ignored]
+          description: >-
+            `applied` changed the subscription's stored state and recomputed
+            the plan; `duplicate` is an event id already processed;
+            `stale` is older than the last event applied to its
+            subscription, or the subscription has already ended;
+            `unknown_customer` is for a Stripe customer no user has; and
+            `ignored` is an event type, or a checkout that is not a paid
+            subscription, that does not change the plan.
     BillingRedirect:
       type: object
       required: [url]
@@ -840,7 +958,7 @@ components:
           type: string
     User:
       type: object
-      required: [id, email, role, createdAt]
+      required: [id, email, role, plan, createdAt]
       properties:
         id:
           type: string
@@ -859,6 +977,14 @@ components:
             What the user may do. `admin` may use the admin routes; everyone
             else is `user`, which is also the role of a new user. Read from
             the database on every request, never from the token.
+        plan:
+          type: string
+          enum: [free, paid]
+          description: >-
+            The user's plan. `paid` while one of the subscriptions of the
+            user's Stripe customer is `active`, `trialing` or `past_due`, as
+            last reported by Stripe's webhooks; `free` otherwise, which is
+            also the plan of a new user.
         createdAt:
           type: string
           format: date-time

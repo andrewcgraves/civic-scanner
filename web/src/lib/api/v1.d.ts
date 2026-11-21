@@ -208,10 +208,47 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/billing/stripe-webhook": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Receive a Stripe webhook event
+     * @description Stripe's webhook endpoint. Not for clients: it takes no bearer token and is authenticated only by the `Stripe-Signature` header, an HMAC-SHA256 of the raw body with the endpoint's signing secret, whose timestamp must be at most five minutes old. Checkout and subscription events keep the user's plan current. An event id already processed is answered 200 and changes nothing, and so is an event older than the last one applied to its subscription. Event types it does not handle are answered 200 and ignored. The body is at most 1 MiB.
+     */
+    post: operations["receiveStripeEvent"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** @description A Stripe event object, as Stripe sends it. Only the members below are read; the signature covers the raw body. */
+    StripeEvent: {
+      id: string;
+      type: string;
+      /** Format: int64 */
+      created?: number;
+    } & {
+      [key: string]: unknown;
+    };
+    StripeEventReceipt: {
+      /**
+       * @description `applied` changed the subscription's stored state and recomputed the plan; `duplicate` is an event id already processed; `stale` is older than the last event applied to its subscription, or the subscription has already ended; `unknown_customer` is for a Stripe customer no user has; and `ignored` is an event type, or a checkout that is not a paid subscription, that does not change the plan.
+       * @enum {string}
+       */
+      outcome:
+        "applied" | "duplicate" | "stale" | "unknown_customer" | "ignored";
+    };
     BillingRedirect: {
       /**
        * Format: uri
@@ -349,6 +386,11 @@ export interface components {
        */
       role: "user" | "admin";
       /**
+       * @description The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks; `free` otherwise, which is also the plan of a new user.
+       * @enum {string}
+       */
+      plan: "free" | "paid";
+      /**
        * Format: date-time
        * @description When the user was first seen.
        */
@@ -445,6 +487,43 @@ export interface components {
     AuthUnavailable: {
       headers: {
         "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The token is valid but the route needs the paid plan and the signed-in user is on the free plan. `code` is `payment_required`. The plan is read from the database on every request, so it takes effect as soon as Stripe's confirmation has been processed. */
+    PaymentRequired: {
+      headers: {
+        "Cache-Control": components["headers"]["NoStore"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The event was refused. `code` is `invalid_signature` when the `Stripe-Signature` header is missing, malformed, does not match the body or is too old, `invalid_event` when a correctly signed event cannot be read, and `invalid_body` when the body is not JSON. */
+    InvalidStripeEvent: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The body is larger than 1 MiB. `code` is `body_too_large`. */
+    StripeEventTooLarge: {
+      headers: {
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["Error"];
+      };
+    };
+    /** @description The API has no valid `STRIPE_WEBHOOK_SECRET`. `code` is `billing_not_configured`. Stripe retries the event later. */
+    StripeWebhookNotConfigured: {
+      headers: {
         [name: string]: unknown;
       };
       content: {
@@ -940,6 +1019,46 @@ export interface operations {
       502: components["responses"]["BillingFailed"];
       503: components["responses"]["BillingUnavailable"];
       /** @description Unexpected error. */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Error"];
+        };
+      };
+    };
+  };
+  receiveStripeEvent: {
+    parameters: {
+      query?: never;
+      header?: {
+        /** @description Stripe's signature header, `t=<unix time>,v1=<hex HMAC>[,v1=...]`. */
+        "Stripe-Signature"?: string;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StripeEvent"];
+      };
+    };
+    responses: {
+      /** @description The event was received; `outcome` says what it did. */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StripeEventReceipt"];
+        };
+      };
+      400: components["responses"]["InvalidStripeEvent"];
+      405: components["responses"]["MethodNotAllowed"];
+      413: components["responses"]["StripeEventTooLarge"];
+      503: components["responses"]["StripeWebhookNotConfigured"];
+      /** @description Unexpected error, such as a database error. Stripe retries the event later. */
       default: {
         headers: {
           [name: string]: unknown;

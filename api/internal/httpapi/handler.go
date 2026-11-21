@@ -37,6 +37,8 @@ type Handler struct {
 	webURL  string
 	feeds   *feedCache
 	billing Biller
+
+	stripeEvents StripeEventReceiver
 }
 
 var _ v1.StrictServerInterface = (*Handler)(nil)
@@ -50,7 +52,7 @@ func WithFlags(enabled func(ctx context.Context, flag string) bool) HandlerOptio
 }
 
 func NewHandler(s Store, logger *slog.Logger, version string, opts ...HandlerOption) *Handler {
-	h := &Handler{store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled, feeds: newFeedCache(), billing: &billing.Service{}}
+	h := &Handler{store: s, logger: logger, version: version, auth: &auth.Verifier{}, enabled: featureflags.Enabled, feeds: newFeedCache(), billing: &billing.Service{}, stripeEvents: &billing.Webhook{}}
 	for _, opt := range opts {
 		opt(h)
 	}

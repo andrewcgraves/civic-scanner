@@ -8,7 +8,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
 	"github.com/andrewcgraves/civic-scanner/api/internal/store"
 )
@@ -89,15 +88,7 @@ func (h *Handler) adminGate(mux routeFinder, operations map[string]adminRoute) f
 
 func (h *Handler) refuseAdmin(ctx context.Context, w http.ResponseWriter, operationID string, user store.User, err error) {
 	switch {
-	case errors.Is(err, ErrNoCredentials), errors.Is(err, auth.ErrInvalidToken):
-		w.Header().Set("WWW-Authenticate", unauthorized.Headers.WWWAuthenticate)
-		writeError(w, http.StatusUnauthorized, unauthorized.Body.Code, unauthorized.Body.Message)
-	case errors.Is(err, auth.ErrNotConfigured):
-		writeError(w, http.StatusServiceUnavailable, authNotConfigured.Body.Code, authNotConfigured.Body.Message)
-	case errors.Is(err, auth.ErrUnavailable):
-		writeError(w, http.StatusServiceUnavailable, authUnavailable.Body.Code, authUnavailable.Body.Message)
-	case errors.Is(err, errAccountsOff):
-		writeError(w, http.StatusNotFound, "not_found", "not found")
+	case writeSignInRefusal(w, err):
 	case errors.Is(err, errNotAdmin), errors.Is(err, errImpersonated):
 		h.logger.InfoContext(ctx, "admin route refused", "operation", operationID, "user_id", user.ID, "reason", err.Error(),
 			"request_id", middleware.GetReqID(ctx))

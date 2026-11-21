@@ -55,7 +55,16 @@ func (h *Handler) submissionGate(ctx context.Context) v1.CreateAgencySubmissionR
 }
 
 func (h *Handler) requestBodyError(w http.ResponseWriter, r *http.Request, err error) {
-	if routeContext := chi.RouteContext(r.Context()); routeContext == nil || routeContext.RoutePattern() != agencySubmissionsPattern {
+	pattern := ""
+	if routeContext := chi.RouteContext(r.Context()); routeContext != nil {
+		pattern = routeContext.RoutePattern()
+	}
+	switch pattern {
+	case stripeWebhookPath:
+		h.stripeEventBodyError(w, r, err)
+		return
+	case agencySubmissionsPattern:
+	default:
 		invalidBody(w, r, err)
 		return
 	}
