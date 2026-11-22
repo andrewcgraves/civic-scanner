@@ -21,7 +21,7 @@ import {
   templateBytes,
   templateProblem,
   token,
-} from "./template";
+} from "./custom-template";
 
 function specSection(name: string): string {
   const spec = readFileSync(

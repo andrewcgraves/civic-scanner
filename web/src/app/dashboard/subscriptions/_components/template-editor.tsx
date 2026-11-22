@@ -12,7 +12,7 @@ import {
   templateBytes,
   token,
   type TemplateProblem,
-} from "../template";
+} from "../custom-template";
 
 import { BUTTON, INPUT } from "./styles";
 

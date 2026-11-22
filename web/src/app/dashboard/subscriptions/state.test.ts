@@ -38,7 +38,7 @@ import {
   subscriptionOutcomePath,
   subscriptionPath,
 } from "./state";
-import { STARTER_TEMPLATE, TEMPLATE_REQUIRED } from "./template";
+import { STARTER_TEMPLATE, TEMPLATE_REQUIRED } from "./custom-template";
 
 const ID = "8b0e6c43-3f3b-4f39-9a31-2a1f7c1a9e10";
 

@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PreviewInput } from "../actions";
-import type { PreviewState, TemplateProblem } from "../template";
+import type { PreviewState, TemplateProblem } from "../custom-template";
 
 const mocks = vi.hoisted(() => {
   const unavailable = (): PreviewState | Error => ({ kind: "unavailable" });

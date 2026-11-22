@@ -35,7 +35,11 @@ import {
   type FormState,
   type SubscriptionValues,
 } from "./state";
-import { localProblem, templateProblem, type PreviewState } from "./template";
+import {
+  localProblem,
+  templateProblem,
+  type PreviewState,
+} from "./custom-template";
 
 function formFailure(
   result: UserApiResult<unknown>,

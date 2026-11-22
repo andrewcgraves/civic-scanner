@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PreviewInput } from "../actions";
-import { STARTER_TEMPLATE } from "../template";
+import { STARTER_TEMPLATE } from "../custom-template";
 
 const mocks = vi.hoisted(() => ({ calls: [] as PreviewInput[] }));
 

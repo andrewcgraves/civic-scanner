@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it } from "vitest";
 
-import type { TemplateProblem } from "../template";
+import type { TemplateProblem } from "../custom-template";
 
 import { TemplateEditor } from "./template-editor";
 

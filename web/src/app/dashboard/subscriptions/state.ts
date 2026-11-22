@@ -10,7 +10,7 @@ import {
   problemText,
   templateProblem,
   type TemplateProblem,
-} from "./template";
+} from "./custom-template";
 
 export { SUBSCRIPTIONS_PATH };
 
