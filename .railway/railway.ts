@@ -37,6 +37,7 @@ export default defineRailway(() => {
       APP_ENV: "production",
       LOG_LEVEL: "info",
       PORT: "8080",
+      WORKOS_CLIENT_ID: "client_01M7Y1P3QQEZPGPAKDAQQ9YCGT",
       STRIPE_SECRET_KEY: preserve(),
       STRIPE_WEBHOOK_SECRET: preserve(),
       WEBHOOK_SECRET_KEY: preserve(),
