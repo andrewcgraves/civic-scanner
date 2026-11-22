@@ -185,7 +185,7 @@ railway ssh --service civic-scanner-worker -- /app/worker set-role <user-id> use
 - Why a subcommand rather than SQL: it validates the role and the target, refuses ambiguity, needs no `psql` or database credentials on the operator's machine, and its output is the audit line. The equivalent SQL, for when the worker cannot run, is `UPDATE users SET role = 'admin' WHERE id = '<user-id>';` (or `'user'` to demote) through `railway connect Postgres`; the constraint rejects any other value.
 - Who is an admin: `SELECT id, email, updated_at FROM users WHERE role = 'admin';` through `railway connect Postgres`. Nothing else records who changed a role or when, beyond `updated_at` and the operator's terminal.
 
-`.railway/railway.ts` sets no `WORKOS_*` variables yet, so in production signed-in routes answer 503 `auth_not_configured` until the client id is added there.
+`.railway/railway.ts` sets `WORKOS_CLIENT_ID` on the API service as a plain value. `WORKOS_ISSUER`, `WORKOS_AUDIENCE` and `WORKOS_BASE_URL` keep their defaults.
 
 Not verified against a real WorkOS environment: the tests sign tokens with generated RSA keys and serve the key set from `httptest`.
 
@@ -2512,14 +2512,41 @@ Merging to `main` deploys both sides.
   - `DATABASE_URL` references the database over Railway's private network.
   - `POSTHOG_API_KEY` is declared with `preserve()`: its value is set in Railway, and PostHog decides the API's flags.
   - `WEBHOOK_SECRET_KEY` is declared with `preserve()`; until its value is set in Railway, webhook subscriptions cannot be created (see [Webhook subscriptions](#webhook-subscriptions)).
-  - `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` are declared with `preserve()`; `STRIPE_PRICE_ID`, `PUBLIC_WEB_URL` and the WorkOS variables are not set yet, so billing is off in production (see [Billing](#billing)).
+  - `WORKOS_CLIENT_ID` is a plain value, so the API can verify AuthKit tokens (see [Authentication](#authentication)).
+  - `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` are declared with `preserve()`; `STRIPE_PRICE_ID` and `PUBLIC_WEB_URL` are not set yet, so billing is off in production (see [Billing](#billing)).
 - **Worker on Railway**, also in `.railway/railway.ts`: the `civic-scanner-worker` service runs the River worker (`api/cmd/worker`) against the same `Postgres` database. It builds `api/Dockerfile.worker` (`build.dockerfilePath`, relative to the `/api` root directory) from the same commit, with the same watch paths and Wait for CI. It has no start command: the image's entrypoint runs `/app/worker` as PID 1 (see [The worker image](#the-worker-image)).
   - `/app/migrate up` runs as its pre-deploy step too, so the worker never starts new code before its schema exists, whichever service deploys first. Both services may run it at once: `migrations.Up` holds a Postgres advisory lock, so the second run waits and then finds nothing to apply.
   - No health check and no public domain: the worker serves no HTTP. A deploy goes live once the container starts; a crash restarts it up to 5 times.
   - One replica. River elects a leader for periodic jobs, so more replicas would be safe, but one is enough for a daily check.
   - On a redeploy the old worker gets SIGTERM and 30 seconds (`drainingSeconds`) before SIGKILL. The worker stops fetching new jobs and gives running ones 25 seconds to finish. A job cut off stays running in the database until River's rescuer finds it stuck and retries it.
   - Its variables are `DATABASE_URL`, `APP_ENV`, `LOG_LEVEL`, `POSTHOG_API_KEY`, `TRANSCRIPTION_CONCURRENCY` and `TRANSCRIPTION_CHUNK_RETRIES` (1 and 10, for the [gateway rate limit](#transcripts)), and `AUDIO_MEDIA_USER_AGENT` (a desktop Chrome User-Agent for Granicus media, see [Which hosts are fetched](#which-hosts-are-fetched)). `INGEST_CHECK_HOUR_UTC` and `INGEST_AGENDA_REFRESH_GRACE` keep their defaults. `POSTHOG_API_KEY` is declared with `preserve()` and its value is set in Railway, so PostHog decides the worker's flags; the service has no `FEATURE_FLAGS`, and turning a flag on or off is done in PostHog (see [Feature flags](#feature-flags)). `ingest-check-agencies` is on, so the daily check runs for every agency with an adapter and `process_agenda` stores each agenda's text. `LLM_PROVIDER` is `anthropic`, so summaries call the Anthropic API directly (see [Switching summaries to the Anthropic API](#switching-summaries-to-the-anthropic-api)). `ANTHROPIC_API_KEY`, `AI_GATEWAY_API_KEY` and `FIRECRAWL_API_KEY` are declared with `preserve()`: set their values in Railway, and an apply leaves them as they are. `AI_GATEWAY_API_KEY` is now used only by transcription. Without the Firecrawl key a page that plain HTTP cannot read is not fetched. `ingest-download-audio` is on (since 2026-11-20), so each check queues `download_audio` for its held meetings' recordings. `ingest-summarize-agendas` is on: with the Anthropic key set, each new agenda version is summarized and the sweep summarizes the versions left without one; without the key, summary jobs complete without calling a model. `ingest-agenda-changes` is off as well, so every new agenda text still records `agenda_changed` at once. `ingest-transcribe` is on, so each stored recording is transcribed through the gateway and the sweep transcribes the stored audio left without a transcript. `ingest-summarize-transcripts` is on, so each transcript is summarized with the Anthropic key, `transcript_ready` is recorded, and the sweep summarizes the transcripts left without a summary. `agency-screening` is off, so submissions are not screened (see [Screening](#screening)); the API checks the same flag before enqueueing. `ingest-audio-retention` is off, so `delete_expired_audio` deletes nothing; audio stored since 2026-11-20 starts expiring on 2027-05-20, so the flag needs to be on in PostHog by then. Its `STORAGE_*` variables reference the `audio` bucket the same way the API service's do.
-- **Web on Vercel**, with the project root directory set to `web`. Each pull request gets a preview deploy.
+- **Web on Vercel**, with the project root directory set to `web`. Each pull request gets a preview deploy. See [Vercel configuration](#vercel-configuration).
+
+### Vercel configuration
+
+Vercel has no equivalent of `.railway/railway.ts`: project settings and environment variables live in the Vercel project, and nothing in the repository applies them. `web/vercel.json` holds the build settings Vercel reads from the repository on every deploy; it overrides the dashboard for the settings it names, so change those here, in a pull request.
+
+| Setting | Where | Value |
+| --- | --- | --- |
+| Framework | `web/vercel.json` | `nextjs` |
+| Function region | `web/vercel.json` | `iad1` |
+| Install and build commands | defaults | pnpm, detected from `web/pnpm-lock.yaml` and `packageManager` in `web/package.json`; `next build` |
+| Node version | `engines` in `web/package.json` | 26 |
+| Root directory | dashboard | `web`, with files outside it included in the build |
+| Git | dashboard | `andrewcgraves/civic-scanner`, production branch `main` |
+| Deployment Protection | dashboard | Vercel Authentication on every deployment URL except the production domain |
+
+Environment variables are set in the dashboard or with the [Vercel CLI](https://vercel.com/docs/cli/env) (`vercel env add <name> production`), never in `vercel.json`. `NEXT_PUBLIC_` values are inlined at `next build`, so a change to one needs a redeploy (`vercel redeploy <production deployment URL> --target production`). Production has these, and preview deploys have none:
+
+| Variable | Secret | Described under |
+| --- | --- | --- |
+| `NEXT_PUBLIC_API_BASE_URL` | no | [Quickstart](#quickstart) |
+| `NEXT_PUBLIC_POSTHOG_KEY` | no | [Feature flags](#web) |
+| `WORKOS_CLIENT_ID` | no | [Sign-in on the web](#sign-in-on-the-web) |
+| `NEXT_PUBLIC_WORKOS_REDIRECT_URI` | no | [Sign-in on the web](#sign-in-on-the-web) |
+| `WORKOS_COOKIE_PASSWORD` | yes, stored as Sensitive | [Sign-in on the web](#sign-in-on-the-web) |
+
+Add a row here when a variable is added in Vercel, and remove it when one is removed.
 
 ### Changing Railway configuration
 
