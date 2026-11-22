@@ -13,7 +13,7 @@ import {
   isFormat,
   type SubscriptionFormat,
 } from "../state";
-import { STARTER_TEMPLATE, type TemplateProblem } from "../template";
+import { STARTER_TEMPLATE, type TemplateProblem } from "../custom-template";
 
 import { TemplateEditor } from "./template-editor";
 import { TemplatePreview, usePreview } from "./template-preview";

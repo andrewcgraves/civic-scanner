@@ -13,7 +13,7 @@ import {
   type PreviewEventType,
   type PreviewState,
   type TemplateProblem,
-} from "../template";
+} from "../custom-template";
 
 import { BUTTON, INPUT } from "./styles";
 
