@@ -69,6 +69,48 @@ func TestPaidGateLetsAPaidUserThrough(t *testing.T) {
 	}
 }
 
+func TestPaidGateLetsAGrantedFreeUserThrough(t *testing.T) {
+	user := store.User{ID: uuid.New(), Plan: store.PlanFree}
+	h := NewHandler(fakeStore{users: &userCalls{user: user}}, slog.New(slog.DiscardHandler), "test",
+		WithFlags(webhookFlags(FlagAccounts, FlagWebhookSubscriptions, FlagWebhookSubscriptionsGranted)))
+	probe := &paidProbe{}
+	ctx := context.WithValue(t.Context(), authContextKey{}, authResult{identity: auth.Identity{UserID: "user_01"}})
+	gated := h.paidGate(map[string]string{testPaidOperation: FlagWebhookSubscriptions})(probe.handler, testPaidOperation)
+	rec := httptest.NewRecorder()
+	if _, err := gated(ctx, rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/test-paid", nil), nil); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusNoContent || probe.calls != 1 || !probe.ok || probe.user.ID != user.ID {
+		t.Fatalf("status %d, calls %d, paidFrom = (%+v, %v)", rec.Code, probe.calls, probe.user, probe.ok)
+	}
+}
+
+func TestPaidGateGrantIsPerFeature(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		feature string
+		flags   []string
+	}{
+		{"grant off", FlagWebhookSubscriptions, []string{FlagAccounts, FlagWebhookSubscriptions}},
+		{"route without a grant", "", []string{FlagAccounts, FlagWebhookSubscriptionsGranted}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewHandler(fakeStore{users: &userCalls{user: store.User{ID: uuid.New(), Plan: store.PlanFree}}}, slog.New(slog.DiscardHandler), "test",
+				WithFlags(webhookFlags(tc.flags...)))
+			probe := &paidProbe{}
+			ctx := context.WithValue(t.Context(), authContextKey{}, authResult{identity: auth.Identity{UserID: "user_01"}})
+			gated := h.paidGate(map[string]string{testPaidOperation: tc.feature})(probe.handler, testPaidOperation)
+			rec := httptest.NewRecorder()
+			if _, err := gated(ctx, rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/test-paid", nil), nil); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusPaymentRequired || probe.calls != 0 {
+				t.Errorf("status %d, calls %d, want 402 and no call", rec.Code, probe.calls)
+			}
+		})
+	}
+}
+
 func TestPaidGateRefuses(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -132,10 +174,8 @@ func TestPaidFromFailsClosed(t *testing.T) {
 	if _, ok := paidFrom(ctx); ok {
 		t.Error("a bare context reported a paid user")
 	}
-	for _, plan := range []store.Plan{"", store.PlanFree, "Paid"} {
-		if _, ok := paidFrom(context.WithValue(ctx, paidContextKey{}, store.User{Plan: plan})); ok {
-			t.Errorf("plan %q reported paid", plan)
-		}
+	if _, ok := paidFrom(context.WithValue(ctx, paidContextKey{}, store.User{Plan: store.PlanPaid})); ok {
+		t.Error("paidFrom accepted a user the gate did not let through")
 	}
 	if _, ok := paidFrom(context.WithValue(ctx, paidContextKey{}, "paid")); ok {
 		t.Error("paidFrom accepted a value that is not a user")

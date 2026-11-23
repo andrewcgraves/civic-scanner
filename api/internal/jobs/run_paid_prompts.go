@@ -85,7 +85,7 @@ func (w *RunPaidPromptsWorker) Work(ctx context.Context, job *river.Job[RunPaidP
 	case d.Status != store.WebhookActive:
 		logger.InfoContext(ctx, "directed prompt not run", "reason", "paused")
 		return nil
-	case !d.Paid:
+	case !planAllows(ctx, w.enabled, d.WorkOSUserID, d.Paid):
 		logger.InfoContext(ctx, "directed prompt not run", "reason", "free_plan")
 		return nil
 	case !webhooksAllowed(ctx, w.enabled, d.WorkOSUserID):

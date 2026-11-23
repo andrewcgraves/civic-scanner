@@ -20,22 +20,23 @@ import (
 )
 
 const (
-	FlagWebhookSubscriptions  = "webhook-subscriptions"
-	flagAccounts              = "accounts"
-	WebhookQueue              = "webhooks"
-	webhookQueueWorkers       = 10
-	webhookSweepInterval      = time.Minute
-	webhookSweepLimit         = 100
-	webhookSweepLookback      = 1000
-	webhookFanOutAttempts     = 5
-	webhookDeliverAttempts    = 8
-	webhookRetryBase          = time.Minute
-	webhookRetryGrowth        = 4
-	webhookRetryCap           = 9 * time.Hour
-	webhookRetryJitter        = 0.1
-	webhookPauseAfterFailures = 5
-	webhookDeliverTimeout     = webhooks.DefaultRequestTimeout + 15*time.Second
-	webhookUnconfiguredSnooze = 10 * time.Minute
+	FlagWebhookSubscriptions        = "webhook-subscriptions"
+	FlagWebhookSubscriptionsGranted = "webhook-subscriptions-granted"
+	flagAccounts                    = "accounts"
+	WebhookQueue                    = "webhooks"
+	webhookQueueWorkers             = 10
+	webhookSweepInterval            = time.Minute
+	webhookSweepLimit               = 100
+	webhookSweepLookback            = 1000
+	webhookFanOutAttempts           = 5
+	webhookDeliverAttempts          = 8
+	webhookRetryBase                = time.Minute
+	webhookRetryGrowth              = 4
+	webhookRetryCap                 = 9 * time.Hour
+	webhookRetryJitter              = 0.1
+	webhookPauseAfterFailures       = 5
+	webhookDeliverTimeout           = webhooks.DefaultRequestTimeout + 15*time.Second
+	webhookUnconfiguredSnooze       = 10 * time.Minute
 )
 
 type Webhooks struct {
@@ -53,6 +54,10 @@ func (w Webhooks) configured() bool { return w.Sealer.Configured() && w.Sender !
 func webhooksAllowed(ctx context.Context, enabled func(context.Context, string) bool, workOSUserID string) bool {
 	ctx = featureflags.WithIdentity(ctx, workOSUserID)
 	return enabled(ctx, flagAccounts) && enabled(ctx, FlagWebhookSubscriptions)
+}
+
+func planAllows(ctx context.Context, enabled func(context.Context, string) bool, workOSUserID string, paid bool) bool {
+	return paid || enabled(featureflags.WithIdentity(ctx, workOSUserID), FlagWebhookSubscriptionsGranted)
 }
 
 type EnqueueWebhookFanOutsArgs struct {
@@ -171,7 +176,7 @@ func (w *FanOutWebhooksWorker) Work(ctx context.Context, job *river.Job[FanOutWe
 	for _, t := range fo.Targets {
 		on, seen := allowed[t.WorkOSUserID]
 		if !seen {
-			on = webhooksAllowed(ctx, w.enabled, t.WorkOSUserID)
+			on = planAllows(ctx, w.enabled, t.WorkOSUserID, t.Paid) && webhooksAllowed(ctx, w.enabled, t.WorkOSUserID)
 			allowed[t.WorkOSUserID] = on
 			directed[t.WorkOSUserID] = on && directedAllowed(ctx, w.enabled, t.WorkOSUserID)
 		}
@@ -301,7 +306,7 @@ func (w *DeliverWebhookWorker) Work(ctx context.Context, job *river.Job[DeliverW
 	case d.Status != store.WebhookActive:
 		logger.InfoContext(ctx, "webhook not delivered", "reason", "paused")
 		return nil
-	case !d.Paid:
+	case !planAllows(ctx, w.enabled, d.WorkOSUserID, d.Paid):
 		logger.InfoContext(ctx, "webhook not delivered", "reason", "free_plan", "user_id", d.UserID)
 		return nil
 	case !webhooksAllowed(ctx, w.enabled, d.WorkOSUserID):
