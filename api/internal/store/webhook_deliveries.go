@@ -39,6 +39,7 @@ type WebhookTarget struct {
 	SubscriptionID uuid.UUID
 	UserID         uuid.UUID
 	WorkOSUserID   string
+	Paid           bool
 	Directed       bool
 }
 
@@ -60,16 +61,16 @@ func (s *Store) WebhookFanOutTargets(ctx context.Context, eventID uuid.UUID) (We
 		return WebhookFanOut{}, fmt.Errorf("read event for fan-out: %w", err)
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT w.id, u.id, u.workos_user_id, w.prompt IS NOT NULL
+SELECT w.id, u.id, u.workos_user_id, u.plan = 'paid', w.prompt IS NOT NULL
 FROM webhook_subscriptions w JOIN users u ON u.id = w.user_id
-WHERE w.agency_id = $1 AND w.status = 'active' AND u.plan = 'paid'
+WHERE w.agency_id = $1 AND w.status = 'active'
 ORDER BY w.created_at, w.id`, agencyID)
 	if err != nil {
 		return WebhookFanOut{}, fmt.Errorf("query webhook targets: %w", err)
 	}
 	fo.Targets, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (WebhookTarget, error) {
 		var t WebhookTarget
-		err := row.Scan(&t.SubscriptionID, &t.UserID, &t.WorkOSUserID, &t.Directed)
+		err := row.Scan(&t.SubscriptionID, &t.UserID, &t.WorkOSUserID, &t.Paid, &t.Directed)
 		return t, err
 	})
 	if err != nil {

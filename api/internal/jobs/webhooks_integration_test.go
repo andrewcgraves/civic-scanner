@@ -150,12 +150,20 @@ func TestMeetingEventIsDeliveredSignedToEachEnabledSubscriber(t *testing.T) {
 		t.Fatal(err)
 	}
 	free := subscribe(t, pool, sealer, slug, false, nil)
+	granted := subscribe(t, pool, sealer, slug, false, nil)
 	flagOff := subscribe(t, pool, sealer, slug, true, nil)
 	elsewhere := subscribe(t, pool, sealer, otherSlug, true, nil)
 
 	h := start(t, pool, jobs.Config{
 		Enabled: func(ctx context.Context, flag string) bool {
-			return flag != jobs.FlagWebhookSubscriptions || openfeature.TransactionContext(ctx).TargetingKey() != flagOff.user.WorkOSUserID
+			key := openfeature.TransactionContext(ctx).TargetingKey()
+			switch flag {
+			case jobs.FlagWebhookSubscriptions:
+				return key != flagOff.user.WorkOSUserID
+			case jobs.FlagWebhookSubscriptionsGranted:
+				return key == granted.user.WorkOSUserID
+			}
+			return true
 		},
 		Webhooks: jobs.Webhooks{Sealer: sealer, Sender: webhooks.NewSender("CivicScanner/test", first.receiver.SenderOptions()...)},
 	})
@@ -164,14 +172,14 @@ func TestMeetingEventIsDeliveredSignedToEachEnabledSubscriber(t *testing.T) {
 	h.fanOut(event.ID)
 
 	deliveries := h.deliveryJobs(event.ID)
-	if len(deliveries) != 2 || deliveries[first.sub.ID] == 0 || deliveries[second.sub.ID] == 0 {
-		t.Fatalf("delivery jobs = %v, want one each for %s and %s", deliveries, first.sub.ID, second.sub.ID)
+	if len(deliveries) != 3 || deliveries[first.sub.ID] == 0 || deliveries[second.sub.ID] == 0 || deliveries[granted.sub.ID] == 0 {
+		t.Fatalf("delivery jobs = %v, want one each for %s, %s and %s", deliveries, first.sub.ID, second.sub.ID, granted.sub.ID)
 	}
 	for _, id := range deliveries {
 		testdb.WaitForJobState(t, pool, id, "completed")
 	}
 
-	for _, s := range []subscriber{first, second} {
+	for _, s := range []subscriber{first, second, granted} {
 		got := s.receiver.Deliveries()
 		if len(got) != 1 {
 			t.Fatalf("subscription %s got %d deliveries", s.sub.ID, len(got))
@@ -221,7 +229,7 @@ func TestMeetingEventIsDeliveredSignedToEachEnabledSubscriber(t *testing.T) {
 	}
 
 	var fanned int
-	if err := pool.QueryRow(ctx, `SELECT deliveries FROM webhook_event_fan_outs WHERE event_id = $1`, event.ID).Scan(&fanned); err != nil || fanned != 2 {
+	if err := pool.QueryRow(ctx, `SELECT deliveries FROM webhook_event_fan_outs WHERE event_id = $1`, event.ID).Scan(&fanned); err != nil || fanned != 3 {
 		t.Errorf("fan-out row deliveries = %d, %v", fanned, err)
 	}
 	res, err := h.client.Insert(ctx, jobs.FanOutWebhooksArgs{EventID: event.ID}, &river.InsertOpts{Queue: h.queue})
@@ -231,7 +239,7 @@ func TestMeetingEventIsDeliveredSignedToEachEnabledSubscriber(t *testing.T) {
 	if !res.UniqueSkippedAsDuplicate {
 		testdb.WaitForJobState(t, pool, res.Job.ID, "completed")
 	}
-	if got := h.deliveryJobs(event.ID); len(got) != 2 {
+	if got := h.deliveryJobs(event.ID); len(got) != 3 {
 		t.Errorf("a second fan-out added deliveries: %v", got)
 	}
 }

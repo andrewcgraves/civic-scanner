@@ -138,7 +138,7 @@ func TestEventsAwaitFanOutUntilClaimedOnce(t *testing.T) {
 	}
 }
 
-func TestWebhookFanOutTargetsAreActivePaidSubscriptionsOfTheEventsAgency(t *testing.T) {
+func TestWebhookFanOutTargetsAreActiveSubscriptionsOfTheEventsAgency(t *testing.T) {
 	ctx := t.Context()
 	pool := testdb.Pool(t)
 	s := store.New(pool)
@@ -150,14 +150,17 @@ func TestWebhookFanOutTargetsAreActivePaidSubscriptionsOfTheEventsAgency(t *test
 	if _, err := s.UpdateWebhookSubscription(ctx, pausedUser.ID, paused.ID, store.WebhookSubscriptionUpdate{Status: &pausedStatus}); err != nil {
 		t.Fatal(err)
 	}
-	paidSubscription(t, pool, f.slug, "https://hooks.example/free", false)
+	freeUser, free := paidSubscription(t, pool, f.slug, "https://hooks.example/free", false)
 	paidSubscription(t, pool, webhookAgency(t, pool, "live"), "https://hooks.example/other", true)
 
 	fo, err := s.WebhookFanOutTargets(ctx, f.event.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []store.WebhookTarget{{SubscriptionID: active.ID, UserID: paidUser.ID, WorkOSUserID: paidUser.WorkOSUserID}}
+	want := []store.WebhookTarget{
+		{SubscriptionID: active.ID, UserID: paidUser.ID, WorkOSUserID: paidUser.WorkOSUserID, Paid: true},
+		{SubscriptionID: free.ID, UserID: freeUser.ID, WorkOSUserID: freeUser.WorkOSUserID},
+	}
 	if fo.EventID != f.event.ID || fo.Sequence != f.event.Sequence || !slices.Equal(fo.Targets, want) {
 		t.Errorf("fan-out = %+v, want targets %+v", fo, want)
 	}

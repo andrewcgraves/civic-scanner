@@ -93,9 +93,12 @@ func TestRunPaidPromptsArgs(t *testing.T) {
 
 func TestRunPaidPromptsSkipsWhatShouldNotBeRead(t *testing.T) {
 	for name, change := range map[string]func(*fakePromptStore, *RunPaidPromptsWorker){
-		"gone":      func(s *fakePromptStore, _ *RunPaidPromptsWorker) { s.err = store.ErrNotFound },
-		"paused":    func(s *fakePromptStore, _ *RunPaidPromptsWorker) { s.delivery.Status = store.WebhookPaused },
-		"free plan": func(s *fakePromptStore, _ *RunPaidPromptsWorker) { s.delivery.Paid = false },
+		"gone":   func(s *fakePromptStore, _ *RunPaidPromptsWorker) { s.err = store.ErrNotFound },
+		"paused": func(s *fakePromptStore, _ *RunPaidPromptsWorker) { s.delivery.Status = store.WebhookPaused },
+		"free plan": func(s *fakePromptStore, w *RunPaidPromptsWorker) {
+			s.delivery.Paid = false
+			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptionsGranted }
+		},
 		"webhooks off": func(_ *fakePromptStore, w *RunPaidPromptsWorker) {
 			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptions }
 		},
@@ -140,6 +143,18 @@ func TestRunPaidPromptsStoresNothingRelevantWithItsTokens(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "nothing relevant") || strings.Contains(logs.String(), "A Line") {
 		t.Errorf("logs = %s", logs.String())
+	}
+}
+
+func TestRunPaidPromptsRunsForAGrantedFreeUser(t *testing.T) {
+	st := &fakePromptStore{delivery: directedFixture(t), agenda: store.AgendaVersion{Text: agendaText}}
+	st.delivery.Paid = false
+	fake := llmtest.Returning(`{"relevant": false, "message": ""}`)
+	if err := promptWorker(st, fake, nil).Work(t.Context(), promptJob(1)); err != nil {
+		t.Fatalf("Work = %v", err)
+	}
+	if len(fake.Calls()) != 1 || len(st.runs) != 1 {
+		t.Errorf("calls %d, runs %d, want the prompt run", len(fake.Calls()), len(st.runs))
 	}
 }
 

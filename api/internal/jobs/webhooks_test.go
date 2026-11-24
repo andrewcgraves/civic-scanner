@@ -208,9 +208,16 @@ func TestDeliverWebhookSendsThePresetBodies(t *testing.T) {
 func TestDeliverWebhookSkipsWhatShouldNotBeSent(t *testing.T) {
 	sealer := testWebhookSealer(t)
 	for name, change := range map[string]func(*fakeDeliveryStore, *DeliverWebhookWorker){
-		"gone":      func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.err = store.ErrNotFound },
-		"paused":    func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.delivery.Status = store.WebhookPaused },
-		"free plan": func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.delivery.Paid = false },
+		"gone":   func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.err = store.ErrNotFound },
+		"paused": func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.delivery.Status = store.WebhookPaused },
+		"free plan": func(s *fakeDeliveryStore, w *DeliverWebhookWorker) {
+			s.delivery.Paid = false
+			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptionsGranted }
+		},
+		"granted but flag off": func(s *fakeDeliveryStore, w *DeliverWebhookWorker) {
+			s.delivery.Paid = false
+			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptions }
+		},
 		"flag off": func(_ *fakeDeliveryStore, w *DeliverWebhookWorker) {
 			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptions }
 		},
@@ -225,6 +232,27 @@ func TestDeliverWebhookSkipsWhatShouldNotBeSent(t *testing.T) {
 		if err := w.Work(t.Context(), deliverJob()); err != nil || len(sender.requests) != 0 || len(st.attempts) != 0 {
 			t.Errorf("%s: Work = %v, requests %d, attempts %d", name, err, len(sender.requests), len(st.attempts))
 		}
+	}
+}
+
+func TestDeliverWebhookSendsToAGrantedFreeUser(t *testing.T) {
+	sealer := testWebhookSealer(t)
+	st := &fakeDeliveryStore{delivery: deliveryFixture(t, sealer)}
+	st.delivery.Paid = false
+	sender := &fakeSender{result: webhooks.Result{StatusCode: 204}}
+	w := deliverWorker(t, st, sender, sealer)
+	var granted []string
+	w.enabled = func(ctx context.Context, flag string) bool {
+		if flag == FlagWebhookSubscriptionsGranted {
+			granted = append(granted, openfeature.TransactionContext(ctx).TargetingKey())
+		}
+		return true
+	}
+	if err := w.Work(t.Context(), deliverJob()); err != nil || len(sender.requests) != 1 {
+		t.Fatalf("Work = %v, requests %d", err, len(sender.requests))
+	}
+	if len(granted) != 1 || granted[0] != st.delivery.WorkOSUserID {
+		t.Errorf("grant checked for %v, want %s", granted, st.delivery.WorkOSUserID)
 	}
 }
 

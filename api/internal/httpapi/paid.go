@@ -24,6 +24,10 @@ var paidOperations = map[string]string{
 	"PreviewWebhookTemplate":          FlagWebhookSubscriptions,
 }
 
+var paidGrants = map[string]string{
+	FlagWebhookSubscriptions: FlagWebhookSubscriptionsGranted,
+}
+
 var (
 	errNotPaid    = errors.New("user is on the free plan")
 	errFeatureOff = errors.New("the route's flag is off for this user")
@@ -32,6 +36,8 @@ var (
 var paymentRequired = v1.Error{Code: "payment_required", Message: "this route needs the paid plan"}
 
 type paidContextKey struct{}
+
+type paidUser struct{ store.User }
 
 func (h *Handler) requirePaid(ctx context.Context, flag string) (store.User, error) {
 	if _, err := IdentityFrom(ctx); err != nil {
@@ -47,10 +53,15 @@ func (h *Handler) requirePaid(ctx context.Context, flag string) (store.User, err
 	if err != nil {
 		return store.User{}, err
 	}
-	if !user.Plan.IsPaid() {
+	if !user.Plan.IsPaid() && !h.granted(ctx, flag) {
 		return user, errNotPaid
 	}
 	return user, nil
+}
+
+func (h *Handler) granted(ctx context.Context, flag string) bool {
+	grant, ok := paidGrants[flag]
+	return ok && h.enabled(ctx, grant)
 }
 
 func (h *Handler) paidGate(operations map[string]string) v1.StrictMiddlewareFunc {
@@ -66,7 +77,7 @@ func (h *Handler) paidGate(operations map[string]string) v1.StrictMiddlewareFunc
 				h.refusePaid(ctx, w, operationID, user, err)
 				return nil, nil
 			}
-			return f(context.WithValue(ctx, paidContextKey{}, user), w, r, request)
+			return f(context.WithValue(ctx, paidContextKey{}, paidUser{user}), w, r, request)
 		}
 	}
 }
@@ -102,6 +113,6 @@ func writeSignInRefusal(w http.ResponseWriter, err error) bool {
 }
 
 func paidFrom(ctx context.Context) (store.User, bool) {
-	user, ok := ctx.Value(paidContextKey{}).(store.User)
-	return user, ok && user.Plan.IsPaid()
+	v, ok := ctx.Value(paidContextKey{}).(paidUser)
+	return v.User, ok
 }
