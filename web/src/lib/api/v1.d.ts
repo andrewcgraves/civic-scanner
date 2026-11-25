@@ -578,10 +578,12 @@ export interface components {
        */
       role: "user" | "admin";
       /**
-       * @description The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks; `free` otherwise, which is also the plan of a new user.
+       * @description The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks, or while the `webhook-subscriptions-granted` flag is on for the user; `free` otherwise, which is also the plan of a new user.
        * @enum {string}
        */
       plan: "free" | "paid";
+      /** @description True when the plan is `paid` only because the `webhook-subscriptions-granted` flag is on for the user, so there is no Stripe subscription to manage. False for a user Stripe reports as paid, even when the flag is also on, and for a user on the free plan. */
+      planGranted: boolean;
       /**
        * Format: date-time
        * @description When the user was first seen.

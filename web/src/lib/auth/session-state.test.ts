@@ -31,6 +31,12 @@ describe("parseSessionState", () => {
     ).toEqual({ signedIn: true, email: null, role: null, plan: "free" });
   });
 
+  it("reads the granted plan", () => {
+    expect(
+      parseSessionState({ signedIn: true, email: null, plan: "granted" }),
+    ).toEqual({ signedIn: true, email: null, role: null, plan: "granted" });
+  });
+
   it("reads a signed-in state without an email, a role or a plan", () => {
     expect(parseSessionState({ signedIn: true, email: 42 })).toEqual({
       signedIn: true,

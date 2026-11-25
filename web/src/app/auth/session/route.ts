@@ -4,7 +4,8 @@ import { cookies, headers } from "next/headers";
 import { callApiAsUser } from "@/lib/auth/api";
 import { SESSION_STATE_HEADER, sessionCookieName } from "@/lib/auth/cookie";
 import { isSignInEnabled, notFound } from "@/lib/auth/server";
-import type { SessionState } from "@/lib/auth/session-state";
+import type { components } from "@/lib/api/v1";
+import type { SessionState, UserPlan } from "@/lib/auth/session-state";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,10 @@ function sessionResponse(state: SessionState): Response {
   return Response.json(state, {
     headers: { "cache-control": "private, no-store", vary: "Cookie" },
   });
+}
+
+function sessionPlan(user: components["schemas"]["User"]): UserPlan {
+  return user.planGranted ? "granted" : user.plan;
 }
 
 export async function GET(): Promise<Response> {
@@ -40,6 +45,6 @@ export async function GET(): Promise<Response> {
     signedIn: true,
     email: me.status === "ok" ? me.data.email : null,
     role: me.status === "ok" ? me.data.role : null,
-    plan: me.status === "ok" ? me.data.plan : null,
+    plan: me.status === "ok" ? sessionPlan(me.data) : null,
   });
 }

@@ -29,6 +29,17 @@ const PLANS = {
     label: "Open the billing portal",
     hint: "Change your card, see invoices or cancel in Stripe's billing portal.",
   },
+  granted: {
+    title: "Paid plan",
+    tone: "held",
+    description:
+      "Civic Scanner has given you the paid plan, so there is nothing to pay. Webhook subscriptions are included in your plan when they arrive.",
+    liveDescription:
+      "Civic Scanner has given you the paid plan, so there is nothing to pay. Webhook subscriptions are included in your plan.",
+    action: null,
+    label: null,
+    hint: null,
+  },
 } as const;
 
 export function PlanCard({
@@ -51,7 +62,7 @@ export function PlanCard({
       <p className="max-w-[62ch] text-ink-muted">
         {subscriptions ? liveDescription : description}
       </p>
-      {billing ? (
+      {billing && action !== null ? (
         <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-4">
           <ActionButton action={action}>{label}</ActionButton>
           <p className="text-sm text-ink-muted">{hint}</p>

@@ -2,7 +2,7 @@ import type { components } from "@/lib/api/v1";
 
 export type UserRole = components["schemas"]["User"]["role"];
 
-export type UserPlan = components["schemas"]["User"]["plan"];
+export type UserPlan = components["schemas"]["User"]["plan"] | "granted";
 
 export type SessionState =
   | { signedIn: false }
@@ -15,7 +15,7 @@ export type SessionState =
 
 const ROLES: readonly UserRole[] = ["user", "admin"];
 
-const PLANS: readonly UserPlan[] = ["free", "paid"];
+const PLANS: readonly UserPlan[] = ["free", "paid", "granted"];
 
 function parseRole(value: unknown): UserRole | null {
   return ROLES.find((role) => role === value) ?? null;

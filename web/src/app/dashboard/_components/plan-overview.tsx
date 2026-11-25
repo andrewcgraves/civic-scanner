@@ -107,7 +107,7 @@ export function PlanOverview({
     };
   }, []);
 
-  const paid = status.kind === "known" && status.plan === "paid";
+  const paid = status.kind === "known" && status.plan !== "free";
 
   return (
     <div>
