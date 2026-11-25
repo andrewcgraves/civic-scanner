@@ -160,7 +160,7 @@ func TestMeetingEventIsDeliveredSignedToEachEnabledSubscriber(t *testing.T) {
 			switch flag {
 			case jobs.FlagWebhookSubscriptions:
 				return key != flagOff.user.WorkOSUserID
-			case jobs.FlagWebhookSubscriptionsGranted:
+			case jobs.FlagPlanGranted:
 				return key == granted.user.WorkOSUserID
 			}
 			return true

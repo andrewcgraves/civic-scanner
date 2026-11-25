@@ -17,12 +17,11 @@ import (
 )
 
 const (
-	FlagWebhookSubscriptions        = "webhook-subscriptions"
-	FlagWebhookSubscriptionsGranted = "webhook-subscriptions-granted"
-	FlagDirectedPrompts             = "webhook-directed-prompts"
-	webhookSubscriptionsPattern     = "/v1/webhook-subscriptions"
-	webhookSubscriptionPattern      = "/v1/webhook-subscriptions/{id}"
-	maxWebhookBodyBytes             = 64 << 10
+	FlagWebhookSubscriptions    = "webhook-subscriptions"
+	FlagDirectedPrompts         = "webhook-directed-prompts"
+	webhookSubscriptionsPattern = "/v1/webhook-subscriptions"
+	webhookSubscriptionPattern  = "/v1/webhook-subscriptions/{id}"
+	maxWebhookBodyBytes         = 64 << 10
 )
 
 var (

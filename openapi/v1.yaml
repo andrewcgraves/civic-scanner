@@ -1720,7 +1720,7 @@ components:
           type: string
     User:
       type: object
-      required: [id, email, role, plan, createdAt]
+      required: [id, email, role, plan, planGranted, createdAt]
       properties:
         id:
           type: string
@@ -1745,8 +1745,17 @@ components:
           description: >-
             The user's plan. `paid` while one of the subscriptions of the
             user's Stripe customer is `active`, `trialing` or `past_due`, as
-            last reported by Stripe's webhooks; `free` otherwise, which is
-            also the plan of a new user.
+            last reported by Stripe's webhooks, or while the
+            `paid-plan-granted` flag is on for the user; `free`
+            otherwise, which is also the plan of a new user.
+        planGranted:
+          type: boolean
+          description: >-
+            True when the plan is `paid` only because the
+            `paid-plan-granted` flag is on for the user, so there
+            is no Stripe subscription to manage. False for a user Stripe
+            reports as paid, even when the flag is also on, and for a user on
+            the free plan.
         createdAt:
           type: string
           format: date-time

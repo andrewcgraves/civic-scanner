@@ -24,9 +24,7 @@ var paidOperations = map[string]string{
 	"PreviewWebhookTemplate":          FlagWebhookSubscriptions,
 }
 
-var paidGrants = map[string]string{
-	FlagWebhookSubscriptions: FlagWebhookSubscriptionsGranted,
-}
+const FlagPlanGranted = "paid-plan-granted"
 
 var (
 	errNotPaid    = errors.New("user is on the free plan")
@@ -53,15 +51,20 @@ func (h *Handler) requirePaid(ctx context.Context, flag string) (store.User, err
 	if err != nil {
 		return store.User{}, err
 	}
-	if !user.Plan.IsPaid() && !h.granted(ctx, flag) {
+	if paid, _ := h.planOf(ctx, user); !paid {
 		return user, errNotPaid
 	}
 	return user, nil
 }
 
-func (h *Handler) granted(ctx context.Context, flag string) bool {
-	grant, ok := paidGrants[flag]
-	return ok && h.enabled(ctx, grant)
+func (h *Handler) planOf(ctx context.Context, user store.User) (paid, granted bool) {
+	if user.Plan.IsPaid() {
+		return true, false
+	}
+	if h.enabled(ctx, FlagPlanGranted) {
+		return true, true
+	}
+	return false, false
 }
 
 func (h *Handler) paidGate(operations map[string]string) v1.StrictMiddlewareFunc {

@@ -170,6 +170,27 @@ describe("GET /auth/session", () => {
     });
   });
 
+  it("calls a paid plan that comes from the grant granted", async () => {
+    mocks.callApiAsUser.mockResolvedValue({
+      status: "ok",
+      data: {
+        id: "u",
+        email: null,
+        role: "user",
+        plan: "paid",
+        planGranted: true,
+        createdAt: "x",
+      },
+    });
+
+    expect((await session()).body).toEqual({
+      signedIn: true,
+      email: null,
+      role: "user",
+      plan: "granted",
+    });
+  });
+
   it("is signed out when the API rejects the token after a refresh", async () => {
     mocks.callApiAsUser.mockResolvedValue({ status: "signed-out" });
 

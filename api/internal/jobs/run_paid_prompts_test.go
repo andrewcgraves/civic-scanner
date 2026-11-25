@@ -97,7 +97,7 @@ func TestRunPaidPromptsSkipsWhatShouldNotBeRead(t *testing.T) {
 		"paused": func(s *fakePromptStore, _ *RunPaidPromptsWorker) { s.delivery.Status = store.WebhookPaused },
 		"free plan": func(s *fakePromptStore, w *RunPaidPromptsWorker) {
 			s.delivery.Paid = false
-			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptionsGranted }
+			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagPlanGranted }
 		},
 		"webhooks off": func(_ *fakePromptStore, w *RunPaidPromptsWorker) {
 			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptions }

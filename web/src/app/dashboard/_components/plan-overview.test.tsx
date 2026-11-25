@@ -120,6 +120,19 @@ describe("PlanOverview", () => {
     expect(screen.queryByText(/coming soon/)).toBeNull();
   });
 
+  it("treats a granted user as paid, without the billing portal", async () => {
+    stubSession(signedIn("granted"));
+
+    await renderOverview(true, true);
+
+    expect(screen.getByText("Paid plan")).toBeVisible();
+    expect(screen.queryByText("Free plan")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(
+      screen.getByRole("link", { name: "Manage your subscriptions" }),
+    ).toHaveAttribute("href", "/dashboard/subscriptions");
+  });
+
   it("points a free user at subscriptions when they are on", async () => {
     stubSession(signedIn("free"));
 

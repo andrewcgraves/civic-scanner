@@ -212,7 +212,7 @@ func TestDeliverWebhookSkipsWhatShouldNotBeSent(t *testing.T) {
 		"paused": func(s *fakeDeliveryStore, _ *DeliverWebhookWorker) { s.delivery.Status = store.WebhookPaused },
 		"free plan": func(s *fakeDeliveryStore, w *DeliverWebhookWorker) {
 			s.delivery.Paid = false
-			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagWebhookSubscriptionsGranted }
+			w.enabled = func(_ context.Context, flag string) bool { return flag != FlagPlanGranted }
 		},
 		"granted but flag off": func(s *fakeDeliveryStore, w *DeliverWebhookWorker) {
 			s.delivery.Paid = false
@@ -243,7 +243,7 @@ func TestDeliverWebhookSendsToAGrantedFreeUser(t *testing.T) {
 	w := deliverWorker(t, st, sender, sealer)
 	var granted []string
 	w.enabled = func(ctx context.Context, flag string) bool {
-		if flag == FlagWebhookSubscriptionsGranted {
+		if flag == FlagPlanGranted {
 			granted = append(granted, openfeature.TransactionContext(ctx).TargetingKey())
 		}
 		return true

@@ -20,23 +20,23 @@ import (
 )
 
 const (
-	FlagWebhookSubscriptions        = "webhook-subscriptions"
-	FlagWebhookSubscriptionsGranted = "webhook-subscriptions-granted"
-	flagAccounts                    = "accounts"
-	WebhookQueue                    = "webhooks"
-	webhookQueueWorkers             = 10
-	webhookSweepInterval            = time.Minute
-	webhookSweepLimit               = 100
-	webhookSweepLookback            = 1000
-	webhookFanOutAttempts           = 5
-	webhookDeliverAttempts          = 8
-	webhookRetryBase                = time.Minute
-	webhookRetryGrowth              = 4
-	webhookRetryCap                 = 9 * time.Hour
-	webhookRetryJitter              = 0.1
-	webhookPauseAfterFailures       = 5
-	webhookDeliverTimeout           = webhooks.DefaultRequestTimeout + 15*time.Second
-	webhookUnconfiguredSnooze       = 10 * time.Minute
+	FlagWebhookSubscriptions  = "webhook-subscriptions"
+	FlagPlanGranted           = "paid-plan-granted"
+	flagAccounts              = "accounts"
+	WebhookQueue              = "webhooks"
+	webhookQueueWorkers       = 10
+	webhookSweepInterval      = time.Minute
+	webhookSweepLimit         = 100
+	webhookSweepLookback      = 1000
+	webhookFanOutAttempts     = 5
+	webhookDeliverAttempts    = 8
+	webhookRetryBase          = time.Minute
+	webhookRetryGrowth        = 4
+	webhookRetryCap           = 9 * time.Hour
+	webhookRetryJitter        = 0.1
+	webhookPauseAfterFailures = 5
+	webhookDeliverTimeout     = webhooks.DefaultRequestTimeout + 15*time.Second
+	webhookUnconfiguredSnooze = 10 * time.Minute
 )
 
 type Webhooks struct {
@@ -57,7 +57,7 @@ func webhooksAllowed(ctx context.Context, enabled func(context.Context, string) 
 }
 
 func planAllows(ctx context.Context, enabled func(context.Context, string) bool, workOSUserID string, paid bool) bool {
-	return paid || enabled(featureflags.WithIdentity(ctx, workOSUserID), FlagWebhookSubscriptionsGranted)
+	return paid || enabled(featureflags.WithIdentity(ctx, workOSUserID), FlagPlanGranted)
 }
 
 type EnqueueWebhookFanOutsArgs struct {

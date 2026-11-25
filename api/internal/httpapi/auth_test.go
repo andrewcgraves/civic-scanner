@@ -261,7 +261,7 @@ func TestFlagIsEvaluatedOnlyForAVerifiedUser(t *testing.T) {
 		}
 	}
 	slices.Sort(targeting)
-	if want := []string{"user_01", "user_02"}; !slices.Equal(targeting, want) {
+	if want := []string{"user_01", "user_01", "user_02"}; !slices.Equal(targeting, want) {
 		t.Errorf("targeting keys = %q, want %q", targeting, want)
 	}
 }

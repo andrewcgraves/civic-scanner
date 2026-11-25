@@ -14,6 +14,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/uuid"
+	"github.com/open-feature/go-sdk/openfeature"
 
 	"github.com/andrewcgraves/civic-scanner/api/internal/auth"
 	v1 "github.com/andrewcgraves/civic-scanner/api/internal/httpapi/v1"
@@ -70,45 +71,55 @@ func TestPaidGateLetsAPaidUserThrough(t *testing.T) {
 }
 
 func TestPaidGateLetsAGrantedFreeUserThrough(t *testing.T) {
-	user := store.User{ID: uuid.New(), Plan: store.PlanFree}
-	h := NewHandler(fakeStore{users: &userCalls{user: user}}, slog.New(slog.DiscardHandler), "test",
-		WithFlags(webhookFlags(FlagAccounts, FlagWebhookSubscriptions, FlagWebhookSubscriptionsGranted)))
-	probe := &paidProbe{}
-	ctx := context.WithValue(t.Context(), authContextKey{}, authResult{identity: auth.Identity{UserID: "user_01"}})
-	gated := h.paidGate(map[string]string{testPaidOperation: FlagWebhookSubscriptions})(probe.handler, testPaidOperation)
-	rec := httptest.NewRecorder()
-	if _, err := gated(ctx, rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/test-paid", nil), nil); err != nil {
-		t.Fatal(err)
-	}
-	if rec.Code != http.StatusNoContent || probe.calls != 1 || !probe.ok || probe.user.ID != user.ID {
-		t.Fatalf("status %d, calls %d, paidFrom = (%+v, %v)", rec.Code, probe.calls, probe.user, probe.ok)
-	}
-}
-
-func TestPaidGateGrantIsPerFeature(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		feature string
 		flags   []string
 	}{
-		{"grant off", FlagWebhookSubscriptions, []string{FlagAccounts, FlagWebhookSubscriptions}},
-		{"route without a grant", "", []string{FlagAccounts, FlagWebhookSubscriptionsGranted}},
+		{"webhook route", FlagWebhookSubscriptions, []string{FlagAccounts, FlagWebhookSubscriptions, FlagPlanGranted}},
+		{"route without a flag of its own", "", []string{FlagAccounts, FlagPlanGranted}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h := NewHandler(fakeStore{users: &userCalls{user: store.User{ID: uuid.New(), Plan: store.PlanFree}}}, slog.New(slog.DiscardHandler), "test",
-				WithFlags(webhookFlags(tc.flags...)))
+			user := store.User{ID: uuid.New(), Plan: store.PlanFree}
+			h := NewHandler(fakeStore{users: &userCalls{user: user}}, slog.New(slog.DiscardHandler), "test", WithFlags(webhookFlags(tc.flags...)))
 			probe := &paidProbe{}
-			ctx := context.WithValue(t.Context(), authContextKey{}, authResult{identity: auth.Identity{UserID: "user_01"}})
-			gated := h.paidGate(map[string]string{testPaidOperation: tc.feature})(probe.handler, testPaidOperation)
-			rec := httptest.NewRecorder()
-			if _, err := gated(ctx, rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/test-paid", nil), nil); err != nil {
-				t.Fatal(err)
-			}
-			if rec.Code != http.StatusPaymentRequired || probe.calls != 0 {
-				t.Errorf("status %d, calls %d, want 402 and no call", rec.Code, probe.calls)
+			rec := runGatedOperation(t, h, probe, tc.feature)
+			if rec.Code != http.StatusNoContent || probe.calls != 1 || !probe.ok || probe.user.ID != user.ID {
+				t.Fatalf("status %d, calls %d, paidFrom = (%+v, %v)", rec.Code, probe.calls, probe.user, probe.ok)
 			}
 		})
 	}
+}
+
+func TestPaidGateRefusesAFreeUserWithoutTheGrant(t *testing.T) {
+	h := NewHandler(fakeStore{users: &userCalls{user: store.User{ID: uuid.New(), Plan: store.PlanFree}}}, slog.New(slog.DiscardHandler), "test",
+		WithFlags(webhookFlags(FlagAccounts, FlagWebhookSubscriptions)))
+	probe := &paidProbe{}
+	rec := runGatedOperation(t, h, probe, FlagWebhookSubscriptions)
+	if rec.Code != http.StatusPaymentRequired || probe.calls != 0 {
+		t.Errorf("status %d, calls %d, want 402 and no call", rec.Code, probe.calls)
+	}
+}
+
+func TestPaidGateGrantDoesNotSkipTheFeatureFlag(t *testing.T) {
+	h := NewHandler(fakeStore{users: &userCalls{user: store.User{ID: uuid.New(), Plan: store.PlanFree}}}, slog.New(slog.DiscardHandler), "test",
+		WithFlags(webhookFlags(FlagAccounts, FlagPlanGranted)))
+	probe := &paidProbe{}
+	rec := runGatedOperation(t, h, probe, FlagWebhookSubscriptions)
+	if rec.Code != http.StatusNotFound || probe.calls != 0 {
+		t.Errorf("status %d, calls %d, want 404 and no call", rec.Code, probe.calls)
+	}
+}
+
+func runGatedOperation(t *testing.T, h *Handler, probe *paidProbe, feature string) *httptest.ResponseRecorder {
+	t.Helper()
+	ctx := context.WithValue(t.Context(), authContextKey{}, authResult{identity: auth.Identity{UserID: "user_01"}})
+	gated := h.paidGate(map[string]string{testPaidOperation: feature})(probe.handler, testPaidOperation)
+	rec := httptest.NewRecorder()
+	if _, err := gated(ctx, rec, httptest.NewRequestWithContext(ctx, http.MethodGet, "/v1/test-paid", nil), nil); err != nil {
+		t.Fatal(err)
+	}
+	return rec
 }
 
 func TestPaidGateRefuses(t *testing.T) {
@@ -218,9 +229,53 @@ func TestGetMePlan(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil || rec.Code != http.StatusOK {
 			t.Fatalf("%q: status %d, body %s, err %v", stored, rec.Code, rec.Body, err)
 		}
-		if me.Plan != want {
-			t.Errorf("stored %q: plan = %q, want %q", stored, me.Plan, want)
+		if me.Plan != want || me.PlanGranted {
+			t.Errorf("stored %q: plan = %q, planGranted %v, want %q and false", stored, me.Plan, me.PlanGranted, want)
 		}
+	}
+}
+
+func TestGetMePlanWithTheGrant(t *testing.T) {
+	for _, tc := range []struct {
+		stored  store.Plan
+		granted bool
+	}{
+		{store.PlanFree, true},
+		{"", true},
+		{store.PlanPaid, false},
+	} {
+		calls := &userCalls{user: store.User{ID: uuid.New(), Plan: tc.stored}}
+		h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(goodAuth()),
+			WithFlags(webhookFlags(FlagAccounts, FlagPlanGranted)))
+		rec := request(t, h, "/v1/me", "Bearer good")
+		var me v1.User
+		if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil || rec.Code != http.StatusOK {
+			t.Fatalf("%q: status %d, body %s, err %v", tc.stored, rec.Code, rec.Body, err)
+		}
+		if me.Plan != v1.Paid || me.PlanGranted != tc.granted {
+			t.Errorf("stored %q: plan = %q, planGranted %v, want paid and %v", tc.stored, me.Plan, me.PlanGranted, tc.granted)
+		}
+	}
+}
+
+func TestGetMeChecksTheGrantForTheSignedInUser(t *testing.T) {
+	calls := &userCalls{user: store.User{ID: uuid.New(), Plan: store.PlanFree}}
+	var asked []string
+	h := NewHandler(fakeStore{users: calls}, slog.New(slog.DiscardHandler), "test", WithAuthenticator(goodAuth()),
+		WithFlags(func(ctx context.Context, flag string) bool {
+			if flag == FlagPlanGranted {
+				asked = append(asked, openfeature.TransactionContext(ctx).TargetingKey())
+				return false
+			}
+			return flag == FlagAccounts
+		}))
+	rec := request(t, h, "/v1/me", "Bearer good")
+	var me v1.User
+	if err := json.Unmarshal(rec.Body.Bytes(), &me); err != nil || rec.Code != http.StatusOK || me.Plan != v1.Free || me.PlanGranted {
+		t.Fatalf("status %d, body %s, want 200 with plan free", rec.Code, rec.Body)
+	}
+	if len(asked) != 1 || asked[0] != "user_01" {
+		t.Errorf("grant checked for %v, want the signed-in user once", asked)
 	}
 }
 

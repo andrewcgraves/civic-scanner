@@ -46,9 +46,21 @@ describe("PlanCard", () => {
     ).toBeNull();
   });
 
+  it("shows a granted user the paid plan with nothing to pay", () => {
+    render(<PlanCard plan="granted" billing />);
+
+    expect(screen.getByText("Paid plan")).toBeVisible();
+    expect(screen.getByText("Current")).toBeVisible();
+    expect(screen.getByText(/nothing to pay/)).toBeVisible();
+    expect(screen.queryByText("Free plan")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByText(/Stripe/)).toBeNull();
+  });
+
   it.each([
     ["free" as const, /coming soon\.$/, /adds webhook subscriptions\.$/],
     ["paid" as const, /when they arrive\.$/, /included in your plan\.$/],
+    ["granted" as const, /when they arrive\.$/, /included in your plan\.$/],
   ])(
     "says subscriptions are live for the %s plan once they are on",
     (plan, soon, live) => {
@@ -62,7 +74,7 @@ describe("PlanCard", () => {
     },
   );
 
-  it.each([["free" as const], ["paid" as const]])(
+  it.each([["free" as const], ["paid" as const], ["granted" as const]])(
     "shows the %s plan without a button when billing is off",
     (plan) => {
       render(<PlanCard plan={plan} billing={false} />);
