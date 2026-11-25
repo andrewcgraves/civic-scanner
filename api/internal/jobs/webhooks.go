@@ -21,7 +21,7 @@ import (
 
 const (
 	FlagWebhookSubscriptions  = "webhook-subscriptions"
-	FlagPlanGranted           = "webhook-subscriptions-granted"
+	FlagPlanGranted           = "paid-plan-granted"
 	flagAccounts              = "accounts"
 	WebhookQueue              = "webhooks"
 	webhookQueueWorkers       = 10

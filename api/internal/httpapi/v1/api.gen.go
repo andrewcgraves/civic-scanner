@@ -546,17 +546,17 @@ type User struct {
 	// Id The user's id in this service.
 	Id openapi_types.UUID `json:"id"`
 
-	// Plan The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks, or while the `webhook-subscriptions-granted` flag is on for the user; `free` otherwise, which is also the plan of a new user.
+	// Plan The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks, or while the `paid-plan-granted` flag is on for the user; `free` otherwise, which is also the plan of a new user.
 	Plan UserPlan `json:"plan"`
 
-	// PlanGranted True when the plan is `paid` only because the `webhook-subscriptions-granted` flag is on for the user, so there is no Stripe subscription to manage. False for a user Stripe reports as paid, even when the flag is also on, and for a user on the free plan.
+	// PlanGranted True when the plan is `paid` only because the `paid-plan-granted` flag is on for the user, so there is no Stripe subscription to manage. False for a user Stripe reports as paid, even when the flag is also on, and for a user on the free plan.
 	PlanGranted bool `json:"planGranted"`
 
 	// Role What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.
 	Role UserRole `json:"role"`
 }
 
-// UserPlan The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks, or while the `webhook-subscriptions-granted` flag is on for the user; `free` otherwise, which is also the plan of a new user.
+// UserPlan The user's plan. `paid` while one of the subscriptions of the user's Stripe customer is `active`, `trialing` or `past_due`, as last reported by Stripe's webhooks, or while the `paid-plan-granted` flag is on for the user; `free` otherwise, which is also the plan of a new user.
 type UserPlan string
 
 // UserRole What the user may do. `admin` may use the admin routes; everyone else is `user`, which is also the role of a new user. Read from the database on every request, never from the token.

@@ -24,7 +24,7 @@ var paidOperations = map[string]string{
 	"PreviewWebhookTemplate":          FlagWebhookSubscriptions,
 }
 
-const FlagPlanGranted = "webhook-subscriptions-granted"
+const FlagPlanGranted = "paid-plan-granted"
 
 var (
 	errNotPaid    = errors.New("user is on the free plan")
